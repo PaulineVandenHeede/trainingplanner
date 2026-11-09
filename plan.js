@@ -1644,8 +1644,8 @@ function typicalWeeklyFromActs(sport) {
 
 function fillWeeklyFromSynced(form, { force = false } = {}) {
   if (!form || form.dataset.weeklyPicked) return;
-  const sport = setupSport(form);
-  if (!sport) return;
+  // Default to run volume before an event/sport is chosen — still refreshes if sport changes later.
+  const sport = setupSport(form) || "run";
   const existing = fieldValue(form, "weekly_km");
   // Keep a user-typed value; refresh auto-filled values when sport/sync changes.
   if (!force && existing && form.dataset.weeklyAuto !== "1") return;
