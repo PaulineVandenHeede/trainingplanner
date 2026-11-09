@@ -151,7 +151,10 @@ function renderLogin(message = "", options = {}) {
   document.getElementById("app").innerHTML = `
     <section class="auth-card">
       <div class="auth-brand">
-        <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+        <picture>
+          <source srcset="/assets/app-icon-dark.png" media="(prefers-color-scheme: dark)" />
+          <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+        </picture>
         <div>
           <div class="eyebrow">Your training</div>
           <h1>Training Pal</h1>
@@ -193,7 +196,10 @@ function renderPasswordReset(email = "", message = "") {
   document.getElementById("app").innerHTML = `
     <section class="auth-card">
       <div class="auth-brand">
-        <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+        <picture>
+          <source srcset="/assets/app-icon-dark.png" media="(prefers-color-scheme: dark)" />
+          <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+        </picture>
         <div>
           <div class="eyebrow">Your training</div>
           <h1>New password</h1>

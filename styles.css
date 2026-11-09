@@ -59,9 +59,13 @@ h2 { font-size: 18px; }
   text-decoration: none; color: inherit; min-width: 0;
   cursor: pointer;
 }
+.brand picture,
+.auth-brand picture {
+  display: contents;
+}
 .brand-mark {
   width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
-  display: grid; place-items: center;
+  display: block;
   background: var(--bg); color: #fff;
   font-weight: 800; font-size: 13px; letter-spacing: -0.05em; line-height: 1;
   object-fit: cover;

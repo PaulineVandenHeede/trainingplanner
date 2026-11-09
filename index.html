@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#e4572e" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Training Pal" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" media="(prefers-color-scheme: light)" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32-dark.png" media="(prefers-color-scheme: dark)" />
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
   <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
   <link rel="manifest" href="/site.webmanifest" />
@@ -15,7 +17,10 @@
 <body class="logged-out">
   <header class="topbar" id="app-header" hidden>
     <a href="/home" class="brand" title="Training Pal" aria-label="Training Pal">
-      <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+      <picture>
+        <source srcset="/assets/app-icon-dark.png" media="(prefers-color-scheme: dark)" />
+        <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
+      </picture>
       <span class="brand-name">Training Pal</span>
     </a>
     <nav>
