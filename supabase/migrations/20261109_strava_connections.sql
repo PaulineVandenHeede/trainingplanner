@@ -18,6 +18,7 @@ create table if not exists public.strava_connections (
   last_sync_at timestamptz,
   last_sync_status text,
   last_error text,
+  share_with_coach boolean not null default false,
   updated_at timestamptz not null default now(),
   constraint strava_connections_athlete_unique unique (athlete_id)
 );

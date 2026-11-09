@@ -1117,7 +1117,7 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   let longWeekday = Number.isInteger(Number(input.longWeekday)) ? Number(input.longWeekday) : null;
   if (needsLong) {
     if (longWeekday == null || !runWeekdays.includes(longWeekday)) {
-      throw new Error("Tap a run day twice to mark your long-run day before creating the plan.");
+      throw new Error("Choose a run day for your long run before creating the plan.");
     }
   } else if (longWeekday != null && !runWeekdays.includes(longWeekday)) {
     longWeekday = null;

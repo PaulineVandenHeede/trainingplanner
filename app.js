@@ -265,6 +265,26 @@ function isManualActivity(a) {
   return String(a?.raw?.Source || "").toLowerCase() === "manual";
 }
 
+function stravaActivityId(a) {
+  const id = Number(a?.raw?.stravaActivityId);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function isStravaActivity(a) {
+  return String(a?.raw?.Source || "") === "strava-api" || stravaActivityId(a) > 0;
+}
+
+function actsForCoach(acts = ACTS) {
+  if (STRAVA.shareWithCoach) return acts || [];
+  return (acts || []).filter((a) => !isStravaActivity(a));
+}
+
+function stravaViewLink(a) {
+  const id = stravaActivityId(a);
+  if (!id) return "";
+  return `<a class="strava-view" href="https://www.strava.com/activities/${id}" target="_blank" rel="noopener">View on Strava</a>`;
+}
+
 function plannedLogSport(plan) {
   if (!plan) return "run";
   const wanted = KIND_MATCH[plan.kind] || [];
@@ -682,17 +702,20 @@ function reviewCard(acts, now) {
   if (!week) return "";
   const isCurrent = week.wk === weekOf(now);
   const sessions = reviewWeekActs(week, acts);
+  const aiActs = actsForCoach(acts);
+  const aiSessions = reviewWeekActs(week, aiActs);
   const writing = FEEDBACK_STATUS === "writing";
   const hasNote = !!FEEDBACK.weeks[String(week.wk)];
-  const current = sessions.length > 0 && feedbackIsCurrent(week, acts);
-  const showButton = writing || (sessions.length > 0 && !current);
+  const current = aiSessions.length > 0 && feedbackIsCurrent(week, aiActs);
+  const showButton = writing || (aiSessions.length > 0 && !current);
   const label = writing ? "Writing…" : hasNote ? "Update feedback" : "Request feedback";
   const stamped = WEEK_FEEDBACK_STAMP?.week === week.wk && !!WEEK_FEEDBACK_STAMP.fingerprint;
-  const hint = writing
-    ? "Writing feedback from this week's sessions."
-    : hasNote && stamped && !current
-      ? "New sessions since this coach note."
-      : "";
+  const hiddenStrava = sessions.length > aiSessions.length;
+  const hintParts = [];
+  if (writing) hintParts.push("Writing feedback from this week's sessions.");
+  else if (hasNote && stamped && !current) hintParts.push("New sessions since this coach note.");
+  if (hiddenStrava) hintParts.push("Strava sessions stay in your log. Allow AI coach sharing on Connections to include them.");
+  const hint = hintParts.join(" ");
   return `
     <section class="card review">
       <div class="card-head">
@@ -986,6 +1009,7 @@ function renderDayDetail(ds) {
         <h3>${esc(label)}</h3>
         <div class="activity-meta">
           <span class="muted">${time}${isManualActivity(a) ? " · logged here" : ""}</span>
+          ${stravaViewLink(a)}
           <button class="icon-button" type="button" data-action="delete-activity" data-started="${esc(a.datetime)}" data-type="${esc(a.raw["Activity Type"] || "")}" data-date="${esc(a.date)}" aria-label="Remove session">✕</button>
         </div>
       </div>`;
@@ -1692,7 +1716,7 @@ function sizeUsernameInput(input) {
 }
 
 let GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-let STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
 let STRAVA_CALLBACK_HANDLED = false;
 
 async function invokeGarmin(body) {
@@ -1761,7 +1785,7 @@ async function loadGarminStatus() {
 
 async function loadStravaStatus() {
   if (!CURRENT_USER_ID) {
-    STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+    STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
     window.STRAVA_STATUS = STRAVA;
     return STRAVA;
   }
@@ -1769,6 +1793,7 @@ async function loadStravaStatus() {
     const data = await invokeStrava({ action: "status" });
     STRAVA = {
       connected: !!data.connected,
+      shareWithCoach: !!data.shareWithCoach,
       lastSyncAt: data.lastSyncAt || null,
       lastSyncStatus: data.lastSyncStatus || null,
       lastError: data.lastError || null,
@@ -1777,6 +1802,7 @@ async function loadStravaStatus() {
   } catch (err) {
     STRAVA = {
       connected: false,
+      shareWithCoach: false,
       lastSyncAt: null,
       lastSyncStatus: null,
       lastError: err.message || "Could not load Strava status",
@@ -1908,6 +1934,120 @@ function stravaStatusLine() {
   return "Connected. Sync to pull sessions from Strava.";
 }
 
+function navSyncLabel() {
+  if (GARMIN.connected && STRAVA.connected) return "Sync Garmin and Strava";
+  if (GARMIN.connected) return "Sync Garmin";
+  if (STRAVA.connected) return "Sync Strava";
+  return "Sync activities";
+}
+
+function updateNavSyncButton() {
+  const btn = document.querySelector(".sync-btn");
+  if (!btn) return;
+  const label = navSyncLabel();
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+}
+
+async function performGarminSync() {
+  const fullKey = `garmin-full-gear:${CURRENT_USER_ID || "anon"}`;
+  const full = localStorage.getItem(fullKey) !== "done";
+  const data = await invokeGarmin({ action: "sync", full });
+  if (data?.full && !String(data.lastSyncStatus || "").includes("Gear matching paused")) {
+    localStorage.setItem(fullKey, "done");
+  }
+  GARMIN = {
+    connected: true,
+    lastSyncAt: data.lastSyncAt || null,
+    lastSyncStatus: data.lastSyncStatus || null,
+    lastError: data.lastError || null,
+    loaded: true,
+  };
+  window.GARMIN_STATUS = GARMIN;
+  applyGarminContext(data);
+  ACTS = await loadActivities();
+  try { await loadWellness(); } catch {}
+  try { GEAR = await loadGear(); } catch {}
+  try { CHANGES = await loadChanges(); } catch {}
+  const n = data.added || 0;
+  const base = n
+    ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Garmin (${data.updated || 0} updated).`
+    : (data.total ? `Garmin sync complete — ${data.updated || 0} already known.` : "Garmin sync complete — no activities in range.");
+  const gearBits = [];
+  if (data.gearAssigned) gearBits.push(`linked gear on ${data.gearAssigned}`);
+  if (data.gearCreated) gearBits.push(`added ${data.gearCreated} from Garmin`);
+  if (Array.isArray(data.wellness) && data.wellness.length) gearBits.push("recovery updated");
+  if (data.metrics?.vo2_run) gearBits.push(`VO2 ${data.metrics.vo2_run}`);
+  if (data.splitsAdded) gearBits.push(`${data.splitsAdded} run${data.splitsAdded === 1 ? "" : "s"} with splits`);
+  return gearBits.length ? `${base} ${gearBits.join(", ")}.` : base;
+}
+
+async function performStravaSync() {
+  const data = await invokeStrava({ action: "sync" });
+  STRAVA = {
+    connected: true,
+    shareWithCoach: STRAVA.shareWithCoach,
+    lastSyncAt: data.lastSyncAt || null,
+    lastSyncStatus: data.lastSyncStatus || null,
+    lastError: data.lastError || null,
+    loaded: true,
+  };
+  window.STRAVA_STATUS = STRAVA;
+  ACTS = await loadActivities();
+  const n = data.added || 0;
+  return n
+    ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
+    : (data.total ? `Strava sync complete — ${data.updated || 0} already known.` : "Strava sync complete — no activities in range.");
+}
+
+function setSyncButtonsDisabled(disabled) {
+  document.querySelectorAll(".sync-btn, [data-action=garmin-sync], [data-action=strava-sync]").forEach((el) => {
+    el.disabled = disabled;
+  });
+}
+
+async function runNavSync() {
+  if (!GARMIN.loaded || !STRAVA.loaded) {
+    await Promise.all([
+      GARMIN.loaded ? Promise.resolve() : loadGarminStatus(),
+      STRAVA.loaded ? Promise.resolve() : loadStravaStatus(),
+    ]);
+  }
+  updateNavSyncButton();
+  if (!GARMIN.connected && !STRAVA.connected) {
+    toast("Connect Garmin or Strava on the Connections page.");
+    go("/connections");
+    return;
+  }
+  setSyncButtonsDisabled(true);
+  const messages = [];
+  const errors = [];
+  try {
+    if (GARMIN.connected) {
+      try {
+        messages.push(await performGarminSync());
+      } catch (err) {
+        GARMIN.lastError = err.message;
+        errors.push(err.message || "Garmin sync failed.");
+      }
+    }
+    if (STRAVA.connected) {
+      try {
+        messages.push(await performStravaSync());
+      } catch (err) {
+        STRAVA.lastError = err.message;
+        errors.push(err.message || "Strava sync failed.");
+      }
+    }
+    render(true);
+    if (messages.length) toast(messages.join(" "));
+    if (errors.length) toast(errors.join(" "), true);
+  } finally {
+    setSyncButtonsDisabled(false);
+    updateNavSyncButton();
+  }
+}
+
 function syncIconSvg() {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 7.5A6.5 6.5 0 1 0 18 12"/><path d="M14.5 5.5 17 8l2.5-2.5"/><rect x="9.2" y="11.2" width="5.6" height="8.2" rx="2.2"/><path d="M11 13.2h2.4"/></svg>`;
 }
@@ -1967,12 +2107,16 @@ function renderStravaConnectionCard() {
         <div>
           <div class="eyebrow">Service</div>
           <h2>Strava</h2>
-          <p class="muted" style="margin:6px 0 0">Connect with a shared passcode. Apple Watch sessions that sync into Strava (or anything else you upload there) can be pulled into your plan. Connecting is invite-only — you need the passcode from the app owner.</p>
+          <p class="muted" style="margin:6px 0 0">Compatible with Strava. Activities already on your own account, including from a watch, are stored for your plan and shown only to you. Disconnecting removes them from this app.</p>
         </div>
         <span class="conn-label ${connected ? "on" : "off"}">${connected ? "Connected" : "Not connected"}</span>
       </div>
       <p class="conn-meta ${STRAVA.lastError ? "warn" : ""}">${esc(stravaStatusLine())}</p>
       ${connected ? `
+        <label class="own-risk-field">
+          <input type="checkbox" data-action="strava-share" ${STRAVA.shareWithCoach ? "checked" : ""} />
+          <span>Send Strava session summaries (date, sport, distance, pace, heart rate) to the AI coach. Leave this off and those sessions stay in your log only.</span>
+        </label>
         <div class="conn-actions">
           <button class="button" type="button" data-action="strava-sync">${syncIconSvg()} Sync</button>
           <button class="button ghost" type="button" data-action="strava-disconnect">Disconnect</button>
@@ -1981,9 +2125,15 @@ function renderStravaConnectionCard() {
           <label>Connect passcode
             <input type="password" name="passcode" required autocomplete="off" spellcheck="false" placeholder="Passcode from the app owner" />
           </label>
-          <p class="muted small-text">After the passcode is accepted you will authorize this app on Strava. Apple Watch works when activities are already in Strava.</p>
+          <label class="own-risk-field">
+            <input type="checkbox" name="shareWithCoach" />
+            <span>Also send Strava session summaries (date, sport, distance, pace, heart rate) to the AI coach. Leave this off and those sessions stay in your log only.</span>
+          </label>
+          <p class="muted small-text">Your Strava login happens on Strava. A new Strava API app can connect one athlete until the app owner raises that limit in Strava’s API settings.</p>
           <p class="form-error"></p>
-          <button class="button" type="submit">Connect with Strava</button>
+          <button class="strava-connect" type="submit">
+            <img src="/assets/btn_strava_connect_with_orange.svg" width="237" height="48" alt="Connect with Strava" />
+          </button>
         </form>`}
     </section>`;
 }
@@ -3168,7 +3318,8 @@ async function loadProgressReport() {
 }
 
 async function requestProgressReport(opts = {}) {
-  const fp = progressFingerprint();
+  const visible = actsForCoach();
+  const fp = progressFingerprint(visible);
   if (!opts.force && progressReportIsCurrent(fp)) {
     if (opts.manual) toast("Nothing new to report — no new sessions since the last write-up.");
     return;
@@ -3182,7 +3333,7 @@ async function requestProgressReport(opts = {}) {
   PROGRESS_STATUS = "running";
   render(true);
   try {
-    const data = await invokeCoach({ action: "progress", snapshot: progressSnapshot(ACTS, today()) });
+    const data = await invokeCoach({ action: "progress", snapshot: progressSnapshot(visible, today()) });
     if (data.status === "applied" && (data.report || data.summary)) {
       storeProgressReport({ ...data, fingerprint: data.fingerprint || fp }, "ai");
       if (!data.unchanged) toast(data.summary || "Progress report ready.");
@@ -3360,14 +3511,18 @@ function refreshOpenDay() {
 }
 
 async function requestWeekFeedback() {
-  const week = hasPlan() ? reviewWeek(ACTS, today()) : null;
+  const visible = actsForCoach();
+  const week = hasPlan() ? reviewWeek(visible, today()) : null;
   if (!week) return;
-  if (!reviewWeekActs(week, ACTS).length) {
-    toast("Log or sync a session this week before asking for feedback.");
+  if (!reviewWeekActs(week, visible).length) {
+    const any = hasPlan() ? reviewWeekActs(reviewWeek(ACTS, today()), ACTS) : [];
+    toast(any.some(isStravaActivity) && !STRAVA.shareWithCoach
+      ? "Strava sessions stay in your log. Allow AI coach sharing on Connections to include them."
+      : "Log or sync a session this week before asking for feedback.");
     return;
   }
   if (FEEDBACK_STATUS === "writing") return;
-  if (feedbackIsCurrent(week, ACTS)) {
+  if (feedbackIsCurrent(week, visible)) {
     toast("Feedback already matches this week's sessions.");
     return;
   }
@@ -3375,7 +3530,7 @@ async function requestWeekFeedback() {
     toast("Sign in to ask the coach.", true);
     return;
   }
-  const snapshot = feedbackSnapshot(week, ACTS, today());
+  const snapshot = feedbackSnapshot(week, visible, today());
   FEEDBACK_STATUS = "writing";
   render(true);
   try {
@@ -3878,6 +4033,7 @@ function render(force = false) {
       || (route === "connections" && a.dataset.route === "profile");
     a.classList.toggle("active", active);
   });
+  updateNavSyncButton();
   const badge = document.querySelector(".nav-badge");
   const pending = pendingChanges().length;
   if (badge) {
@@ -4253,6 +4409,10 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (btn.dataset.action === "import") document.getElementById("csv-input").click();
+  if (btn.dataset.action === "nav-sync") {
+    await runNavSync();
+    return;
+  }
   if (btn.dataset.action === "garmin-sync") {
     if (!GARMIN.connected) {
       toast("Connect Garmin first on the Connections page.");
@@ -4262,36 +4422,9 @@ document.addEventListener("click", async (e) => {
     const syncButtons = document.querySelectorAll("[data-action=garmin-sync]");
     syncButtons.forEach((el) => { el.disabled = true; });
     try {
-      const fullKey = `garmin-full-gear:${CURRENT_USER_ID || "anon"}`;
-      const full = localStorage.getItem(fullKey) !== "done";
-      const data = await invokeGarmin({ action: "sync", full });
-      if (data?.full && !String(data.lastSyncStatus || "").includes("Gear matching paused")) {
-        localStorage.setItem(fullKey, "done");
-      }
-      GARMIN = {
-        connected: true,
-        lastSyncAt: data.lastSyncAt || null,
-        lastSyncStatus: data.lastSyncStatus || null,
-        lastError: data.lastError || null,
-        loaded: true,
-      };
-      applyGarminContext(data);
-      ACTS = await loadActivities();
-      try { await loadWellness(); } catch {}
-      try { GEAR = await loadGear(); } catch {}
-      try { CHANGES = await loadChanges(); } catch {}
+      const message = await performGarminSync();
       render(true);
-      const n = data.added || 0;
-      const base = n
-        ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Garmin (${data.updated || 0} updated).`
-        : (data.total ? `Garmin sync complete — ${data.updated || 0} already known.` : "Garmin sync complete — no activities in range.");
-      const gearBits = [];
-      if (data.gearAssigned) gearBits.push(`linked gear on ${data.gearAssigned}`);
-      if (data.gearCreated) gearBits.push(`added ${data.gearCreated} from Garmin`);
-      if (Array.isArray(data.wellness) && data.wellness.length) gearBits.push("recovery updated");
-      if (data.metrics?.vo2_run) gearBits.push(`VO2 ${data.metrics.vo2_run}`);
-      if (data.splitsAdded) gearBits.push(`${data.splitsAdded} run${data.splitsAdded === 1 ? "" : "s"} with splits`);
-      toast(gearBits.length ? `${base} ${gearBits.join(", ")}.` : base);
+      toast(message);
     } catch (err) {
       GARMIN.lastError = err.message;
       render(true);
@@ -4325,23 +4458,9 @@ document.addEventListener("click", async (e) => {
     const syncButtons = document.querySelectorAll("[data-action=strava-sync]");
     syncButtons.forEach((el) => { el.disabled = true; });
     try {
-      const fullKey = `strava-full:${CURRENT_USER_ID || "anon"}`;
-      const full = localStorage.getItem(fullKey) !== "done";
-      const data = await invokeStrava({ action: "sync", full });
-      if (data?.full) localStorage.setItem(fullKey, "done");
-      STRAVA = {
-        connected: true,
-        lastSyncAt: data.lastSyncAt || null,
-        lastSyncStatus: data.lastSyncStatus || null,
-        lastError: data.lastError || null,
-        loaded: true,
-      };
-      ACTS = await loadActivities();
+      const message = await performStravaSync();
       render(true);
-      const n = data.added || 0;
-      toast(n
-        ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
-        : (data.total ? `Strava sync complete — ${data.updated || 0} already known.` : "Strava sync complete — no activities in range."));
+      toast(message);
     } catch (err) {
       STRAVA.lastError = err.message;
       render(true);
@@ -4352,13 +4471,14 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (btn.dataset.action === "strava-disconnect") {
-    if (!confirm("Disconnect Strava? Your imported activities stay; you can reconnect with the passcode anytime.")) return;
+    if (!confirm("Disconnect Strava? Activities imported from Strava will be removed from this app. You can connect again later.")) return;
     btn.disabled = true;
     try {
       await invokeStrava({ action: "disconnect" });
-      STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+      STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+      ACTS = await loadActivities();
       render(true);
-      toast("Strava disconnected.");
+      toast("Strava disconnected. Imported activities were removed.");
     } catch (err) {
       toast(err.message || "Could not disconnect Strava.", true);
     } finally {
@@ -4614,6 +4734,7 @@ document.addEventListener("submit", async (e) => {
         action: "connect_url",
         passcode: stravaForm.passcode.value,
         redirectUri: stravaRedirectUri(),
+        shareWithCoach: !!stravaForm.shareWithCoach?.checked,
       });
       if (!data?.url) throw new Error("Could not start Strava connect.");
       location.href = data.url;
@@ -4830,6 +4951,23 @@ document.addEventListener("change", async (e) => {
     syncGearNamePlaceholder(gearType.form);
     return;
   }
+  const share = e.target.closest("[data-action=strava-share]");
+  if (share) {
+    const next = !!share.checked;
+    share.disabled = true;
+    try {
+      const data = await invokeStrava({ action: "share", shareWithCoach: next });
+      STRAVA.shareWithCoach = !!data.shareWithCoach;
+      render(true);
+      toast(next ? "Strava summaries can go to the AI coach." : "Strava sessions stay in your log only.");
+    } catch (err) {
+      share.checked = !next;
+      toast(err.message || "Could not update Strava sharing.", true);
+    } finally {
+      share.disabled = false;
+    }
+    return;
+  }
   const sel = e.target.closest("[data-action=assign-gear]");
   if (!sel) return;
   try {
@@ -4957,7 +5095,7 @@ window.resetApp = function resetApp() {
     localStorage.removeItem(`training-metrics:${CURRENT_USER_ID || "anon"}`);
   } catch { /* ignore */ }
   GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-  STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+  STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
   STRAVA_CALLBACK_HANDLED = false;
   PLAN_OPEN_WEEKS = null;
   PLAN_FOCUS_WEEK = null;

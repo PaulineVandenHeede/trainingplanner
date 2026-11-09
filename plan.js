@@ -525,6 +525,7 @@ function defaultExtraDay(form, key) {
     if (k === key) return [];
     return parseDays(weekdayField(form, k)?.value);
   }));
+  parseDays(fieldValue(form, "busy_weekdays")).forEach((d) => used.add(d));
   const prefer = [2, 1, 3, 0, 4, 6, 5];
   return prefer.find((d) => !used.has(d)) ?? 2;
 }
@@ -843,9 +844,9 @@ function paintWeekBlocks(form) {
   const rows = [];
   [["run", "Run"], ["swim", "Swim"], ["bike", "Bike"]].forEach(([key, label]) => {
     const extra = extras.includes(key) && !primary.includes(key);
-    if (extra && !parseDays(weekdayField(form, key)?.value).length) addExtraDiscipline(form, key, true);
     if (primary.includes(key) || extras.includes(key)) rows.push([key, label, extra]);
   });
+  releaseBusyDays(form);
   if (strength) rows.push(["strength", "Strength", false]);
   if (sport || rows.length) rows.push(["busy", "Busy", false]);
   const showWeek = !!sport || rows.some(([k]) => k !== "busy");
@@ -871,11 +872,11 @@ function paintWeekBlocks(form) {
   const notes = typeof trainingOverlapNotes === "function" ? trainingOverlapNotes(sport, blocks) : { warns: [], info: [] };
   box.innerHTML = `
     <table class="week-picker">
-      <thead><tr><th></th>${WEEKDAY_NAMES.map((d) => `<th>${d}</th>`).join("")}</tr></thead>
+      <thead><tr><th></th>${WEEKDAY_NAMES.map((d) => `<th>${d}</th>`).join("")}<th></th></tr></thead>
       <tbody>
         ${rows.map(([key, label, extra]) => `
           <tr class="${key === "busy" ? "busy-row" : ""}">
-            <th>${label}${extra ? `<button class="row-remove" type="button" data-remove-discipline="${key}" aria-label="Remove ${label}">×</button>` : ""}</th>
+            <th>${label}</th>
             ${WEEKDAY_NAMES.map((_, i) => {
               const on = blocks[key].includes(i);
               const isLong = key === "run" && on && longDay === i;
@@ -883,40 +884,38 @@ function paintWeekBlocks(form) {
               const overlap = on && overlapDays.has(i);
               const risky = overlap && notes.warns.some((w) => w.startsWith(WEEKDAY_NAMES[i]));
               const mark = isLong ? "L" : on ? "✓" : "";
-              return `<td><button class="day-toggle ${on ? "active" : ""} ${isLong ? "long-on" : ""} ${key === "busy" && on ? "busy-on" : ""} ${blocked ? "day-busy" : ""} ${overlap ? (risky ? "overlap-warn" : "overlap-ok") : ""}" type="button" data-block="${key}" data-day="${i}" aria-pressed="${on}" title="${isLong ? "Long run day" : ""}" ${blocked ? "disabled" : ""}>${mark}</button></td>`;
+              const title = blocked
+                ? "Busy — this day stays clear"
+                : key === "busy"
+                  ? (on ? "Unmark this busy day" : "Mark this day busy")
+                  : (on ? `Remove ${label.toLowerCase()} on ${WEEKDAY_NAMES[i]}` : `Add ${label.toLowerCase()} on ${WEEKDAY_NAMES[i]}`);
+              return `<td><button class="day-toggle ${on ? "active" : ""} ${isLong ? "long-on" : ""} ${key === "busy" && on ? "busy-on" : ""} ${blocked ? "day-busy" : ""} ${overlap ? (risky ? "overlap-warn" : "overlap-ok") : ""}" type="button" data-block="${key}" data-day="${i}" aria-pressed="${on}" title="${title}" ${blocked ? "disabled" : ""}>${mark}</button></td>`;
             }).join("")}
+            <td class="row-end">${extra ? `<button class="row-remove" type="button" data-remove-discipline="${key}" aria-label="Remove ${label} line" title="Remove ${label}">×</button>` : ""}</td>
           </tr>`).join("")}
       </tbody>
-    </table>`;
+    </table>
+    ${longRunPicker(blocks, longDay)}`;
   paintExtraDisciplineChoices(form, primary, extras);
   const info = document.getElementById("overlap-info");
   const warn = document.getElementById("overlap-warn");
   const hint = document.getElementById("week-blocks-hint");
   if (hint) {
-    const sportLabel = (window.SPORT_LABEL && window.SPORT_LABEL[sport]) || sport;
-    const proposed = (blocks.run || []).map((i) => WEEKDAY_NAMES[i]).join(", ");
     const busyLabel = (blocks.busy || []).map((i) => WEEKDAY_NAMES[i]).join(", ");
     const longLabel = longDay != null ? WEEKDAY_NAMES[longDay] : "";
+    const longNote = longLabel && primary.includes("run") ? ` Long run: ${longLabel}.` : "";
     if (busyLabel) {
-      hint.textContent = `Busy: ${busyLabel}. Those days stay clear of training.`;
-    } else if (needsLong && primary.includes("run")) {
-      hint.textContent = longLabel
-        ? `Long run: ${longLabel} (tap a run day twice to change). Busy days stay clear of training.`
-        : "Tap a run day twice to mark your long-run day (shown in blue). Busy days stay clear of training.";
-    } else if (sport === "triathlon") {
-      hint.textContent = "Tap the days for each session. Tap a run day twice for the long run. Mark busy days you can’t train.";
-    } else if (proposed && (sport === "run" || primary.includes("run"))) {
-      hint.textContent = `${sportLabel || "Run"} days proposed: ${proposed}. Tap twice on a day for the long run, or mark busy days.`;
-    } else if (primary.length) {
-      hint.textContent = `Defaults for ${sportLabel || "this event"}. Tap days to change, and mark busy days you can’t train.`;
+      hint.textContent = `Busy: ${busyLabel}. Those days stay clear of training.${longNote}`;
+    } else if (needsLong && primary.includes("run") && !longLabel) {
+      hint.textContent = "Tap a run day to add it. This distance needs a long run — pick the day under the week.";
     } else {
-      hint.textContent = "Tap the days you want to train. Mark busy days you can’t train.";
+      hint.textContent = `Tap a day to add or remove it. Mark busy days you can’t train.${longNote}`;
     }
   }
   if (info) info.textContent = notes.info.join(" ");
   if (warn) {
     const longWarn = needsLong && (longDay == null || !blocks.run.includes(longDay))
-      ? "This distance needs a long-run day — tap a run day twice to mark it."
+      ? "This distance needs a long-run day — tap at least one run day, then choose it under the week."
       : "";
     warn.textContent = [longWarn, ...notes.warns].filter(Boolean).join(" ");
   }
@@ -932,6 +931,20 @@ function paintExtraDisciplineChoices(form, primary, extras) {
   const labels = { run: "Run", swim: "Swim", bike: "Bike" };
   box.innerHTML = available.map((k) => `
     <button class="choice-btn" type="button" data-add-discipline="${k}">${labels[k]}</button>`).join("");
+}
+
+function longRunPicker(blocks, longDay) {
+  const run = blocks.run || [];
+  if (run.length < 2) return "";
+  return `
+    <div class="long-run-pick">
+      <span>Long run</span>
+      ${run.map((i) => `<button class="choice-btn${longDay === i ? " active" : ""}" type="button" data-set-long="${i}">${WEEKDAY_NAMES[i]}</button>`).join("")}
+    </div>`;
+}
+
+function releaseBusyDays(form) {
+  parseDays(fieldValue(form, "busy_weekdays")).forEach((day) => clearDayFromTraining(form, day));
 }
 
 function clearDayFromTraining(form, day) {
@@ -954,30 +967,7 @@ function toggleBlockDay(form, key, day) {
   const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
   if (!field) return;
   const days = parseDays(field.value);
-  const isOn = days.includes(day);
-  const longDay = currentLongWeekday(form);
-
-  // Run days: off → on, on → long, long → off.
-  if (key === "run" && isOn) {
-    form.dataset.blocksPicked = "1";
-    if (longDay !== day) {
-      setLongWeekday(form, day);
-      form.dataset.longPicked = "1";
-      paintWeekBlocks(form);
-      updateTrainingAdvice();
-      return;
-    }
-    const next = days.filter((d) => d !== day);
-    field.value = next.join(",");
-    setRunDays(form, next.length || "");
-    form.dataset.longPicked = "1";
-    ensureLongWeekday(form, next);
-    paintWeekBlocks(form);
-    updateTrainingAdvice();
-    return;
-  }
-
-  const turningOn = !isOn;
+  const turningOn = !days.includes(day);
   if (key === "busy" && turningOn) clearDayFromTraining(form, day);
   if (key !== "busy" && turningOn) {
     const busyField = fieldOf(form, "busy_weekdays");
@@ -990,8 +980,19 @@ function toggleBlockDay(form, key, day) {
   form.dataset.blocksPicked = "1";
   if (key === "run") {
     setRunDays(form, next.length || "");
-    if (!form.dataset.longPicked && next.length) ensureLongWeekday(form, next, 5);
+    if (!turningOn && currentLongWeekday(form) === day) ensureLongWeekday(form, next);
+    else ensureLongWeekday(form, next, currentLongWeekday(form));
   }
+  paintWeekBlocks(form);
+  updateTrainingAdvice();
+}
+
+function setLongRunDay(form, day) {
+  const runDays = parseDays(fieldValue(form, "run_weekdays"));
+  if (!runDays.includes(day)) return;
+  setLongWeekday(form, day);
+  form.dataset.longPicked = "1";
+  form.dataset.blocksPicked = "1";
   paintWeekBlocks(form);
   updateTrainingAdvice();
 }
@@ -1089,7 +1090,7 @@ function updateTrainingAdvice() {
     if (rec && !b.querySelector(".rec")) b.insertAdjacentHTML("beforeend", `<span class="rec">recommended</span>`);
     if (!rec) b.querySelector(".rec")?.remove();
   });
-  if (advice.showRunDays && !form.dataset.runDaysPicked) setRunDays(form, advice.recDays);
+  if (advice.showRunDays && !form.dataset.runDaysPicked && !form.dataset.blocksPicked) setRunDays(form, advice.recDays);
   const chosen = Number(fieldValue(form, "run_days"));
   if (daysHint) {
     const belowMin = chosen > 0 && chosen < advice.minDays;
@@ -1112,10 +1113,7 @@ function updateTrainingAdvice() {
     }
   }
   syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
-  const sport = setupSport(form);
-  const primary = primaryDisciplines(sport);
-  const needsPrimary = primary.some((key) => !parseDays(fieldValue(form, `${key}_weekdays`)).length);
-  if (!form.dataset.blocksPicked || needsPrimary) applyDefaultBlocks(form);
+  if (!form.dataset.blocksPicked) applyDefaultBlocks(form);
   else paintWeekBlocks(form);
   saveSetupDraft(form);
 }
@@ -1926,6 +1924,12 @@ document.addEventListener("click", (e) => {
     updateTrainingAdvice();
     return;
   }
+  const longBtn = e.target.closest("[data-set-long]");
+  if (longBtn && form) {
+    setLongRunDay(form, Number(longBtn.dataset.setLong));
+    saveSetupDraft(form);
+    return;
+  }
   const dayToggle = e.target.closest("[data-block][data-day]");
   if (dayToggle && form) {
     toggleBlockDay(form, dayToggle.dataset.block, Number(dayToggle.dataset.day));
@@ -2010,7 +2014,7 @@ document.addEventListener("submit", async (e) => {
     const longDay = currentLongWeekday(form);
     const runDays = visibleWeekdays(form, "run");
     if (longDay == null || !runDays.includes(longDay)) {
-      errorEl.textContent = "Tap a run day twice to mark your long-run day.";
+      errorEl.textContent = "Choose a run day for your long run.";
       return;
     }
   }

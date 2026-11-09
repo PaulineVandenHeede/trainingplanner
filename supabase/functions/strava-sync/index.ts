@@ -9,7 +9,7 @@ const CORS = {
 const STRAVA_AUTH = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN = "https://www.strava.com/oauth/token";
 const STRAVA_API = "https://www.strava.com/api/v3";
-const STRAVA_SCOPES = "read,activity:read_all,profile:read_all";
+const STRAVA_SCOPES = "read,activity:read_all";
 const FIRST_SYNC_DAYS = 90;
 const PAGE_SIZE = 50;
 const DETAIL_BUDGET = 40;
@@ -19,7 +19,7 @@ const STATE_TTL_MS = 15 * 60 * 1000;
 const TEMP = {
   STRAVA_CLIENT_ID: "TEMP_STRAVA_CLIENT_ID",
   STRAVA_CLIENT_SECRET: "TEMP_STRAVA_CLIENT_SECRET",
-  STRAVA_CONNECT_PASSCODE: "tri-friends-70.3",
+  STRAVA_CONNECT_PASSCODE: "TEMP_STRAVA_CONNECT_PASSCODE",
   STRAVA_REDIRECT_URI: "http://localhost:8000/connections",
   STRAVA_WEBHOOK_VERIFY_TOKEN: "temp-strava-webhook-verify",
 };
@@ -67,6 +67,7 @@ Deno.serve(async (req) => {
     code?: string;
     state?: string;
     full?: boolean;
+    shareWithCoach?: boolean;
   } = {};
   try {
     body = await req.json();
@@ -78,7 +79,12 @@ Deno.serve(async (req) => {
   try {
     if (action === "status") return json(await handleStatus(admin, user.id));
     if (action === "connect_url") {
-      return json(await handleConnectUrl(user.id, body.passcode || "", body.redirectUri || ""));
+      return json(await handleConnectUrl(
+        user.id,
+        body.passcode || "",
+        body.redirectUri || "",
+        body.shareWithCoach === true,
+      ));
     }
     if (action === "exchange") {
       return json(await handleExchange(admin, user.id, body.code || "", body.state || "", body.redirectUri || ""));
@@ -96,7 +102,7 @@ Deno.serve(async (req) => {
 async function handleStatus(admin: Sb, userId: string) {
   const { data, error } = await admin
     .from("strava_connections")
-    .select("athlete_id,last_sync_at,last_sync_status,last_error,updated_at")
+    .select("athlete_id,last_sync_at,last_sync_status,last_error,updated_at,share_with_coach")
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -107,18 +113,19 @@ async function handleStatus(admin: Sb, userId: string) {
     lastSyncStatus: data?.last_sync_status || null,
     lastError: data?.last_error || null,
     updatedAt: data?.updated_at || null,
+    shareWithCoach: data?.share_with_coach === true,
     passcodeRequired: true,
   };
 }
 
-async function handleConnectUrl(userId: string, passcode: string, redirectUri: string) {
+async function handleConnectUrl(userId: string, passcode: string, redirectUri: string, shareWithCoach: boolean) {
   assertPasscode(passcode);
   const clientId = requireEnv("STRAVA_CLIENT_ID");
   const expectedRedirect = requireEnv("STRAVA_REDIRECT_URI");
   if (!redirectUri || normalizeUri(redirectUri) !== normalizeUri(expectedRedirect)) {
     throw new Error("Redirect URI is not configured for this app.");
   }
-  const state = await signState(userId);
+  const state = await signState(userId, shareWithCoach);
   const url = new URL(STRAVA_AUTH);
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("response_type", "code");
@@ -137,7 +144,7 @@ async function handleExchange(
   redirectUri: string,
 ) {
   if (!code) throw new Error("Missing Strava authorization code.");
-  await verifyState(userId, state);
+  const statePayload = await verifyState(userId, state);
   const expectedRedirect = requireEnv("STRAVA_REDIRECT_URI");
   if (redirectUri && normalizeUri(redirectUri) !== normalizeUri(expectedRedirect)) {
     throw new Error("Redirect URI is not configured for this app.");
@@ -164,6 +171,7 @@ async function handleExchange(
     refresh_token: token.refresh_token,
     expires_at: new Date(token.expires_at * 1000).toISOString(),
     scope: token.scope || STRAVA_SCOPES,
+    share_with_coach: statePayload.share === true,
     last_error: null,
     updated_at: now,
   });
@@ -172,6 +180,7 @@ async function handleExchange(
 }
 
 async function handleDisconnect(admin: Sb, userId: string) {
+  const removed = await deleteStravaActivities(admin, userId);
   const { data: conn } = await admin
     .from("strava_connections")
     .select("access_token")
@@ -190,7 +199,7 @@ async function handleDisconnect(admin: Sb, userId: string) {
   }
   const { error } = await admin.from("strava_connections").delete().eq("user_id", userId);
   if (error) throw new Error(error.message);
-  return { ok: true, connected: false };
+  return { ok: true, connected: false, removed };
 }
 
 async function handleSync(admin: Sb, userId: string, full = false) {
@@ -468,7 +477,6 @@ function mapStravaToRow(
     Source: "strava-api",
     stravaActivityId: Number.isFinite(id) ? id : null,
     stravaTypeKey: typeKey,
-    strava: detail || summary,
   };
 
   return {
@@ -537,10 +545,21 @@ function stravaConfig(name: keyof typeof TEMP) {
   return fromEnv || TEMP[name];
 }
 
+function secretsEqual(a: string, b: string): boolean {
+  const aa = new TextEncoder().encode(a);
+  const bb = new TextEncoder().encode(b);
+  const len = Math.max(aa.length, bb.length);
+  let diff = aa.length === bb.length ? 0 : 1;
+  for (let i = 0; i < len; i++) {
+    diff |= (aa[i] || 0) ^ (bb[i] || 0);
+  }
+  return diff === 0;
+}
+
 function assertPasscode(passcode: string) {
   const expected = stravaConfig("STRAVA_CONNECT_PASSCODE");
   const got = String(passcode || "");
-  if (!got || !timingSafeEqual(got, expected)) {
+  if (!got || !secretsEqual(got, expected)) {
     throw new Error("Wrong connect passcode.");
   }
 }
@@ -567,12 +586,13 @@ function normalizeUri(uri: string) {
   }
 }
 
-async function signState(userId: string) {
+async function signState(userId: string, shareWithCoach: boolean) {
   const secret = requireEnv("STRAVA_CLIENT_SECRET");
   const payload = {
     uid: userId,
     exp: Date.now() + STATE_TTL_MS,
     n: crypto.randomUUID(),
+    share: shareWithCoach === true,
   };
   const body = b64url(JSON.stringify(payload));
   const sig = await hmac(secret, body);
@@ -584,8 +604,8 @@ async function verifyState(userId: string, state: string) {
   const [body, sig] = state.split(".", 2);
   const secret = requireEnv("STRAVA_CLIENT_SECRET");
   const expected = await hmac(secret, body);
-  if (!timingSafeEqual(sig, expected)) throw new Error("Invalid or expired Strava connect session. Try again.");
-  let payload: { uid?: string; exp?: number };
+  if (!secretsEqual(sig, expected)) throw new Error("Invalid or expired Strava connect session. Try again.");
+  let payload: { uid?: string; exp?: number; share?: boolean };
   try {
     const padded = body + "=".repeat((4 - (body.length % 4)) % 4);
     payload = JSON.parse(atob(padded.replace(/-/g, "+").replace(/_/g, "/")));
@@ -596,6 +616,30 @@ async function verifyState(userId: string, state: string) {
   if (!payload.exp || Date.now() > payload.exp) {
     throw new Error("Strava connect session expired. Enter the passcode again.");
   }
+  return { share: payload.share === true };
+}
+
+async function deleteStravaActivities(admin: Sb, userId: string) {
+  const { data, error } = await admin
+    .from("activities")
+    .select("started_at")
+    .eq("user_id", userId)
+    .eq("raw->>Source", "strava-api");
+  if (error) throw new Error(error.message);
+  const started = [...new Set((data || []).map((row) => row.started_at).filter(Boolean))];
+  for (const startedAt of started) {
+    const { error: gearErr } = await admin.from("activity_gear").delete().eq("user_id", userId).eq("activity", startedAt);
+    if (gearErr) throw new Error(gearErr.message);
+    const { error: noteErr } = await admin.from("activity_feedback").delete().eq("user_id", userId).eq("started_at", startedAt);
+    if (noteErr) throw new Error(noteErr.message);
+  }
+  const { error: delErr } = await admin
+    .from("activities")
+    .delete()
+    .eq("user_id", userId)
+    .eq("raw->>Source", "strava-api");
+  if (delErr) throw new Error(delErr.message);
+  return started.length;
 }
 
 async function hmac(secret: string, message: string) {
@@ -618,19 +662,6 @@ function b64url(value: string) {
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-
-const timingSafe = {
-  equal(a: string, b: string) {
-    const aa = new TextEncoder().encode(a);
-    const bb = new TextEncoder().encode(b);
-    const len = Math.max(aa.length, bb.length);
-    let diff = aa.length === bb.length ? 0 : 1;
-    for (let i = 0; i < len; i++) {
-      diff |= (aa[i] || 0) ^ (bb[i] || 0);
-    }
-    return diff === 0;
-  },
-};
 
 function stravaError(step: string, status: number, body: string) {
   let detail = body.slice(0, 200);

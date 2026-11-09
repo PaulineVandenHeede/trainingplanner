@@ -46,6 +46,37 @@ function compactActs(rows: Record<string, unknown>[]) {
   }));
 }
 
+function startedKey(value: unknown) {
+  return String(value || "").replace("T", " ").slice(0, 19);
+}
+
+/** Strava rows stay out of the coach prompt unless this athlete opted in. */
+async function stravaBlockedStarts(userClient: ReturnType<typeof createClient>, userId: string) {
+  const url = Deno.env.get("SUPABASE_URL") || "";
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  let share = false;
+  if (url && key) {
+    const admin = createClient(url, key);
+    const { data: conn } = await admin
+      .from("strava_connections")
+      .select("share_with_coach")
+      .eq("user_id", userId)
+      .maybeSingle();
+    share = conn?.share_with_coach === true;
+  }
+  if (share) return new Set<string>();
+  const { data } = await userClient
+    .from("activities")
+    .select("started_at")
+    .eq("user_id", userId)
+    .eq("raw->>Source", "strava-api");
+  return new Set((data || []).map((row) => startedKey(row.started_at)));
+}
+
+function omitStravaActs(rows: Record<string, unknown>[] | null, blocked: Set<string>) {
+  return (rows || []).filter((row) => !blocked.has(startedKey(row.started_at)));
+}
+
 function compactWeeks(weeks: Record<string, unknown>[]) {
   return (weeks || []).map((w) => {
     const days = Array.isArray(w.days) ? w.days : [];
@@ -194,9 +225,11 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
   const [{ data: plan }, { data: changes }, { data: acts }] = await Promise.all([
     userClient.from("plans").select("event_name, event_date, start_date, run_days, weekly_km, paces, weeks, notes").eq("user_id", userId).maybeSingle(),
     userClient.from("changes").select("id, type, summary, details, status, created_at").eq("user_id", userId).eq("status", "pending").order("created_at", { ascending: false }),
-    userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(40),
+    userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(200),
   ]);
   if (!plan) return json({ error: "No plan" }, 400);
+  const blocked = await stravaBlockedStarts(userClient, userId);
+  const visibleActs = omitStravaActs(acts, blocked);
 
   const start = new Date(`${plan.start_date}T00:00:00`);
   const today = new Date();
@@ -221,7 +254,7 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
     JSON.stringify(changes || []),
     "",
     "Recent activities:",
-    JSON.stringify(compactActs(acts || [])),
+    JSON.stringify(compactActs(visibleActs)),
     "",
     "Rules:",
     "- Keep the long run as the priority. Raise weekly volume by about 10% at most. No back-to-back long runs.",
@@ -326,9 +359,11 @@ async function handleProgress(userClient: ReturnType<typeof createClient>, userI
 
   const [{ data: plan }, { data: acts }] = await Promise.all([
     userClient.from("plans").select("event_name, event_date, start_date, weekly_km, notes, weeks").eq("user_id", userId).maybeSingle(),
-    userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(40),
+    userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(200),
   ]);
   if (!plan) return json({ error: "No plan" }, 400);
+  const blocked = await stravaBlockedStarts(userClient, userId);
+  const visibleActs = omitStravaActs(acts, blocked);
 
   const prompt = [
     "You are the training-plan coach for this athlete. Do not write code or files. Do not change the plan.",
@@ -342,7 +377,7 @@ async function handleProgress(userClient: ReturnType<typeof createClient>, userI
     JSON.stringify(snapshot || {}),
     "",
     "Recent activities:",
-    JSON.stringify(compactActs(acts || [])),
+    JSON.stringify(compactActs(visibleActs)),
     "",
     "Weeks:",
     JSON.stringify(compactWeeks(plan.weeks || [])),
@@ -422,7 +457,8 @@ function feedbackSessions(snapshot: Record<string, unknown> | null) {
 async function handleFeedback(userClient: ReturnType<typeof createClient>, userId: string, snapshot: Record<string, unknown> | null) {
   const week = Number(snapshot?.week);
   const fingerprint = snapshot && typeof snapshot.fingerprint === "string" ? snapshot.fingerprint : "";
-  const sessions = feedbackSessions(snapshot);
+  const blocked = await stravaBlockedStarts(userClient, userId);
+  const sessions = feedbackSessions(snapshot).filter((row) => !blocked.has(row.started_at));
   if (!Number.isInteger(week) || week < 1 || !sessions.length || !fingerprint) {
     return json({ error: "Nothing to review this week" }, 400);
   }

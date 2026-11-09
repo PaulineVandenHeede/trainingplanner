@@ -62,6 +62,12 @@ async function handleEvent(event: Record<string, unknown>) {
     if (updates.authorized === "false" || updates.authorized === false) {
       const admin = adminClient();
       if (Number.isFinite(ownerId)) {
+        const { data: conn } = await admin
+          .from("strava_connections")
+          .select("user_id")
+          .eq("athlete_id", ownerId)
+          .maybeSingle();
+        if (conn?.user_id) await deleteStravaActivities(admin, conn.user_id);
         await admin.from("strava_connections").delete().eq("athlete_id", ownerId);
       }
     }
@@ -139,6 +145,28 @@ async function getActivity(accessToken: string, id: number) {
   return await res.json() as Record<string, unknown>;
 }
 
+async function deleteStravaActivities(admin: Sb, userId: string) {
+  const { data, error } = await admin
+    .from("activities")
+    .select("started_at")
+    .eq("user_id", userId)
+    .eq("raw->>Source", "strava-api");
+  if (error) throw new Error(error.message);
+  const started = [...new Set((data || []).map((row) => row.started_at).filter(Boolean))];
+  for (const startedAt of started) {
+    const { error: gearErr } = await admin.from("activity_gear").delete().eq("user_id", userId).eq("activity", startedAt);
+    if (gearErr) throw new Error(gearErr.message);
+    const { error: noteErr } = await admin.from("activity_feedback").delete().eq("user_id", userId).eq("started_at", startedAt);
+    if (noteErr) throw new Error(noteErr.message);
+  }
+  const { error: delErr } = await admin
+    .from("activities")
+    .delete()
+    .eq("user_id", userId)
+    .eq("raw->>Source", "strava-api");
+  if (delErr) throw new Error(delErr.message);
+}
+
 async function deleteByStravaId(admin: Sb, userId: string, stravaId: number) {
   const { data } = await admin
     .from("activities")
@@ -147,6 +175,8 @@ async function deleteByStravaId(admin: Sb, userId: string, stravaId: number) {
   for (const row of data || []) {
     const raw = row.raw && typeof row.raw === "object" ? row.raw as Record<string, unknown> : {};
     if (Number(raw.stravaActivityId) === stravaId) {
+      await admin.from("activity_gear").delete().eq("user_id", userId).eq("activity", row.started_at);
+      await admin.from("activity_feedback").delete().eq("user_id", userId).eq("started_at", row.started_at);
       await admin.from("activities")
         .delete()
         .eq("user_id", userId)
@@ -213,7 +243,6 @@ function mapStravaToRow(
       Source: "strava-api",
       stravaActivityId: Number.isFinite(id) ? id : null,
       stravaTypeKey: typeKey,
-      strava: src,
     },
   };
 }

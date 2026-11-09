@@ -703,6 +703,30 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 .strava-form .form-error { margin: 0; min-height: 0; }
 .garmin-form .form-error:empty,
 .strava-form .form-error:empty { display: none; }
+.strava-form .own-risk-field { margin-top: 2px; }
+.strava-connect {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  width: 237px;
+  height: 48px;
+  cursor: pointer;
+  justify-self: start;
+}
+.strava-connect img {
+  display: block;
+  width: 237px;
+  height: 48px;
+}
+.strava-view {
+  color: #FC5200;
+  font-weight: 700;
+  text-decoration: underline;
+  font-size: 13px;
+  margin: 0 8px;
+  white-space: nowrap;
+}
 .garmin-key-replace { margin-top: 14px; }
 .garmin-key-replace summary { cursor: pointer; }
 .nav-btn.sync-btn:disabled { opacity: 0.55; cursor: wait; }
@@ -877,12 +901,18 @@ body.onboarding .nav-sep { display: none; }
 .extra-discipline { display: grid; gap: 6px; margin-top: 10px; }
 .extra-discipline .muted { margin: 0; }
 .week-picker th { position: relative; }
+.week-picker .row-end { width: 36px; padding-left: 6px; }
 .row-remove {
-  margin-left: 4px; border: none; background: transparent; color: var(--muted);
-  font: inherit; font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
-  vertical-align: middle;
+  width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); font: inherit; font-size: 16px;
+  line-height: 1; cursor: pointer; padding: 0;
 }
-.row-remove:hover { color: var(--peak); }
+.row-remove:hover { color: var(--peak); border-color: var(--peak); }
+.long-run-pick {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px;
+}
+.long-run-pick span { font-size: 12px; color: var(--muted); }
+.long-run-pick .choice-btn { padding: 4px 10px; font-size: 12px; }
 .search-results {
   list-style: none; margin: 0; padding: 4px; border: 1px solid var(--line);
   border-radius: 12px; background: var(--bg); max-height: 220px; overflow: auto;
