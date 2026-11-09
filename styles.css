@@ -256,11 +256,16 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 .icon-button:hover { background: var(--bg); color: var(--peak); }
 
 .event-form {
-  display: grid; grid-template-columns: 160px 1fr 130px 140px; gap: 10px;
+  display: grid; grid-template-columns: 160px 1fr; gap: 10px;
   padding: 14px; margin-bottom: 14px; background: var(--bg); border-radius: 12px;
 }
 .event-form[hidden] { display: none; }
 .event-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.event-form fieldset {
+  border: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.event-form legend { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .event-form .full { grid-column: 1 / -1; }
 .event-form input, .event-form select {
   font: inherit; color: var(--text); background: var(--surface);
@@ -268,6 +273,16 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 }
 .event-form input:focus, .event-form select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .event-form.from-public .event-note-field { display: none; }
+.event-form .event-custom-km[hidden] { display: none; }
+.similar-event-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  display: grid;
+  gap: 8px;
+}
+.similar-event-card p { margin: 0; }
 .event-personal {
   display: grid; gap: 12px;
   padding: 14px; margin-bottom: 14px; background: var(--bg); border-radius: 12px;
@@ -300,7 +315,19 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 .review .button:disabled { opacity: 0.55; cursor: wait; }
 .coach-text { font-size: 15px; line-height: 1.6; }
 .auto-text { font-size: 13.5px; color: var(--muted); }
-.review.card { border-left: 4px solid var(--accent); }
+.review.card {
+  position: relative;
+  overflow: hidden;
+}
+.review.card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+}
 .review.inline { margin-bottom: 12px; padding: 10px 12px; background: var(--bg); border-radius: 10px; }
 .review.inline .coach-text { font-size: 14px; }
 
@@ -596,6 +623,51 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 .legend i.z-event { background: var(--event); }
 
 .gear-add[hidden] { display: none; }
+.gear-weight-field[hidden] { display: none; }
+.gear-shoe-fields[hidden] { display: none; }
+.gear-shoe-fields {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end;
+}
+.gear-shoe-fields .setup-hint,
+.gear-shoe-fields .check-row { grid-column: 1 / -1; }
+.gear-shoe-fields .check-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 13.5px; color: var(--text); margin: 0;
+}
+.gear-shoe-fields .check-row input { margin-top: 3px; }
+.shoe-wear { margin-top: 8px; max-width: 320px; }
+.shoe-wear-meta {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px; color: var(--muted); margin-bottom: 4px;
+}
+.shoe-wear-track {
+  height: 8px; border-radius: 999px; background: var(--line); overflow: hidden;
+}
+.shoe-wear-fill {
+  display: block; height: 100%; border-radius: inherit;
+  background: var(--accent); transition: width 0.2s ease;
+}
+.shoe-wear[data-level="warn"] .shoe-wear-fill { background: #c9851a; }
+.shoe-wear[data-level="over"] .shoe-wear-fill { background: #c44b3c; }
+.gear-wear-alert { border-left: 4px solid #c9851a; }
+.gear-wear-list { margin: 8px 0 0; padding-left: 1.1em; }
+.gear-wear-list li { margin: 0 0 6px; }
+.units-field { margin: 12px 0 0; border: 0; padding: 0; }
+.units-field legend { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.units-choice { flex-wrap: wrap; }
+.settings-form .units-choice { margin-bottom: 12px; }
+.gear-strength h2 { margin: 4px 0 8px; font-size: 1.15rem; }
+.gear-strength .setup-hint { margin: 8px 0 12px; }
+.gear-access-pill {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  margin: 4px 0 0; padding: 6px 10px;
+  background: var(--bg); border-radius: 8px; font-size: 14px;
+}
+.gear-quick { flex-wrap: wrap; }
+.gear-quick .choice-btn:disabled { opacity: 0.55; cursor: default; }
+.strength-gear-box { margin-top: 10px; }
+.strength-gear-box .choice-row { margin-top: 8px; flex-wrap: wrap; }
+.strength-gear-box a.choice-btn { text-decoration: none; display: inline-flex; align-items: center; }
 .gear-form-title { margin: 0 0 12px; font-size: 1.05rem; }
 .gear-form {
   display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 10px; align-items: end;
@@ -1251,6 +1323,7 @@ body.onboarding .nav-sep { display: none; }
 .event-form.from-public input[name=date],
 .event-form.from-public input[name=name],
 .event-form.from-public input[name=km],
+.event-form.from-public input[name=location],
 .event-form.from-public select[name=sport] {
   pointer-events: none; opacity: 0.85;
 }
@@ -1301,6 +1374,7 @@ body.onboarding .nav-sep { display: none; }
   .event-form .grow { grid-column: 1 / -1; }
   .event-form input, .event-form select, .event-personal input, .event-edit-form input, .busy-form input, .note-form input, .gear-form input, .gear-form select, .gear-pick select { font-size: 16px; }
   .gear-form { grid-template-columns: 1fr; }
+  .gear-shoe-fields { grid-template-columns: 1fr; }
   .gear-form .form-actions { flex-wrap: wrap; }
   .gear-list li { align-items: flex-start; }
   .busy-form, .note-form { flex-wrap: wrap; }

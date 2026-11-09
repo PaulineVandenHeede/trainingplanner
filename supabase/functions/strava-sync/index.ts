@@ -213,19 +213,32 @@ async function handleSync(admin: Sb, userId: string, full = false) {
     const access = await ensureAccessToken(admin, userId, conn);
     const after = full ? null : syncAfterEpoch(conn.last_sync_at);
     const summaries = await listActivities(access, after);
-    const known = await loadKnownKeys(admin, userId);
+    const index = await loadActivityIndex(admin, userId);
     let added = 0;
     let updated = 0;
+    let skippedDup = 0;
     let total = 0;
     let detailed = 0;
     let detailBudget = DETAIL_BUDGET;
+    const pendingGear: { startedAt: string; gearId: string; activityType: string }[] = [];
 
     for (const summary of summaries) {
       const preview = mapStravaToRow(userId, summary, null);
       if (!preview) continue;
       total += 1;
-      const key = `${preview.activity_type}|${preview.started_at}`;
-      const isNew = !known.has(key);
+      const cat = categorize(String(summary.sport_type || summary.type || preview.activity_type));
+      const exactKey = `${preview.activity_type}|${preview.started_at}`;
+      const twin = findCrossSourceTwin(index, cat, preview.started_at, preview.distance, "garmin-api");
+      if (twin) {
+        const stravaId = Number(summary.id);
+        if (Number.isFinite(stravaId)) await stampStravaIdOnTwin(admin, userId, twin, stravaId);
+        skippedDup += 1;
+        const gearId = stravaGearIdOf(summary, null);
+        if (gearId) pendingGear.push({ startedAt: twin.started_at, gearId, activityType: twin.activity_type });
+        continue;
+      }
+
+      const isNew = !index.exact.has(exactKey);
       let detail: Record<string, unknown> | null = null;
       if (isNew && detailBudget > 0) {
         const id = Number(summary.id);
@@ -245,18 +258,37 @@ async function handleSync(admin: Sb, userId: string, full = false) {
         onConflict: "user_id,activity_type,started_at",
       });
       if (error) throw new Error(error.message);
-      if (isNew) {
-        added += 1;
-        known.add(key);
-      } else {
-        updated += 1;
-      }
+      rememberActivity(index, {
+        activity_type: row.activity_type,
+        started_at: row.started_at,
+        distance: row.distance,
+        source: "strava-api",
+        raw: row.raw as Record<string, unknown>,
+      });
+      if (isNew) added += 1;
+      else updated += 1;
+      const gearId = stravaGearIdOf(summary, detail);
+      if (gearId) pendingGear.push({ startedAt: row.started_at, gearId, activityType: row.activity_type });
+    }
+
+    let gearAssigned = 0;
+    let gearCreated = 0;
+    let gearNote = "";
+    try {
+      const gear = await matchStravaGear(admin, userId, access, pendingGear);
+      gearAssigned = gear.assigned;
+      gearCreated = gear.created;
+      gearNote = gear.note ? ` ${gear.note}` : "";
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Gear matching failed";
+      gearNote = ` Gear matching skipped: ${message}`;
     }
 
     const now = new Date().toISOString();
+    const dupNote = skippedDup ? ` Skipped ${skippedDup} already saved via Garmin.` : "";
     const status = full
-      ? `Full history: ${added} added, ${Math.max(0, total - added)} already saved.`
-      : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).`;
+      ? `Full history: ${added} added, ${Math.max(0, total - added - skippedDup)} already saved.${dupNote}${gearNote}`
+      : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}`;
     await admin.from("strava_connections").update({
       last_sync_at: now,
       last_sync_status: status,
@@ -269,8 +301,11 @@ async function handleSync(admin: Sb, userId: string, full = false) {
       connected: true,
       added,
       updated,
+      skippedDup,
       total,
       detailed,
+      gearAssigned,
+      gearCreated,
       full,
       lastSyncAt: now,
       lastSyncStatus: status,
@@ -388,17 +423,275 @@ async function getActivity(accessToken: string, id: number) {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-async function loadKnownKeys(admin: Sb, userId: string) {
+type ActIndexRow = {
+  activity_type: string;
+  started_at: string;
+  distance: number | null;
+  source: string;
+  raw: Record<string, unknown>;
+};
+
+type ActIndex = {
+  exact: Set<string>;
+  rows: ActIndexRow[];
+};
+
+async function loadActivityIndex(admin: Sb, userId: string): Promise<ActIndex> {
   const { data, error } = await admin
     .from("activities")
-    .select("activity_type,started_at")
+    .select("activity_type,started_at,distance,raw")
     .eq("user_id", userId);
   if (error) throw new Error(error.message);
-  const set = new Set<string>();
+  const exact = new Set<string>();
+  const rows: ActIndexRow[] = [];
   for (const row of data || []) {
-    set.add(`${row.activity_type}|${formatStarted(row.started_at)}`);
+    const started = formatStarted(row.started_at);
+    const raw = row.raw && typeof row.raw === "object" ? row.raw as Record<string, unknown> : {};
+    const source = String(raw.Source || "");
+    const item: ActIndexRow = {
+      activity_type: String(row.activity_type || ""),
+      started_at: started,
+      distance: row.distance == null ? null : Number(row.distance),
+      source,
+      raw,
+    };
+    exact.add(`${item.activity_type}|${item.started_at}`);
+    rows.push(item);
   }
-  return set;
+  return { exact, rows };
+}
+
+function rememberActivity(index: ActIndex, row: ActIndexRow) {
+  index.exact.add(`${row.activity_type}|${row.started_at}`);
+  index.rows.push(row);
+}
+
+function startedMs(value: string) {
+  const ms = Date.parse(String(value || "").replace(" ", "T"));
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function distanceClose(a: number | null, b: number | null) {
+  if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return true;
+  if (a <= 0 || b <= 0) return true;
+  const delta = Math.abs(a - b);
+  return delta <= 0.25 || delta / Math.max(a, b) <= 0.05;
+}
+
+function findCrossSourceTwin(
+  index: ActIndex,
+  cat: string | null,
+  startedAt: string,
+  distance: number | null,
+  source: string,
+): ActIndexRow | null {
+  if (!cat) return null;
+  const want = startedMs(startedAt);
+  if (!Number.isFinite(want)) return null;
+  let best: ActIndexRow | null = null;
+  let bestDelta = Infinity;
+  for (const row of index.rows) {
+    if (row.source !== source) continue;
+    if (categorize(row.activity_type) !== cat) continue;
+    if (!distanceClose(row.distance, distance)) continue;
+    const got = startedMs(row.started_at);
+    if (!Number.isFinite(got)) continue;
+    const delta = Math.abs(got - want);
+    if (delta > 120_000) continue;
+    if (delta < bestDelta) {
+      best = row;
+      bestDelta = delta;
+    }
+  }
+  return best;
+}
+
+async function stampStravaIdOnTwin(admin: Sb, userId: string, twin: ActIndexRow, stravaId: number) {
+  if (Number(twin.raw.stravaActivityId) === stravaId) return;
+  const nextRaw = { ...twin.raw, stravaActivityId: stravaId };
+  const { error } = await admin.from("activities").update({ raw: nextRaw })
+    .eq("user_id", userId)
+    .eq("activity_type", twin.activity_type)
+    .eq("started_at", twin.started_at);
+  if (error) throw new Error(error.message);
+  twin.raw = nextRaw;
+}
+
+function stravaGearIdOf(summary: Record<string, unknown>, detail: Record<string, unknown> | null) {
+  const raw = detail?.gear_id ?? summary.gear_id;
+  const id = String(raw || "").trim();
+  if (!id || id === "none") return null;
+  return id;
+}
+
+type LocalGear = {
+  id: string;
+  type: string;
+  name: string;
+  retired: boolean;
+  strava_uuid: string | null;
+};
+
+function stravaGearType(gearId: string, gear: Record<string, unknown> | null) {
+  if (gearId.startsWith("b")) return "bike";
+  if (gearId.startsWith("g")) return "shoes";
+  const frame = gear?.frame_type;
+  if (frame != null) return "bike";
+  return "shoes";
+}
+
+function stravaGearName(gear: Record<string, unknown>, fallbackId: string) {
+  const name = String(gear.name || "").trim();
+  if (name) return name.slice(0, 80);
+  const brand = String(gear.brand_name || "").trim();
+  const model = String(gear.model_name || "").trim();
+  const joined = [brand, model].filter(Boolean).join(" ").trim();
+  if (joined) return joined.slice(0, 80);
+  return fallbackId.startsWith("b") ? "Bike" : "Shoes";
+}
+
+function gearFitsActivity(type: string, activityType: string) {
+  const cat = categorize(activityType);
+  if (type === "shoes") return cat === "run" || cat === "walk";
+  if (type === "bike") return cat === "bike";
+  return false;
+}
+
+function normGearName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+async function loadLocalGear(admin: Sb, userId: string): Promise<{ items: LocalGear[]; hasUuid: boolean }> {
+  const withUuid = await admin
+    .from("gear")
+    .select("id,type,name,retired,strava_uuid")
+    .eq("user_id", userId);
+  if (!withUuid.error) {
+    return {
+      items: (withUuid.data || []).map((row) => ({
+        id: String(row.id),
+        type: String(row.type || ""),
+        name: String(row.name || ""),
+        retired: !!row.retired,
+        strava_uuid: row.strava_uuid != null && row.strava_uuid !== "" ? String(row.strava_uuid) : null,
+      })),
+      hasUuid: true,
+    };
+  }
+  const plain = await admin.from("gear").select("id,type,name,retired").eq("user_id", userId);
+  if (plain.error) throw new Error(plain.error.message);
+  return {
+    items: (plain.data || []).map((row) => ({
+      id: String(row.id),
+      type: String(row.type || ""),
+      name: String(row.name || ""),
+      retired: !!row.retired,
+      strava_uuid: null,
+    })),
+    hasUuid: false,
+  };
+}
+
+function findLocalStravaGear(items: LocalGear[], type: string, gearId: string, name: string) {
+  const byId = items.find((item) => item.strava_uuid === gearId || item.id === gearId);
+  if (byId) return byId;
+  const want = normGearName(name);
+  if (!want) return null;
+  const matches = items.filter((item) => item.type === type && !item.strava_uuid && normGearName(item.name) === want);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function getStravaGear(accessToken: string, gearId: string) {
+  const res = await fetch(`${STRAVA_API}/gear/${encodeURIComponent(gearId)}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(stravaError("gear", res.status, text));
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+async function matchStravaGear(
+  admin: Sb,
+  userId: string,
+  accessToken: string,
+  pending: { startedAt: string; gearId: string; activityType: string }[],
+): Promise<{ assigned: number; created: number; note: string }> {
+  if (!pending.length) return { assigned: 0, created: 0, note: "" };
+
+  const { items, hasUuid } = await loadLocalGear(admin, userId);
+  const { data: existing, error: assignErr } = await admin
+    .from("activity_gear")
+    .select("activity")
+    .eq("user_id", userId);
+  if (assignErr) throw new Error(assignErr.message);
+  const assignedKeys = new Set((existing || []).map((row) => String(row.activity)));
+
+  const cache = new Map<string, Record<string, unknown>>();
+  let assigned = 0;
+  let created = 0;
+
+  for (const item of pending) {
+    if (assignedKeys.has(item.startedAt)) continue;
+    let detail = cache.get(item.gearId) || null;
+    if (!detail) {
+      try {
+        detail = await getStravaGear(accessToken, item.gearId);
+        cache.set(item.gearId, detail);
+      } catch {
+        detail = { id: item.gearId, name: item.gearId };
+        cache.set(item.gearId, detail);
+      }
+    }
+    const type = stravaGearType(item.gearId, detail);
+    if (!gearFitsActivity(type, item.activityType)) continue;
+    const name = stravaGearName(detail, item.gearId);
+    let local = findLocalStravaGear(items, type, item.gearId, name);
+    if (!local) {
+      const insert: Record<string, unknown> = {
+        id: item.gearId.slice(0, 40),
+        user_id: userId,
+        type,
+        name,
+        note: "From Strava",
+        retired: !!detail.retired,
+      };
+      if (hasUuid) insert.strava_uuid = item.gearId;
+      const columns = hasUuid ? "id,type,name,retired,strava_uuid" : "id,type,name,retired";
+      const { data, error } = await admin.from("gear").insert(insert).select(columns).maybeSingle();
+      if (error || !data) {
+        if (error && !/duplicate|unique/i.test(error.message)) throw new Error(error.message);
+        local = findLocalStravaGear(items, type, item.gearId, name);
+        if (!local) continue;
+      } else {
+        local = {
+          id: String(data.id),
+          type: String(data.type || type),
+          name: String(data.name || name),
+          retired: !!data.retired,
+          strava_uuid: hasUuid ? item.gearId : null,
+        };
+        items.push(local);
+        created += 1;
+      }
+    } else if (hasUuid && !local.strava_uuid) {
+      await admin.from("gear").update({ strava_uuid: item.gearId }).eq("user_id", userId).eq("id", local.id);
+      local.strava_uuid = item.gearId;
+    }
+
+    const { error } = await admin.from("activity_gear").upsert({
+      user_id: userId,
+      activity: item.startedAt,
+      gear_id: local.id,
+    });
+    if (error) throw new Error(error.message);
+    assignedKeys.add(item.startedAt);
+    assigned += 1;
+  }
+
+  const bits: string[] = [];
+  if (assigned) bits.push(`${assigned} activit${assigned === 1 ? "y" : "ies"} linked`);
+  if (created) bits.push(`${created} added`);
+  return { assigned, created, note: bits.length ? `Gear: ${bits.join(", ")}.` : "" };
 }
 
 function syncAfterEpoch(lastSyncAt: string | null): number {

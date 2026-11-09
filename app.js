@@ -15,15 +15,145 @@ const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); r
 const daysBetween = (a, b) => Math.round((b - a) / 864e5);
 const fmt = (d, opts) => d.toLocaleDateString("en-GB", opts);
 const short = (d) => fmt(d, { day: "numeric", month: "short" });
-// Display-only: same as Garmin (Number(n.toFixed(2))). Keep full-precision values in data.
-const fmtKm = (n) => {
+const KM_PER_MILE = 1.609344;
+const LB_PER_KG = 2.2046226218;
+const IMPERIAL_REGIONS = new Set(["US", "LR", "MM"]);
+
+function guessUnitsFromLocale() {
+  try {
+    const loc = new Intl.Locale(navigator.language || "en").maximize();
+    const region = String(loc.region || "").toUpperCase();
+    if (IMPERIAL_REGIONS.has(region)) return "imperial";
+  } catch { /* ignore */ }
+  return "metric";
+}
+
+function normalizeUnits(raw) {
+  return raw === "imperial" ? "imperial" : "metric";
+}
+
+function profileUnits() {
+  return normalizeUnits(window.CURRENT_PROFILE?.units);
+}
+
+function isImperial() {
+  return profileUnits() === "imperial";
+}
+
+function distUnit() {
+  return isImperial() ? "mi" : "km";
+}
+
+function weightUnit() {
+  return isImperial() ? "lb" : "kg";
+}
+
+function fmtNum(n, digits = 2) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "";
-  return String(Number(x.toFixed(2)));
-};
-const fmtPlanLabel = (label) => String(label ?? "").replace(/-?\d+\.\d+/g, (m) => fmtKm(m));
+  return String(Number(x.toFixed(digits)));
+}
+
+// Raw km number formatting (storage units). Prefer fmtDist for UI.
+const fmtKm = (n) => fmtNum(n, 2);
+
+function fmtDist(km, digits = 2) {
+  const x = Number(km);
+  if (!Number.isFinite(x)) return "";
+  return isImperial() ? fmtNum(x / KM_PER_MILE, digits) : fmtNum(x, digits);
+}
+
+function fmtDistWithUnit(km, digits = 2) {
+  const n = fmtDist(km, digits);
+  return n ? `${n} ${distUnit()}` : "";
+}
+
+function parseDistInput(value) {
+  const x = Number(value);
+  if (!Number.isFinite(x)) return NaN;
+  return isImperial() ? x * KM_PER_MILE : x;
+}
+
+function displayDistValue(km, digits = 2) {
+  const n = fmtDist(km, digits);
+  return n;
+}
+
+function fmtWeight(kg, digits = 1) {
+  const x = Number(kg);
+  if (!Number.isFinite(x) || x <= 0) return "";
+  return isImperial() ? fmtNum(x * LB_PER_KG, digits) : fmtNum(x, digits);
+}
+
+function fmtWeightWithUnit(kg, digits = 1) {
+  const n = fmtWeight(kg, digits);
+  return n ? `${n} ${weightUnit()}` : "";
+}
+
+function parseWeightInput(value) {
+  const x = Number(value);
+  if (!Number.isFinite(x) || x <= 0) return null;
+  return isImperial() ? x / LB_PER_KG : x;
+}
+
+function parsePaceToSec(str) {
+  const m = String(str || "").trim().match(/^(\d+):(\d{2})$/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function fmtPaceSec(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  return `${Math.floor(s / 60)}:${pad(s % 60)}`;
+}
+
+function fmtRunPace(paceStr) {
+  if (!paceStr) return "";
+  if (!isImperial()) return `${paceStr}/km`;
+  const sec = parsePaceToSec(paceStr);
+  if (sec == null) return `${paceStr}/km`;
+  return `${fmtPaceSec(sec * KM_PER_MILE)}/mi`;
+}
+
+function fmtBikeSpeed(paceStr) {
+  const x = Number(paceStr);
+  if (!Number.isFinite(x)) return paceStr ? `${paceStr} km/h` : "";
+  if (!isImperial()) return `${fmtNum(x, 1)} km/h`;
+  return `${fmtNum(x / KM_PER_MILE, 1)} mph`;
+}
+
+function paceSuffix(sport) {
+  if (sport === "swim") return " /100m";
+  if (sport === "bike") return isImperial() ? " mph" : " km/h";
+  return isImperial() ? " /mi" : " /km";
+}
+
+function distSuffix(sport) {
+  if (sport === "swim") return " m";
+  return ` ${distUnit()}`;
+}
+
+function logDistUnit(sport) {
+  return sport === "swim" ? "m" : distUnit();
+}
+
+const fmtPlanLabel = (label) => String(label ?? "").replace(/-?\d+\.\d+/g, (m) => fmtDist(m));
 window.fmtKm = fmtKm;
+window.fmtDist = fmtDist;
+window.fmtDistWithUnit = fmtDistWithUnit;
 window.fmtPlanLabel = fmtPlanLabel;
+window.fmtWeight = fmtWeight;
+window.fmtWeightWithUnit = fmtWeightWithUnit;
+window.parseDistInput = parseDistInput;
+window.parseWeightInput = parseWeightInput;
+window.distUnit = distUnit;
+window.weightUnit = weightUnit;
+window.isImperial = isImperial;
+window.profileUnits = profileUnits;
+window.guessUnitsFromLocale = guessUnitsFromLocale;
+window.normalizeUnits = normalizeUnits;
+window.displayDistValue = displayDistValue;
+window.logDistUnit = logDistUnit;
 
 let START, RACE;
 window.syncPlanDates = function syncPlanDates() {
@@ -230,11 +360,74 @@ async function loadActivities() {
 window.loadActivities = loadActivities;
 
 const GEAR_KINDS = {
-  shoes: { title: "Shoes", add: "shoes", hint: "e.g. ASICS Gel Pursue 10", picker: "Shoes", empty: "shoes", addLink: "shoes", unit: "km" },
-  bike: { title: "Bikes", add: "a bike", hint: "e.g. Canyon Endurace", picker: "Bike", empty: "bike", addLink: "a bike", unit: "km" },
-  swimsuit: { title: "Swimsuits", add: "a swimsuit", hint: "e.g. Arena Powerskin", picker: "Swimsuit", empty: "swimsuit", addLink: "a swimsuit", unit: "m" },
-  wetsuit: { title: "Wetsuits", add: "a wetsuit", hint: "e.g. HUUB Aegis", picker: "Wetsuit", empty: "wetsuit", addLink: "a wetsuit", unit: "m" },
+  shoes: { title: "Shoes", add: "shoes", hint: "e.g. ASICS Gel Pursue 10", picker: "Shoes", empty: "shoes", addLink: "shoes", unit: "km", group: "endurance" },
+  bike: { title: "Bikes", add: "a bike", hint: "e.g. Canyon Endurace", picker: "Bike", empty: "bike", addLink: "a bike", unit: "km", group: "endurance" },
+  swimsuit: { title: "Swimsuits", add: "a swimsuit", hint: "e.g. Arena Powerskin", picker: "Swimsuit", empty: "swimsuit", addLink: "a swimsuit", unit: "m", group: "endurance" },
+  wetsuit: { title: "Wetsuits", add: "a wetsuit", hint: "e.g. HUUB Aegis", picker: "Wetsuit", empty: "wetsuit", addLink: "a wetsuit", unit: "m", group: "endurance" },
+  kettlebell: { title: "Kettlebells", add: "a kettlebell", hint: "e.g. 16 kg", picker: "Kettlebell", empty: "kettlebell", addLink: "a kettlebell", unit: null, group: "strength", hasWeight: true },
+  dumbbells: { title: "Dumbbells", add: "dumbbells", hint: "e.g. pair weight", picker: "Dumbbells", empty: "dumbbells", addLink: "dumbbells", unit: null, group: "strength", hasWeight: true },
+  barbell: { title: "Barbells", add: "a barbell", hint: "e.g. working weight", picker: "Barbell", empty: "barbell", addLink: "a barbell", unit: null, group: "strength", hasWeight: true },
+  bands: { title: "Bands", add: "bands", hint: "e.g. loop + long bands", picker: "Bands", empty: "bands", addLink: "bands", unit: null, group: "strength" },
+  pullup: { title: "Pull-up bars", add: "a pull-up bar", hint: "e.g. doorway pull-up bar", picker: "Pull-up bar", empty: "pull-up bar", addLink: "a pull-up bar", unit: null, group: "strength" },
+  gym: { title: "Gym access", add: "gym access", hint: "e.g. Basic-Fit membership", picker: "Gym access", empty: "gym access", addLink: "gym access", unit: null, group: "strength" },
 };
+
+const ENDURANCE_GEAR_TYPES = Object.keys(GEAR_KINDS).filter((id) => GEAR_KINDS[id].group === "endurance");
+const STRENGTH_GEAR_TYPES = Object.keys(GEAR_KINDS).filter((id) => GEAR_KINDS[id].group === "strength");
+
+// Typical useful lifespan by shoe category (km). Midpoints of common manufacturer /
+ // coach ranges: daily trainers ~500–800, tempo ~400–600, race/super ~200–400,
+ // trail ~500–700. Racing pairs often lose their edge earlier (~240 km).
+const SHOE_KINDS = {
+  daily: { label: "Daily trainer", maxKm: 700, hint: "Most volume shoes last about 500–800 km" },
+  tempo: { label: "Tempo / performance", maxKm: 500, hint: "Lighter foam usually lasts about 400–600 km" },
+  race: { label: "Race / super shoe", maxKm: 300, hint: "Carbon race shoes often fade by 200–400 km" },
+  trail: { label: "Trail", maxKm: 600, hint: "Trail pairs typically last about 500–700 km" },
+  other: { label: "Other", maxKm: 700, hint: "Set your own target distance" },
+};
+const SHOE_WEAR_WARN = 0.85;
+
+function activeStrengthGear(items = GEAR.items) {
+  return (items || []).filter((g) => !g.retired && GEAR_KINDS[g.type]?.group === "strength");
+}
+
+function strengthAccessLevel(items = GEAR.items) {
+  const active = activeStrengthGear(items);
+  if (active.some((g) => g.type === "gym")) return "gym";
+  if (active.length) return "home";
+  return "bodyweight";
+}
+
+function strengthAccessLabel(level = strengthAccessLevel()) {
+  if (level === "gym") return "Full gym";
+  if (level === "home") return "Home kit";
+  return "Bodyweight";
+}
+
+function strengthGearAdvice() {
+  const level = strengthAccessLevel();
+  const active = activeStrengthGear();
+  if (level === "gym") {
+    return "Strength sessions will use full gym equipment from your inventory.";
+  }
+  if (level === "home") {
+    const names = active.map((g) => g.name).slice(0, 3).join(", ");
+    const more = active.length > 3 ? ` +${active.length - 3} more` : "";
+    return `Strength sessions will use your home kit (${names}${more}).`;
+  }
+  const lo = fmtWeight(12) || "12";
+  const hi = fmtWeight(16) || "16";
+  return `Strength sessions stay bodyweight for now. Add a kettlebell or gym membership below to unlock loaded sessions — a ${lo}–${hi} ${weightUnit()} kettlebell covers most runner work at home.`;
+}
+
+function gearHasWeight(type) {
+  return !!GEAR_KINDS[type]?.hasWeight;
+}
+
+window.activeStrengthGear = activeStrengthGear;
+window.strengthAccessLevel = strengthAccessLevel;
+window.strengthAccessLabel = strengthAccessLabel;
+window.strengthGearAdvice = strengthGearAdvice;
 
 function gearFor(a) {
   const id = GEAR.assignments[a.datetime];
@@ -252,25 +445,24 @@ function activityLine(a) {
   const dur = a.time && a.time.startsWith("00:") ? a.time.slice(3) : a.time;
   const gear = gearFor(a);
   const bits = [];
-  const dist = a.cat === "swim" ? String(Math.round(Number(a.dist) || 0)) : fmtKm(a.dist);
-  if (a.cat === "swim") bits.push(`Swim ${dist} m`);
-  else if (a.cat === "bike") bits.push(`Bike ${dist} km`);
-  else if (a.cat === "walk") bits.push(`Walk ${dist} km`);
-  else bits.push(`Run ${dist} km`);
+  if (a.cat === "swim") bits.push(`Swim ${Math.round(Number(a.dist) || 0)} m`);
+  else if (a.cat === "bike") bits.push(`Bike ${fmtDistWithUnit(a.dist)}`);
+  else if (a.cat === "walk") bits.push(`Walk ${fmtDistWithUnit(a.dist)}`);
+  else bits.push(`Run ${fmtDistWithUnit(a.dist)}`);
   if (dur && a.cat !== "walk") bits.push(dur);
-  if (a.pace && a.cat === "run") bits.push(`${a.pace}/km`);
+  if (a.pace && a.cat === "run") bits.push(fmtRunPace(a.pace));
   else if (a.pace && a.cat === "swim") bits.push(`${a.pace}/100m`);
-  else if (a.pace && a.cat === "bike") bits.push(`${a.pace} km/h`);
+  else if (a.pace && a.cat === "bike") bits.push(fmtBikeSpeed(a.pace));
   if (a.hr) bits.push(`HR ${a.hr}`);
   if (gear) bits.push(esc(gear.name));
   return bits.join(" · ");
 }
 
 const LOG_TYPES = {
-  run: { type: "Running", title: "Run", unit: "km" },
-  bike: { type: "Cycling", title: "Ride", unit: "km" },
-  swim: { type: "Pool Swim", title: "Swim", unit: "m" },
-  walk: { type: "Walking", title: "Walk", unit: "km" },
+  run: { type: "Running", title: "Run", unitKey: "dist" },
+  bike: { type: "Cycling", title: "Ride", unitKey: "dist" },
+  swim: { type: "Pool Swim", title: "Swim", unitKey: "m" },
+  walk: { type: "Walking", title: "Walk", unitKey: "dist" },
 };
 
 function isManualActivity(a) {
@@ -362,6 +554,10 @@ function uniqueStartedAt(ds) {
 function logSessionFields(sport, { distance = "", duration = "", hr = "", date = "", showDate = false } = {}) {
   const spec = LOG_TYPES[sport] || LOG_TYPES.run;
   const swim = spec === LOG_TYPES.swim;
+  const unit = logDistUnit(sport);
+  const displayDist = distance === "" || distance == null
+    ? ""
+    : (swim ? String(distance) : displayDistValue(distance));
   const option = (value, label) => `<option value="${value}" ${sport === value ? "selected" : ""}>${label}</option>`;
   return `
     ${showDate ? `
@@ -376,8 +572,8 @@ function logSessionFields(sport, { distance = "", duration = "", hr = "", date =
         ${option("walk", "Walk")}
       </select>
     </label>
-    <label>Distance (<span data-unit>${spec.unit}</span>)
-      <input type="number" name="distance" required min="${swim ? "25" : "0.1"}" step="${swim ? "25" : "0.01"}" value="${esc(distance)}" />
+    <label>Distance (<span data-unit>${unit}</span>)
+      <input type="number" name="distance" required min="${swim ? "25" : "0.1"}" step="${swim ? "25" : "0.01"}" value="${esc(displayDist)}" />
     </label>
     <label>Time <span class="opt">(optional)</span>
       <input type="text" name="duration" placeholder="45:00" inputmode="numeric" autocomplete="off" value="${esc(duration)}" />
@@ -539,7 +735,7 @@ function eventLines(week, dayIndex, ds) {
     }
     const conflict = eventConflict(week, dayIndex, ev);
     return `
-      <div class="event-note">★ ${esc(ev.name)} · ${fmtKm(ev.km)} km · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
+      <div class="event-note">★ ${esc(ev.name)} · ${fmtDistWithUnit(ev.km)} · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
       ${conflict ? `<div class="event-warn">${conflict}</div>` : ""}`;
   }).join("");
 }
@@ -625,16 +821,105 @@ async function loadGear() {
   const assignments = {};
   for (const row of assigned || []) assignments[row.activity] = row.gear_id;
   return {
-    items: (items || []).map((row) => ({
-      id: row.id,
-      type: row.type,
-      name: row.name,
-      note: row.note || "",
-      retired: !!row.retired,
-      addedAt: row.added_at,
-    })),
+    items: (items || []).map(mapGearRow),
     assignments,
   };
+}
+
+function mapGearRow(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    name: row.name,
+    note: row.note || "",
+    retired: !!row.retired,
+    weightKg: row.weight_kg != null ? Number(row.weight_kg) : null,
+    shoeKind: row.shoe_kind && SHOE_KINDS[row.shoe_kind] ? row.shoe_kind : null,
+    maxKm: row.max_km != null ? Number(row.max_km) : null,
+    notifyWear: !!row.notify_wear,
+    addedAt: row.added_at,
+  };
+}
+
+function shoeMaxKmDefault(kind) {
+  return SHOE_KINDS[kind]?.maxKm || SHOE_KINDS.daily.maxKm;
+}
+
+function shoeWearState(item, usedKm = gearDistance(item)) {
+  const maxKm = Number(item?.maxKm);
+  if (!(maxKm > 0)) return { level: "none", usedKm, maxKm: null, pct: 0 };
+  const pct = Math.min(1.5, usedKm / maxKm);
+  if (usedKm >= maxKm) return { level: "over", usedKm, maxKm, pct };
+  if (usedKm >= maxKm * SHOE_WEAR_WARN) return { level: "warn", usedKm, maxKm, pct };
+  return { level: "ok", usedKm, maxKm, pct };
+}
+
+function shoeWearAlerts(items = GEAR.items) {
+  return (items || [])
+    .filter((g) => g.type === "shoes" && !g.retired && g.notifyWear && g.maxKm > 0)
+    .map((g) => ({ item: g, wear: shoeWearState(g) }))
+    .filter((row) => row.wear.level === "warn" || row.wear.level === "over");
+}
+
+function shoeWearBanner() {
+  const alerts = shoeWearAlerts();
+  if (!alerts.length) return "";
+  const lines = alerts.map(({ item, wear }) => {
+    const used = fmtDistWithUnit(wear.usedKm, 1);
+    const max = fmtDistWithUnit(wear.maxKm, 0);
+    if (wear.level === "over") {
+      return `<li><strong>${esc(item.name)}</strong> is past its target (${used} / ${max}). Time to retire or rotate them.</li>`;
+    }
+    return `<li><strong>${esc(item.name)}</strong> is near its target (${used} / ${max}).</li>`;
+  }).join("");
+  return `
+    <section class="card gear-wear-alert" role="status">
+      <div class="eyebrow">Shoe lifespan</div>
+      <h2>Wear alerts</h2>
+      <ul class="gear-wear-list">${lines}</ul>
+    </section>`;
+}
+
+function maybeToastShoeWear() {
+  const alerts = shoeWearAlerts();
+  if (!alerts.length) return;
+  const key = `shoe-wear-toast:${CURRENT_USER_ID || "anon"}`;
+  let seen = {};
+  try { seen = JSON.parse(sessionStorage.getItem(key) || "{}"); } catch { seen = {}; }
+  const fresh = alerts.filter(({ item, wear }) => seen[item.id] !== wear.level);
+  if (!fresh.length) return;
+  fresh.forEach(({ item, wear }) => { seen[item.id] = wear.level; });
+  try { sessionStorage.setItem(key, JSON.stringify(seen)); } catch { /* ignore */ }
+  const over = fresh.filter((r) => r.wear.level === "over");
+  const warn = fresh.filter((r) => r.wear.level === "warn");
+  if (over.length) {
+    toast(over.length === 1
+      ? `${over[0].item.name} is past its shoe lifespan target.`
+      : `${over.length} pairs are past their shoe lifespan target.`);
+  } else if (warn.length) {
+    toast(warn.length === 1
+      ? `${warn[0].item.name} is near its shoe lifespan target.`
+      : `${warn.length} pairs are near their shoe lifespan target.`);
+  }
+}
+
+function shoeWearBar(item) {
+  if (item.type !== "shoes" || !(item.maxKm > 0)) return "";
+  const wear = shoeWearState(item);
+  const pct = Math.min(100, Math.round(wear.pct * 100));
+  const used = fmtDistWithUnit(wear.usedKm, 1);
+  const max = fmtDistWithUnit(wear.maxKm, 0);
+  const kind = item.shoeKind && SHOE_KINDS[item.shoeKind] ? SHOE_KINDS[item.shoeKind].label : "";
+  return `
+    <div class="shoe-wear" data-level="${wear.level}">
+      <div class="shoe-wear-meta">
+        <span>${used} / ${max}${kind ? ` · ${esc(kind)}` : ""}</span>
+        <span>${pct}%</span>
+      </div>
+      <div class="shoe-wear-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Distance on ${esc(item.name)}">
+        <span class="shoe-wear-fill" style="width:${pct}%"></span>
+      </div>
+    </div>`;
 }
 const pendingChanges = () => CHANGES.filter((c) => c.status !== "applied");
 
@@ -745,8 +1030,8 @@ function reviewCard(acts, now) {
 
 const STAT_FIELDS = {
   run: [
-    ["Distance", "Distance", " km"], ["Time", "Time"], ["Moving time", "Moving Time"], ["Avg pace", "Avg Pace", " /km"],
-    ["Best pace", "Best Pace", " /km"], ["Grade-adj. pace", "Avg GAP", " /km"], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"],
+    ["Distance", "Distance", distSuffix("run")], ["Time", "Time"], ["Moving time", "Moving Time"], ["Avg pace", "Avg Pace", paceSuffix("run")],
+    ["Best pace", "Best Pace", paceSuffix("run")], ["Grade-adj. pace", "Avg GAP", paceSuffix("run")], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"],
     ["Aerobic TE", "Aerobic TE"], ["Effect", "TE Label"], ["Cadence", "Avg Run Cadence", " spm"], ["Stride length", "Avg Stride Length", " m"],
     ["Ground contact", "Avg Ground Contact Time", " ms"], ["Vertical ratio", "Avg Vertical Ratio", " %"], ["Vertical osc.", "Avg Vertical Oscillation", " cm"],
     ["Avg power", "Avg Power", " W"], ["Ascent", "Total Ascent", " m"], ["Calories", "Calories", " kcal"], ["Steps", "Steps"],
@@ -759,22 +1044,40 @@ const STAT_FIELDS = {
     ["Calories", "Calories", " kcal"],
   ],
   bike: [
-    ["Distance", "Distance", " km"], ["Time", "Time"], ["Moving time", "Moving Time"], ["Avg speed", "Avg Pace", " km/h"],
-    ["Max speed", "Best Pace", " km/h"], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"], ["Aerobic TE", "Aerobic TE"],
+    ["Distance", "Distance", distSuffix("bike")], ["Time", "Time"], ["Moving time", "Moving Time"], ["Avg speed", "Avg Pace", paceSuffix("bike")],
+    ["Max speed", "Best Pace", paceSuffix("bike")], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"], ["Aerobic TE", "Aerobic TE"],
     ["Ascent", "Total Ascent", " m"], ["Calories", "Calories", " kcal"], ["Body Battery", "Body Battery Drain"],
   ],
   walk: [
-    ["Distance", "Distance", " km"], ["Time", "Time"], ["Avg HR", "Avg HR", " bpm"], ["Steps", "Steps"], ["Calories", "Calories", " kcal"],
+    ["Distance", "Distance", distSuffix("walk")], ["Time", "Time"], ["Avg HR", "Avg HR", " bpm"], ["Steps", "Steps"], ["Calories", "Calories", " kcal"],
   ],
 };
+
+function formatStatValue(a, key, raw) {
+  let v = String(raw || "").replace(/^'/, "");
+  if (/^\d\d:\d\d:\d\d$/.test(v) && v.startsWith("00:")) v = v.slice(3);
+  if (!isImperial() || a.cat === "swim") return v;
+  if (key === "Distance") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return fmtDist(n);
+  }
+  if (a.cat === "run" && (key === "Avg Pace" || key === "Best Pace" || key === "Avg GAP")) {
+    const sec = parsePaceToSec(v);
+    if (sec != null) return fmtPaceSec(sec * KM_PER_MILE);
+  }
+  if (a.cat === "bike" && (key === "Avg Pace" || key === "Best Pace")) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return fmtNum(n / KM_PER_MILE, 1);
+  }
+  return v;
+}
 
 function statGrid(a) {
   const cells = STAT_FIELDS[a.cat]
     .map(([label, key, unit = ""]) => {
       let v = a.raw[key];
       if (!v || v === "--" || v === "0.0") return "";
-      v = v.replace(/^'/, "");
-      if (/^\d\d:\d\d:\d\d$/.test(v) && v.startsWith("00:")) v = v.slice(3);
+      v = formatStatValue(a, key, v);
       return `<div><span>${label}</span><strong>${esc(v)}${unit}</strong></div>`;
     })
     .join("");
@@ -828,7 +1131,7 @@ function eventPersonalForm(ev, { lead = false } = {}) {
 }
 
 function eventDetailBlock(ev) {
-  const meta = `${fmtKm(ev.km)} km${ev.sport ? ` · ${ev.sport}` : ""}`;
+  const meta = `${fmtDistWithUnit(ev.km)}${ev.sport ? ` · ${ev.sport}` : ""}`;
   if (ownsEvent(ev)) {
     return `
       <form class="event-edit-form" data-id="${esc(ev.id)}">
@@ -836,7 +1139,7 @@ function eventDetailBlock(ev) {
         <p class="muted small-text">Name, distance and the event note can be public.</p>
         <div class="event-edit-fields">
           <label>Name<input type="text" name="name" required value="${esc(ev.name)}" /></label>
-          <label>Distance (km)<input type="number" name="km" required min="0.1" step="0.1" value="${esc(ev.km)}" /></label>
+          <label>Distance (${distUnit()})<input type="number" name="km" required min="0.1" step="0.1" value="${esc(displayDistValue(ev.km))}" /></label>
         </div>
         <label class="full">Event note <span class="muted">(optional, public if you share this event)</span>
           <input type="text" name="event_note" maxlength="140" placeholder="e.g. chip start 9:30, city centre" value="${esc(ev.event_note || "")}" />
@@ -1044,7 +1347,7 @@ function renderDayDetail(ds) {
 
   const walkBlocks = walks.map((a) => `
       <section class="activity k-walk">
-        ${activityMeta(a, `Walk · ${fmtKm(a.dist)} km`)}
+        ${activityMeta(a, `Walk · ${fmtDistWithUnit(a.dist)}`)}
         ${gearPicker(a)}
       </section>`).join("");
 
@@ -1087,12 +1390,17 @@ function gearDistance(item, acts = ACTS) {
 }
 
 function gearUsageLabel(item) {
+  const kind = GEAR_KINDS[item.type];
+  if (kind?.group === "strength") {
+    const weight = item.weightKg ? fmtWeightWithUnit(item.weightKg) : "";
+    if (item.type === "gym") return "Full gym access for strength sessions";
+    return weight ? `${weight} · available for strength sessions` : "Available for strength sessions";
+  }
   const dist = gearDistance(item);
   const count = ACTS.filter((a) => GEAR.assignments[a.datetime] === item.id).length;
-  const unit = GEAR_KINDS[item.type]?.unit || "km";
-  const amount = unit === "m"
+  const amount = kind?.unit === "m"
     ? `${Math.round(dist).toLocaleString("en-GB")} m`
-    : `${dist.toFixed(1)} km`;
+    : fmtDistWithUnit(dist, 1);
   const sessions = count ? ` · ${count} session${count === 1 ? "" : "s"}` : "";
   return `${amount} from assigned activities${sessions}`;
 }
@@ -1202,6 +1510,7 @@ function gearRow(item) {
       <div class="gear-main">
         <strong>${esc(item.name)}</strong>
         <span class="muted">${item.note ? `${esc(item.note)} · ` : ""}${gearUsageLabel(item)}</span>
+        ${shoeWearBar(item)}
       </div>
       <div class="gear-actions">
         <button class="button ghost small" type="button" data-action="edit-gear" data-id="${esc(item.id)}">Edit</button>
@@ -1233,7 +1542,51 @@ function gearGroup(type) {
 function syncGearNamePlaceholder(form) {
   const kind = GEAR_KINDS[form?.type?.value];
   const input = form?.querySelector("input[name=name]");
-  if (kind && input) input.placeholder = kind.hint;
+  if (kind && input) {
+    if (kind.hasWeight) {
+      input.placeholder = isImperial() ? "e.g. Competition KB" : "e.g. Cast iron KB";
+    } else {
+      input.placeholder = kind.hint;
+    }
+  }
+  const weightLabel = form?.querySelector("[data-weight-label]");
+  if (weightLabel) weightLabel.textContent = `Weight (${weightUnit()})`;
+  const maxLabel = form?.querySelector("[data-max-km-label]");
+  if (maxLabel) maxLabel.textContent = `Lifespan target (${distUnit()})`;
+}
+
+function syncGearWeightVisibility(form) {
+  if (!form) return;
+  const wrap = form.querySelector(".gear-weight-field");
+  const input = form.querySelector("input[name=weight]");
+  const show = gearHasWeight(form.type?.value);
+  if (wrap) wrap.hidden = !show;
+  if (input) {
+    input.required = !!show;
+    if (!show) input.value = "";
+  }
+}
+
+function syncShoeFieldsVisibility(form) {
+  if (!form) return;
+  const wrap = form.querySelector(".gear-shoe-fields");
+  const show = form.type?.value === "shoes";
+  if (wrap) wrap.hidden = !show;
+  if (!show) return;
+  const kind = form.shoe_kind?.value || "daily";
+  const hint = form.querySelector("[data-shoe-hint]");
+  if (hint) hint.textContent = SHOE_KINDS[kind]?.hint || "";
+  if (form.max_km && !form.max_km.value) {
+    form.max_km.value = displayDistValue(shoeMaxKmDefault(kind), 0);
+  }
+}
+
+function applyShoeKindDefault(form) {
+  if (!form || form.type?.value !== "shoes") return;
+  const kind = form.shoe_kind?.value || "daily";
+  const hint = form.querySelector("[data-shoe-hint]");
+  if (hint) hint.textContent = SHOE_KINDS[kind]?.hint || "";
+  if (form.max_km) form.max_km.value = displayDistValue(shoeMaxKmDefault(kind), 0);
 }
 
 function syncGearFormMode(form, item = null) {
@@ -1261,17 +1614,78 @@ function syncGearFormMode(form, item = null) {
   const errorEl = form.querySelector(".form-error");
   if (errorEl) errorEl.textContent = "";
   syncGearNamePlaceholder(form);
+  syncGearWeightVisibility(form);
+  syncShoeFieldsVisibility(form);
+  if (item && form.weight) form.weight.value = item.weightKg ? fmtWeight(item.weightKg) : "";
+  if (item && item.type === "shoes") {
+    if (form.shoe_kind) form.shoe_kind.value = item.shoeKind || "daily";
+    if (form.max_km) form.max_km.value = item.maxKm ? displayDistValue(item.maxKm, 0) : displayDistValue(shoeMaxKmDefault(form.shoe_kind?.value || "daily"), 0);
+    if (form.notify_wear) form.notify_wear.checked = !!item.notifyWear;
+    const hint = form.querySelector("[data-shoe-hint]");
+    if (hint) hint.textContent = SHOE_KINDS[form.shoe_kind?.value || "daily"]?.hint || "";
+  } else if (!item && form.type?.value === "shoes") {
+    applyShoeKindDefault(form);
+    if (form.notify_wear) form.notify_wear.checked = false;
+  }
 }
 
-function openGearForm(item = null) {
+function openGearForm(item = null, presetType = null) {
   const wrap = document.querySelector(".gear-add");
   const form = wrap?.querySelector(".gear-form");
   if (!wrap || !form) return;
   syncGearFormMode(form, item);
+  if (!item && presetType && GEAR_KINDS[presetType] && form.type) {
+    form.type.value = presetType;
+    syncGearNamePlaceholder(form);
+    syncGearWeightVisibility(form);
+    syncShoeFieldsVisibility(form);
+    if (presetType === "shoes") applyShoeKindDefault(form);
+  }
   wrap.hidden = false;
   form.querySelector("input[name=name]")?.focus();
   wrap.scrollIntoView({ block: "nearest" });
 }
+
+async function quickAddStrengthGear(type, opts = {}) {
+  if (!GEAR_KINDS[type] || GEAR_KINDS[type].group !== "strength") return;
+  const defaults = {
+    gym: { name: "Gym membership", note: "Full equipment access" },
+    kettlebell: { name: "Kettlebell", note: "Home strength" },
+    dumbbells: { name: "Dumbbells", note: "Home strength" },
+    barbell: { name: "Barbell", note: "Home strength" },
+    bands: { name: "Resistance bands", note: "Home strength" },
+    pullup: { name: "Pull-up bar", note: "Home strength" },
+  };
+  const existing = GEAR.items.find((g) => g.type === type && !g.retired);
+  if (existing && (type === "gym" || opts.insert)) {
+    toast(`${existing.name} is already in your kit.`);
+    return;
+  }
+  const insertNow = opts.insert === true || type === "gym" || !document.querySelector(".gear-add");
+  if (insertNow) {
+    const preset = defaults[type] || { name: GEAR_KINDS[type].picker, note: "" };
+    await apiRequest("POST", "/api/gear", {
+      type,
+      name: preset.name,
+      note: preset.note,
+    });
+    GEAR = await loadGear();
+    if (!opts.skipRender) render(true);
+    if (!opts.silent) {
+      toast(type === "gym"
+        ? "Gym membership added — strength sessions can use full gym equipment."
+        : `${preset.name} added for strength sessions.`);
+    }
+    return;
+  }
+  openGearForm(null, type);
+  const form = document.querySelector(".gear-form");
+  if (form && defaults[type] && !form.name.value) {
+    form.name.value = defaults[type].name;
+    if (form.note && !form.note.value) form.note.value = defaults[type].note;
+  }
+}
+window.quickAddStrengthGear = quickAddStrengthGear;
 
 function closeGearForm() {
   const wrap = document.querySelector(".gear-add");
@@ -1282,8 +1696,14 @@ function closeGearForm() {
 }
 
 function gearAddForm() {
-  const options = Object.entries(GEAR_KINDS)
-    .map(([id, kind]) => `<option value="${id}">${kind.picker}</option>`)
+  const endurance = ENDURANCE_GEAR_TYPES
+    .map((id) => `<option value="${id}">${GEAR_KINDS[id].picker}</option>`)
+    .join("");
+  const strength = STRENGTH_GEAR_TYPES
+    .map((id) => `<option value="${id}">${GEAR_KINDS[id].picker}</option>`)
+    .join("");
+  const shoeKinds = Object.entries(SHOE_KINDS)
+    .map(([id, meta]) => `<option value="${id}">${meta.label}</option>`)
     .join("");
   return `
     <section class="card gear-add" hidden>
@@ -1291,10 +1711,31 @@ function gearAddForm() {
       <form class="gear-form">
         <label>Type
           <select name="type">
-            ${options}
+            <optgroup label="Endurance">${endurance}</optgroup>
+            <optgroup label="Strength">${strength}</optgroup>
           </select>
         </label>
         <label class="grow">Name<input type="text" name="name" required maxlength="80" placeholder="${GEAR_KINDS.shoes.hint}" /></label>
+        <label class="gear-weight-field" hidden>
+          <span data-weight-label>Weight (${weightUnit()})</span>
+          <input type="number" name="weight" min="0.5" step="0.5" placeholder="${isImperial() ? "35" : "16"}" />
+        </label>
+        <div class="gear-shoe-fields full" hidden>
+          <label>Shoe type
+            <select name="shoe_kind">
+              ${shoeKinds}
+            </select>
+          </label>
+          <label>
+            <span data-max-km-label>Lifespan target (${distUnit()})</span>
+            <input type="number" name="max_km" min="1" step="1" />
+          </label>
+          <p class="setup-hint" data-shoe-hint></p>
+          <label class="check-row">
+            <input type="checkbox" name="notify_wear" value="1" />
+            <span>Notify me when this pair is near or past its lifespan</span>
+          </label>
+        </div>
         <label class="full">Note <span class="muted">(optional)</span><input type="text" name="note" maxlength="140" placeholder="e.g. daily trainer, race pair" /></label>
         <div class="form-actions">
           <span class="form-error"></span>
@@ -1305,19 +1746,48 @@ function gearAddForm() {
     </section>`;
 }
 
+function strengthGearQuickAdd() {
+  const level = strengthAccessLevel();
+  const chips = [
+    ["gym", "Gym membership"],
+    ["kettlebell", "Kettlebell"],
+    ["dumbbells", "Dumbbells"],
+    ["bands", "Bands"],
+    ["pullup", "Pull-up bar"],
+    ["barbell", "Barbell"],
+  ].map(([type, label]) => {
+    const owned = GEAR.items.some((g) => g.type === type && !g.retired);
+    return `<button class="choice-btn${owned ? " is-on" : ""}" type="button" data-action="quick-gear" data-type="${type}" ${owned && type === "gym" ? "disabled" : ""}>${owned && type === "gym" ? "Gym added" : `+ ${label}`}</button>`;
+  }).join("");
+  return `
+    <section class="card gear-strength">
+      <div class="eyebrow">Strength</div>
+      <h2>What can you train with?</h2>
+      <p class="muted">Logged kit shapes strength sessions and plan recommendations. Bodyweight always works; a kettlebell or gym membership unlocks loaded work.</p>
+      <p class="gear-access-pill"><span class="eyebrow">Current</span> ${esc(strengthAccessLabel(level))}</p>
+      <p class="setup-hint">${esc(strengthGearAdvice())}</p>
+      <div class="choice-row gear-quick">${chips}</div>
+    </section>`;
+}
+
 function renderGear() {
-  const groups = Object.keys(GEAR_KINDS).map(gearGroup).join("");
+  const endurance = ENDURANCE_GEAR_TYPES.map(gearGroup).join("");
+  const strength = STRENGTH_GEAR_TYPES.map(gearGroup).join("");
+  const hasAny = GEAR.items.length > 0;
   return `
     <section class="hero compact">
       <div>
         <div class="eyebrow">Inventory</div>
-        <h1>Shoes, bikes &amp; swim kit</h1>
-        <p class="muted">Add shoes, a bike, a swimsuit or a wetsuit, or let a Garmin sync bring them in. Sync links Garmin gear onto activities that don't have any yet, and leaves a choice you already made. Retire a pair when it's done.</p>
+        <h1>Gear &amp; strength kit</h1>
+        <p class="muted">Track shoes, bikes and swim kit for activities, plus home or gym equipment so strength sessions match what you own. Strava sync can link shoes or bikes onto activities that don’t have gear yet.</p>
       </div>
       <button class="button" type="button" data-action="toggle-gear-form">+ Add gear</button>
     </section>
     ${gearAddForm()}
-    ${groups || `<section class="card"><p class="muted">None yet. Activities still work — add gear only when you want to assign it.</p></section>`}`;
+    ${shoeWearBanner()}
+    ${strengthGearQuickAdd()}
+    ${strength}
+    ${endurance || (!hasAny ? `<section class="card"><p class="muted">No endurance gear yet.</p></section>` : "")}`;
 }
 
 function normalizeUsername(raw) {
@@ -1342,9 +1812,11 @@ async function saveUsernameQuiet(username) {
   if (normalized === current) return normalized;
   const invalid = usernameError(normalized);
   if (invalid) throw new Error(invalid);
+  const units = normalizeUnits(window.CURRENT_PROFILE?.units || guessUnitsFromLocale());
   const { error } = await sb.from("profiles").upsert({
     user_id: CURRENT_USER_ID,
     username: normalized,
+    units,
     updated_at: new Date().toISOString(),
   });
   if (error) {
@@ -1352,7 +1824,7 @@ async function saveUsernameQuiet(username) {
     if (error.code === "23514") throw new Error("Use letters, spaces, hyphens or apostrophes — e.g. Jane Doe.");
     throw error;
   }
-  window.CURRENT_PROFILE = { username: normalized };
+  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), username: normalized, units };
   if (typeof window.showUser === "function") {
     const { data: { user } } = await sb.auth.getUser();
     window.showUser(user);
@@ -1361,12 +1833,44 @@ async function saveUsernameQuiet(username) {
 }
 window.saveUsernameQuiet = saveUsernameQuiet;
 
-function fmtDist(cat, dist) {
+async function saveUnitsQuiet(unitsRaw) {
+  const units = normalizeUnits(unitsRaw);
+  const current = normalizeUnits(window.CURRENT_PROFILE?.units);
+  if (units === current && window.CURRENT_PROFILE?.units) {
+    window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), units };
+    return units;
+  }
+  const username = window.CURRENT_PROFILE?.username || "";
+  const { error } = await sb.from("profiles").upsert({
+    user_id: CURRENT_USER_ID,
+    username: username || null,
+    units,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) throw error;
+  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), username, units };
+  return units;
+}
+window.saveUnitsQuiet = saveUnitsQuiet;
+
+function unitsChoiceRow(selected = profileUnits()) {
+  const metricOn = selected === "metric" ? " is-on" : "";
+  const imperialOn = selected === "imperial" ? " is-on" : "";
+  return `
+    <div class="choice-row units-choice">
+      <button class="choice-btn${metricOn}" type="button" data-units="metric">Metric (km, kg)</button>
+      <button class="choice-btn${imperialOn}" type="button" data-units="imperial">Miles &amp; lb</button>
+    </div>
+    <input type="hidden" name="units" value="${esc(selected)}" />`;
+}
+window.unitsChoiceRow = unitsChoiceRow;
+
+function fmtSportDist(cat, dist) {
   const n = Number(dist) || 0;
   if (cat === "swim") {
-    return n >= 1000 ? `${(n / 1000).toFixed(1)} km` : `${Math.round(n)} m`;
+    return n >= 1000 ? fmtDistWithUnit(n / 1000, 1) : `${Math.round(n)} m`;
   }
-  return `${n.toFixed(1)} km`;
+  return fmtDistWithUnit(n, 1);
 }
 
 function yearActs(acts, year) {
@@ -1402,11 +1906,11 @@ function chartDist(cat, dist) {
 function activityVolume(rows, filter) {
   if (filter === "swim") {
     const dist = (rows || []).reduce((s, a) => s + (Number(a.dist) || 0), 0);
-    if (dist >= 1000) return { value: (dist / 1000).toFixed(1), unit: "km" };
+    if (dist >= 1000) return { value: fmtDist(dist / 1000, 1), unit: distUnit() };
     return { value: String(Math.round(dist)), unit: "m" };
   }
   const km = (rows || []).reduce((s, a) => s + chartDist(a.cat, a.dist || 0), 0);
-  return { value: km.toFixed(1), unit: "km" };
+  return { value: fmtDist(km, 1), unit: distUnit() };
 }
 
 function activityVolumeLabel(rows, filter) {
@@ -1468,7 +1972,7 @@ function renderYearMonthChart(acts, now, cat) {
     const top = val ? y(val) : H - padB;
     const height = val ? Math.max(3, H - padB - top) : 0;
     const short = val ? (val >= 10 ? val.toFixed(0) : val.toFixed(1)) : "";
-    const title = `${names[i]} ${year}: ${m.count ? `${fmtDist(cat, m.dist)} · ${m.count} session${m.count === 1 ? "" : "s"}` : "No sessions"}`;
+    const title = `${names[i]} ${year}: ${m.count ? `${fmtSportDist(cat, m.dist)} · ${m.count} session${m.count === 1 ? "" : "s"}` : "No sessions"}`;
     return `
       <g class="mbar-wrap${cur ? " cur" : ""}${future ? " future" : ""}${val ? "" : " empty"}">
         ${height ? `<rect class="mbar" x="${x + 6}" y="${top}" width="${bw - 12}" height="${height}" rx="4"></rect>` : ""}
@@ -1483,7 +1987,7 @@ function renderYearMonthChart(acts, now, cat) {
   const from = done[0] ? names[months.indexOf(done[0])] : names[0];
   const to = names[curMonth];
   const summary = totalCount
-    ? `${from}–${to} · ${fmtDist(cat, totalDist)} · ${totalCount} session${totalCount === 1 ? "" : "s"}`
+    ? `${from}–${to} · ${fmtSportDist(cat, totalDist)} · ${totalCount} session${totalCount === 1 ? "" : "s"}`
     : `No ${YEAR_SPORT_LABEL[cat].toLowerCase()} sessions yet this year`;
   return `
     <div class="year-month" id="year-month-chart">
@@ -1613,7 +2117,7 @@ function renderPlanProgress(acts, now) {
       </div>
       <div class="profile-metrics">
         <div><span>Sessions done</span><strong>${stats.done}<em> / ${stats.planned}</em></strong><div class="bar"><div style="width:${sessionPct}%"></div></div></div>
-        <div><span>Run km logged</span><strong>${stats.loggedKm.toFixed(1)}<em> / ${stats.plannedKm.toFixed(0)}</em></strong></div>
+        <div><span>Run ${distUnit()} logged</span><strong>${fmtDist(stats.loggedKm, 1)}<em> / ${fmtDist(stats.plannedKm, 0)}</em></strong></div>
         <div><span>Phase</span><strong>${esc(stats.phase.name || "—")}</strong></div>
         <div><span>Race</span><strong>${fmt(RACE, { day: "numeric", month: "short" })}</strong></div>
       </div>
@@ -1634,7 +2138,7 @@ function renderYearStats(acts, now) {
     return `
       <a class="year-stat k-${cat}${on ? " active" : ""}" href="/profile/${cat}"${on ? ' aria-current="true"' : ""}>
         <span>${YEAR_SPORT_LABEL[cat]}</span>
-        <strong>${row.count ? fmtDist(cat, row.dist) : "—"}</strong>
+        <strong>${row.count ? fmtSportDist(cat, row.dist) : "—"}</strong>
         <em>${row.count ? `${row.count} session${row.count === 1 ? "" : "s"}` : "No sessions yet"}</em>
       </a>`;
   }).join("");
@@ -2181,14 +2685,22 @@ async function performStravaSync() {
   window.STRAVA_STATUS = STRAVA;
   ACTS = await loadActivities();
   window._setupActs = ACTS;
+  try { GEAR = await loadGear(); } catch {}
   const setupForm = document.querySelector(".setup-form");
   if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
     window.fillWeeklyFromSynced(setupForm, { force: true });
   }
   const n = data.added || 0;
-  return n
+  const bits = [];
+  if (data.skippedDup) bits.push(`skipped ${data.skippedDup} already on Garmin`);
+  if (data.gearAssigned) bits.push(`linked gear on ${data.gearAssigned}`);
+  if (data.gearCreated) bits.push(`added ${data.gearCreated} from Strava`);
+  const base = n
     ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
-    : (data.total ? `Strava sync complete — ${data.updated || 0} already known.` : "Strava sync complete — no activities in range.");
+    : (data.total || data.skippedDup
+      ? `Strava sync complete — ${data.updated || 0} already known.`
+      : "Strava sync complete — no activities in range.");
+  return bits.length ? `${base} ${bits.join(", ")}.` : base;
 }
 
 function setSyncButtonsDisabled(disabled) {
@@ -2240,7 +2752,7 @@ async function runNavSync() {
 }
 
 function syncIconSvg() {
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 7.5A6.5 6.5 0 1 0 18 12"/><path d="M14.5 5.5 17 8l2.5-2.5"/><rect x="9.2" y="11.2" width="5.6" height="8.2" rx="2.2"/><path d="M11 13.2h2.4"/></svg>`;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-15.5-6.4"/><path d="M3 4.5v5h5"/><path d="M3 12a9 9 0 0 0 15.5 6.4"/><path d="M21 19.5v-5h-5"/></svg>`;
 }
 
 function closeAccountMenu() {
@@ -2358,6 +2870,7 @@ function renderConnections() {
 function renderSettings() {
   const username = window.CURRENT_PROFILE?.username || "";
   const email = window.CURRENT_USER_EMAIL || "";
+  const units = profileUnits();
   const rules = typeof window.passwordRulesHtml === "function"
     ? window.passwordRulesHtml({ hidden: false, id: "settings-password-rules" })
     : "";
@@ -2366,7 +2879,7 @@ function renderSettings() {
       <div>
         <div class="eyebrow">Your account</div>
         <h1>Settings</h1>
-        <p class="muted">Change your name and password.</p>
+        <p class="muted">Change your name, units and password.</p>
       </div>
     </section>
     <div class="settings-stack">
@@ -2386,6 +2899,21 @@ function renderSettings() {
           <p class="form-error" role="alert"></p>
           <p class="form-note" role="status"></p>
           <button class="button" type="submit">Save name</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">Preferences</div>
+            <h2>Units</h2>
+            <p class="muted" style="margin:6px 0 0">Distances and strength weights across the app.</p>
+          </div>
+        </div>
+        <form class="settings-form" data-settings="units" novalidate>
+          ${unitsChoiceRow(units)}
+          <p class="form-error" role="alert"></p>
+          <p class="form-note" role="status"></p>
+          <button class="button" type="submit">Save units</button>
         </form>
       </section>
       <section class="card">
@@ -2419,6 +2947,8 @@ window.renderSettings = renderSettings;
 function renderProfile(acts, now) {
   const userEmail = window.CURRENT_USER_EMAIL || "";
   const username = window.CURRENT_PROFILE?.username || "";
+  const units = profileUnits();
+  const unitsLabel = units === "imperial" ? "Miles & lb" : "Metric (km, kg)";
   const letter = (username || userEmail || "?").slice(0, 1).toUpperCase();
   return `
     <section class="hero compact profile-hero">
@@ -2430,6 +2960,21 @@ function renderProfile(acts, now) {
           <p class="muted">${userEmail ? esc(userEmail) : "This is how you appear in the app."}</p>
         </div>
       </div>
+    </section>
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <div class="eyebrow">Preferences</div>
+          <h2>Units</h2>
+          <p class="muted" style="margin:6px 0 0">Currently ${esc(unitsLabel)}. Change below or in <a href="/settings">Settings</a>.</p>
+        </div>
+      </div>
+      <form class="settings-form" data-settings="units" novalidate>
+        ${unitsChoiceRow(units)}
+        <p class="form-error" role="alert"></p>
+        <p class="form-note" role="status"></p>
+        <button class="button" type="submit">Save units</button>
+      </form>
     </section>
     ${renderPlanProgress(acts, now)}
     ${renderYearStats(acts, now)}
@@ -2517,13 +3062,13 @@ function weekCard(week, acts, now, title) {
         <span class="pill p-${week.phase}">${week.phase}</span>
       </div>
       <div class="targets">
-        <div><span>Run</span><strong>${week.km} km</strong></div>
-        <div><span>Long</span><strong>${week.long} km</strong></div>
+        <div><span>Run</span><strong>${fmtDistWithUnit(week.km, 0)}</strong></div>
+        <div><span>Long</span><strong>${fmtDistWithUnit(week.long, 0)}</strong></div>
         ${extraSportTargets(week)}
       </div>
       ${showActual ? `
         <div class="progress">
-          <div class="progress-label">Logged run km: <strong>${actual.toFixed(1)}</strong> / ${week.km}</div>
+          <div class="progress-label">Logged run ${distUnit()}: <strong>${fmtDist(actual, 1)}</strong> / ${fmtDist(week.km, 0)}</div>
           <div class="bar"><div style="width:${pct}%"></div></div>
         </div>` : ""}
       ${week.note ? `<p class="note">${week.note}</p>` : ""}
@@ -2554,7 +3099,7 @@ function loggedWeekBlock(acts, now) {
       <div class="card-head">
         <div>
           <div class="eyebrow">This week</div>
-          <h2>${weekActs.length ? `${km.toFixed(1)} km from ${runs.length} run${runs.length === 1 ? "" : "s"}` : "No sessions logged yet"}</h2>
+          <h2>${weekActs.length ? `${fmtDistWithUnit(km, 1)} from ${runs.length} run${runs.length === 1 ? "" : "s"}` : "No sessions logged yet"}</h2>
         </div>
       </div>
       <ul class="days">${[0, 1, 2, 3, 4, 5, 6].map((i) => loggedDayRow(i, start, acts, now)).join("")}</ul>
@@ -2605,7 +3150,7 @@ function eventListItem(e, now, { past = false } = {}) {
     <button type="button" class="ev-open" data-action="open-day" data-date="${esc(ds)}" title="View ${esc(e.name)}">
       <span class="ev-date"><strong>${fmt(d, { day: "numeric" })}</strong><span>${fmt(d, { month: "short" })}</span></span>
       <span class="ev-main">
-        <span class="ev-name">${esc(e.name)} · ${fmtKm(e.km)} km <span class="muted">· ${effortLabel(e.effort)}${weekBit} · ${when}${e.is_public ? " · public" : ""}</span></span>
+        <span class="ev-name">${esc(e.name)} · ${fmtDistWithUnit(e.km)} <span class="muted">· ${effortLabel(e.effort)}${weekBit} · ${when}${e.location ? ` · ${esc(e.location)}` : ""}${e.is_public ? " · public" : ""}</span></span>
         ${e.note ? `<span class="ev-personal">${esc(e.note)}</span>` : ""}
       </span>
       <span class="day-open" aria-hidden="true">›</span>
@@ -2619,6 +3164,13 @@ function followUpEvent() {
   return EVENTS.find((e) => String(e.id) === String(eventFollowUpId)) || null;
 }
 
+function eventDistanceChoicesHtml(sport, selectedPreset = "") {
+  const presets = (window.EVENT_PRESETS && window.EVENT_PRESETS[sport]) || [];
+  if (!presets.length) return `<p class="muted">Pick an event type first.</p>`;
+  return presets.map((p) => `
+    <button class="choice-btn${p.id === selectedPreset ? " active" : ""}" type="button" data-event-preset="${esc(p.id)}">${esc(p.label)}</button>`).join("");
+}
+
 function eventsCard(now, upcoming, opts = {}) {
   const past = pastEventsList(now, opts.acts || ACTS);
   const latestPast = past[0];
@@ -2628,7 +3180,9 @@ function eventsCard(now, upcoming, opts = {}) {
   const locked = !!eventFormDraft?.locked;
   const sport = fields.sport || "run";
   const isPublic = fields.is_public === "yes" ? "yes" : "no";
+  const preset = fields.preset || "";
   const field = (name) => esc(fields[name] || "");
+  const customOpen = preset === "custom" || (!preset && !!fields.km);
   return `
     <section class="card" id="events">
       <div class="card-head">
@@ -2642,24 +3196,38 @@ function eventsCard(now, upcoming, opts = {}) {
         <ul class="search-results full" hidden></ul>
         <label>Date<input type="date" name="date" required value="${field("date")}" /></label>
         <label class="grow">Name<input type="text" name="name" required placeholder="e.g. Kerstcorrida Gent" value="${field("name")}" /></label>
-        <label>Distance (km)<input type="number" name="km" required min="0.1" step="0.1" placeholder="10" value="${field("km")}" /></label>
-        <label>Type
-          <select name="sport">
-            <option value="run"${sport === "run" ? " selected" : ""}>Running</option>
-            <option value="swim"${sport === "swim" ? " selected" : ""}>Swimming</option>
-            <option value="bike"${sport === "bike" ? " selected" : ""}>Cycling</option>
-            <option value="triathlon"${sport === "triathlon" ? " selected" : ""}>Triathlon</option>
-          </select>
+        <label class="full">Location
+          <input type="text" name="location" maxlength="80" placeholder="e.g. Gent, Belgium" value="${field("location")}" />
+        </label>
+        <fieldset class="full event-sport-field">
+          <legend>Event type</legend>
+          <div class="choice-row" id="event-sport-choices">
+            ${["run", "swim", "bike", "triathlon"].map((s) => `
+              <button class="choice-btn${sport === s ? " active" : ""}" type="button" data-event-sport="${s}">${esc((window.SPORT_LABEL && window.SPORT_LABEL[s]) || s)}</button>`).join("")}
+          </div>
+          <input type="hidden" name="sport" value="${esc(sport)}" />
+        </fieldset>
+        <fieldset class="full event-distance-field">
+          <legend>Distance</legend>
+          <div class="choice-row" id="event-distance-choices">${eventDistanceChoicesHtml(sport, preset)}</div>
+          <input type="hidden" name="preset" value="${esc(preset)}" />
+        </fieldset>
+        <label class="full event-custom-km"${customOpen ? "" : " hidden"}>Distance (${distUnit()})
+          <input type="number" name="km" ${customOpen ? "required" : ""} min="0.1" step="0.1" placeholder="${isImperial() ? "6.2" : "10"}" value="${field("km") ? esc(displayDistValue(field("km"))) : ""}" />
         </label>
         <label class="full event-note-field">Event note <span class="muted">(optional, can be public)</span>
           <input type="text" name="event_note" maxlength="140" placeholder="e.g. chip start 9:30, city centre" value="${field("event_note")}" />
         </label>
-        <label class="full">Visibility
-          <select name="is_public">
-            <option value="no"${isPublic === "no" ? " selected" : ""}>Just for me</option>
-            <option value="yes"${isPublic === "yes" ? " selected" : ""}>Public — name, date, distance and event note</option>
-          </select>
-        </label>
+        <fieldset class="full">
+          <legend>Share this event</legend>
+          <div class="choice-row">
+            <button class="choice-btn${isPublic === "no" ? " active" : ""}" type="button" data-event-public="no">Private</button>
+            <button class="choice-btn${isPublic === "yes" ? " active" : ""}" type="button" data-event-public="yes">Public</button>
+          </div>
+          <input type="hidden" name="is_public" value="${isPublic}" />
+          <p class="muted small-text">Public shares name, date, distance and location only.</p>
+        </fieldset>
+        <div class="similar-event full" hidden></div>
         <p class="muted small-text full">Nothing personal goes on this step. Effort and your own note come next, and stay private.</p>
         <input type="hidden" name="source_id" value="${field("source_id")}" />
         <input type="hidden" name="swim_m" value="${field("swim_m")}" />
@@ -2706,36 +3274,187 @@ function renderPastEvents(now) {
     </section>`;
 }
 
+function eventPresetKm(sport, presetId) {
+  const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
+  if (!preset || presetId === "custom") return null;
+  if (sport === "swim") return (preset.swim || 0) / 1000;
+  if (sport === "bike") return preset.bike || null;
+  if (sport === "triathlon") return preset.run || null;
+  return preset.run || null;
+}
+
+function paintAgendaDistances(form, sport, keepPreset = false) {
+  const box = form.querySelector("#event-distance-choices");
+  if (!box) return;
+  const presetEl = form.querySelector("[name=preset]");
+  const current = keepPreset ? (presetEl?.value || "") : "";
+  box.innerHTML = eventDistanceChoicesHtml(sport, current);
+  if (!keepPreset && presetEl) presetEl.value = "";
+  applyAgendaPreset(form, keepPreset ? current : "");
+}
+
+function applyAgendaPreset(form, presetId) {
+  const sport = form.sport?.value || "run";
+  const presetEl = form.querySelector("[name=preset]");
+  if (presetEl) presetEl.value = presetId || "";
+  form.querySelectorAll("#event-distance-choices .choice-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.eventPreset === presetId);
+  });
+  const customWrap = form.querySelector(".event-custom-km");
+  const kmInput = form.km;
+  const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
+  const isCustom = !presetId || presetId === "custom";
+  if (customWrap) customWrap.hidden = !isCustom;
+  if (kmInput) {
+    kmInput.required = isCustom;
+    if (!isCustom && preset) {
+      const km = eventPresetKm(sport, presetId);
+      kmInput.value = km != null ? displayDistValue(km) : "";
+      if (form.swim_m) form.swim_m.value = preset.swim || "";
+      if (form.bike_km) form.bike_km.value = preset.bike || "";
+    } else if (isCustom) {
+      if (form.swim_m) form.swim_m.value = "";
+      if (form.bike_km) form.bike_km.value = "";
+    }
+  }
+}
+
+function setAgendaPublic(form, value) {
+  const next = value === "yes" ? "yes" : "no";
+  if (form.is_public) form.is_public.value = next;
+  form.querySelectorAll("[data-event-public]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.eventPublic === next);
+  });
+}
+
 window.applyPublicEventToAgenda = function applyPublicEventToAgenda(form, ev) {
   form.date.value = ev.date || "";
   form.name.value = ev.name || "";
-  form.km.value = ev.km || "";
-  if (form.sport) form.sport.value = "run";
+  if (form.location) form.location.value = ev.location || "";
+  const sport = ev.sport || (typeof window.inferSportFromEvent === "function" ? window.inferSportFromEvent(ev) : "run");
+  if (form.sport) form.sport.value = sport;
+  form.querySelectorAll("[data-event-sport]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.eventSport === sport);
+  });
+  paintAgendaDistances(form, sport, false);
+  if (form.preset) form.preset.value = "custom";
+  applyAgendaPreset(form, "custom");
+  form.km.value = ev.km != null ? displayDistValue(ev.km) : "";
   if (form.effort) form.effort.value = "easy";
   if (form.source_id) form.source_id.value = ev.id || "";
-  if (form.swim_m) form.swim_m.value = "";
-  if (form.bike_km) form.bike_km.value = "";
+  if (form.swim_m) form.swim_m.value = ev.swim_m || "";
+  if (form.bike_km) form.bike_km.value = ev.bike_km || "";
   if (form.note) form.note.value = "";
   if (form.event_note) form.event_note.value = "";
-  if (form.is_public) form.is_public.value = "no";
+  setAgendaPublic(form, "no");
+  hideSimilarEventPrompt(form);
   setAgendaEventLocked(form, true);
 };
 
 function setAgendaEventLocked(form, locked) {
   form.classList.toggle("from-public", locked);
-  ["date", "name", "km"].forEach((n) => {
+  ["date", "name", "km", "location"].forEach((n) => {
     if (form[n]) form[n].readOnly = locked;
+  });
+  form.querySelectorAll("[data-event-sport], [data-event-preset]").forEach((b) => {
+    b.disabled = locked;
   });
   let hint = form.querySelector(".picked-readonly");
   if (locked) {
     if (!hint) {
       hint = document.createElement("p");
       hint.className = "muted small-text picked-readonly full";
-      hint.textContent = "This is a public event, so name, date and distance stay as listed.";
+      hint.textContent = "This is a public event, so name, date, distance and location stay as listed.";
       form.querySelector("label.full")?.after(hint);
     }
     hint.hidden = false;
   } else if (hint) hint.hidden = true;
+}
+
+function normLocation(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function distanceNear(a, b) {
+  const left = Number(a);
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right) || left <= 0 || right <= 0) return false;
+  const delta = Math.abs(left - right);
+  return delta <= 0.3 || delta / Math.max(left, right) <= 0.03;
+}
+
+async function findSimilarPublicEvents({ date, km, location, sport }) {
+  if (!date || !(Number(km) > 0)) return [];
+  const loc = normLocation(location);
+  const out = [];
+  const seen = new Set();
+  const push = (ev, source) => {
+    if (!ev?.id || !distanceNear(ev.km, km)) return;
+    if (String(ev.date) !== String(date)) return;
+    if (loc) {
+      const other = normLocation(ev.location);
+      if (other && other !== loc && !other.includes(loc) && !loc.includes(other)) return;
+    }
+    const key = `${source}|${ev.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ ...ev, _source: source });
+  };
+
+  try {
+    let query = sb.from("events")
+      .select("id,name,date,km,location,sport,swim_m,bike_km,event_note")
+      .eq("is_public", true)
+      .eq("date", date)
+      .limit(20);
+    const { data, error } = await query;
+    if (!error) (data || []).forEach((ev) => push(ev, "events"));
+  } catch { /* ignore */ }
+
+  try {
+    const { data, error } = await sb.from("race_catalog")
+      .select("id,name,date,km")
+      .eq("date", date)
+      .limit(20);
+    if (!error) (data || []).forEach((ev) => push({ ...ev, location: "", sport: sport || "run" }, "catalog"));
+  } catch { /* ignore */ }
+
+  return out.slice(0, 5);
+}
+
+function hideSimilarEventPrompt(form) {
+  const box = form?.querySelector(".similar-event");
+  if (!box) return;
+  box.hidden = true;
+  box.innerHTML = "";
+  delete form.dataset.skipSimilar;
+}
+
+function showSimilarEventPrompt(form, matches) {
+  const box = form.querySelector(".similar-event");
+  if (!box || !matches.length) return;
+  const first = matches[0];
+  const sportLabel = (window.SPORT_LABEL && window.SPORT_LABEL[first.sport]) || first.sport || "";
+  const loc = first.location ? ` · ${esc(first.location)}` : "";
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="similar-event-card">
+      <p><strong>Found a similar public event.</strong> Did you mean this one?</p>
+      <p>${esc(first.name)} · ${esc(first.date)}${first.km != null ? ` · ${esc(fmtDistWithUnit(first.km))}` : ""}${sportLabel ? ` · ${esc(sportLabel)}` : ""}${loc}</p>
+      <div class="form-actions">
+        <button class="button" type="button" data-action="use-similar-event" data-similar-event="${esc(JSON.stringify({
+          id: first.id,
+          name: first.name,
+          date: first.date,
+          km: first.km,
+          location: first.location || "",
+          sport: first.sport || "run",
+          swim_m: first.swim_m,
+          bike_km: first.bike_km,
+        }))}">Use this event</button>
+        <button class="button ghost" type="button" data-action="keep-own-event">Keep mine</button>
+      </div>
+    </div>`;
 }
 
 let HOME_WEEK = null;
@@ -2854,8 +3573,8 @@ function renderChart(acts, now) {
     const dates = `${short(s)} – ${short(e)}`;
     const longKm = Math.min(w.long, w.km);
     const actual = s <= now ? weekRunKm(w, acts) : null;
-    const progress = actual !== null ? `${actual.toFixed(1)} km` : "—";
-    const aria = `Week ${w.wk}, ${dates}: ${w.km} km, long ${w.long} km, progress ${actual !== null ? `${actual.toFixed(1)} km` : "not started"}`;
+    const progress = actual !== null ? fmtDistWithUnit(actual, 1) : "—";
+    const aria = `Week ${w.wk}, ${dates}: ${fmtDistWithUnit(w.km, 0)}, long ${fmtDistWithUnit(w.long, 0)}, progress ${actual !== null ? fmtDistWithUnit(actual, 1) : "not started"}`;
     const tipSide = i < 2 ? " tip-start" : i >= n - 2 ? " tip-end" : "";
     bars.push(`
       <g class="wkbar ${w.wk === curWk ? "cur" : ""}">
@@ -2869,8 +3588,8 @@ function renderChart(acts, now) {
         <span class="chart-tip">
           <em>Week ${w.wk}</em>
           <em class="chart-tip-dates">${esc(dates)}</em>
-          <span>Weekly <strong>${w.km} km</strong></span>
-          <span>Long <strong>${w.long} km</strong></span>
+          <span>Weekly <strong>${fmtDistWithUnit(w.km, 0)}</strong></span>
+          <span>Long <strong>${fmtDistWithUnit(w.long, 0)}</strong></span>
           <span>Progress <strong>${esc(progress)}</strong></span>
         </span>
       </a>`);
@@ -2879,10 +3598,10 @@ function renderChart(acts, now) {
   for (let v = 10; v < max; v += 10) ticks.push(v);
   const grid = ticks.map((v) => `<line x1="${pad}" x2="${W - pad}" y1="${y(v)}" y2="${y(v)}"></line><text class="axis" x="${pad - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`).join("");
   return `<div class="chart-scroll"><div class="chart-inner">
-      <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly run km">${grid}${bars.join("")}</svg>
+      <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weekly run ${distUnit()}">${grid}${bars.join("")}</svg>
       <div class="chart-hovers">${hovers.join("")}</div>
     </div></div>
-    <div class="legend"><span><i class="lg-total"></i>Weekly run km</span><span><i class="lg-long"></i>Long run</span><span><i class="lg-actual"></i>Logged</span></div>`;
+    <div class="legend"><span><i class="lg-total"></i>Weekly run ${distUnit()}</span><span><i class="lg-long"></i>Long run</span><span><i class="lg-actual"></i>Logged</span></div>`;
 }
 
 function localProgressReport(acts, now) {
@@ -2893,10 +3612,10 @@ function localProgressReport(acts, now) {
   if (!stats.started) {
     paras.push(`${eventLabel()} starts in ${daysBetween(now, START)} days. The report will track from week 1.`);
   } else if (stats.finished) {
-    paras.push(`${eventLabel()} is done. You logged ${stats.loggedKm.toFixed(1)} km across ${stats.done} sessions in this block.`);
+    paras.push(`${eventLabel()} is done. You logged ${fmtDistWithUnit(stats.loggedKm, 1)} across ${stats.done} sessions in this block.`);
   } else {
     const sessionPct = stats.planned ? Math.round((stats.done / stats.planned) * 100) : 0;
-    paras.push(`Week ${stats.wk} of ${stats.totalWeeks}, ${stats.phase.name || "build"}, ${Math.max(0, stats.daysToRace)} days to ${eventLabel()}. ${stats.done} of ${stats.planned} planned sessions are done (${sessionPct}%), with ${stats.loggedKm.toFixed(1)} of ${stats.plannedKm.toFixed(0)} km logged.`);
+    paras.push(`Week ${stats.wk} of ${stats.totalWeeks}, ${stats.phase.name || "build"}, ${Math.max(0, stats.daysToRace)} days to ${eventLabel()}. ${stats.done} of ${stats.planned} planned sessions are done (${sessionPct}%), with ${fmtDist(stats.loggedKm, 1)} of ${fmtDist(stats.plannedKm, 0)} ${distUnit()} logged.`);
   }
   if (pred && !pred.empty) {
     const cur = fmtRaceClock(pred.currentSec);
@@ -3044,7 +3763,7 @@ function renderVolumeCard(acts, now) {
       <div class="card-head">
         <div>
           <div class="eyebrow">Load</div>
-          <h2>Weekly run km</h2>
+          <h2>Weekly run ${distUnit()}</h2>
         </div>
         <a class="button ghost small" href="/progress">Progress report</a>
       </div>
@@ -3054,14 +3773,14 @@ function renderVolumeCard(acts, now) {
 
 function weekKmSummary(w, acts, now) {
   const s = weekStart(w.wk);
-  if (s > now) return `<span class="km"><strong>${w.km}</strong> km planned · long ${w.long}</span>`;
+  if (s > now) return `<span class="km"><strong>${fmtDist(w.km, 0)}</strong> ${distUnit()} planned · long ${fmtDist(w.long, 0)}</span>`;
   const logged = weekRunKm(w, acts);
   const pct = Math.round((logged / w.km) * 100);
   const inProgress = w.wk === weekOf(now) && ymd(now) !== ymd(addDays(s, 6));
   const level = inProgress ? "live" : pct >= 90 ? "good" : pct >= 60 ? "ok" : "low";
   return `
-    <span class="km logged lvl-${level}" title="${logged.toFixed(1)} of ${w.km} km run${inProgress ? " (week in progress)" : ""}">
-      <span class="km-nums"><strong>${logged.toFixed(1)}</strong> / ${w.km} km <em>${pct}%</em></span>
+    <span class="km logged lvl-${level}" title="${fmtDist(logged, 1)} of ${fmtDist(w.km, 0)} ${distUnit()} run${inProgress ? " (week in progress)" : ""}">
+      <span class="km-nums"><strong>${fmtDist(logged, 1)}</strong> / ${fmtDist(w.km, 0)} ${distUnit()} <em>${pct}%</em></span>
       <span class="km-bar"><span style="width:${Math.min(100, pct)}%"></span></span>
     </span>`;
 }
@@ -3087,10 +3806,16 @@ function displayPredictValue(sec, paceSec, spec, mode) {
   if (mode === "pace") {
     const use = paceSec || sec;
     if (!(use > 0)) return "—";
-    if (spec.sport === "bike" && spec.bikeKm) return `${(spec.bikeKm / (use / 3600)).toFixed(1)} km/h`;
+    if (spec.sport === "bike" && spec.bikeKm) {
+      const kph = spec.bikeKm / (use / 3600);
+      return isImperial() ? `${fmtNum(kph / KM_PER_MILE, 1)} mph` : `${kph.toFixed(1)} km/h`;
+    }
     if (spec.sport === "swim" && spec.swimM) return `${fmtPace(use / (spec.swimM / 100))}/100m`;
     const km = spec.targetRunKm || spec.runKm;
-    if (km) return `${fmtPace(use / km)}/km`;
+    if (km) {
+      const secPerKm = use / km;
+      return isImperial() ? `${fmtPaceSec(secPerKm * KM_PER_MILE)}/mi` : `${fmtPace(secPerKm)}/km`;
+    }
     return "—";
   }
   return fmtRaceClock(sec);
@@ -3242,12 +3967,20 @@ function renderRacePrediction(acts, now, nested = false) {
     if (mode === "pace") {
       if (spec.sport === "bike" && spec.bikeKm) {
         const gain = spec.bikeKm / (pred.projectedSec / 3600) - spec.bikeKm / (pred.currentSec / 3600);
-        if (gain > 0.15) delta = `${gain.toFixed(1)} km/h faster`;
+        if (gain > 0.15) delta = isImperial()
+          ? `${fmtNum(gain / KM_PER_MILE, 1)} mph faster`
+          : `${gain.toFixed(1)} km/h faster`;
       } else {
         const unitDist = spec.sport === "swim" && spec.swimM ? spec.swimM / 100 : (spec.targetRunKm || spec.runKm);
         const per = unitDist ? deltaSec / unitDist : 0;
-        const unit = spec.sport === "swim" ? "/100m" : "/km";
-        if (per >= 1) delta = per < 60 ? `${Math.round(per)}s${unit} faster` : `${fmtPace(per)}${unit} faster`;
+        if (spec.sport === "swim") {
+          if (per >= 1) delta = per < 60 ? `${Math.round(per)}s/100m faster` : `${fmtPace(per)}/100m faster`;
+        } else if (isImperial()) {
+          const perMi = per * KM_PER_MILE;
+          if (perMi >= 1) delta = perMi < 60 ? `${Math.round(perMi)}s/mi faster` : `${fmtPaceSec(perMi)}/mi faster`;
+        } else if (per >= 1) {
+          delta = per < 60 ? `${Math.round(per)}s/km faster` : `${fmtPace(per)}/km faster`;
+        }
       }
     } else {
       delta = `${fmtRaceClock(deltaSec)} faster`;
@@ -3387,10 +4120,13 @@ function renderPlan(acts, now) {
       <section class="card">
         <div class="card-head"><h2>Pace guide</h2></div>
         <table class="table">
-          <thead><tr><th>Effort</th><th>Pace / km</th><th>Use</th></tr></thead>
-          <tbody>${PACES.map((p) => `<tr><td>${p[0]}</td><td><strong>${p[1]}</strong></td><td class="muted">${p[2]}</td></tr>`).join("")}</tbody>
+          <thead><tr><th>Effort</th><th>Pace / ${distUnit() === "mi" ? "mi" : "km"}</th><th>Use</th></tr></thead>
+          <tbody>${PACES.map((p) => {
+            const pace = typeof displayPaceRange === "function" ? displayPaceRange(p[1]) : p[1];
+            return `<tr><td>${p[0]}</td><td><strong>${pace}</strong></td><td class="muted">${p[2]}</td></tr>`;
+          }).join("")}</tbody>
         </table>
-        <p class="muted small-text">Keep easy days easy. Save race effort for the event and short quality sessions. <a href="/gear">Track shoes, bikes and swim kit on the Gear page</a>.</p>
+        <p class="muted small-text">Keep easy days easy. Save race effort for the event and short quality sessions. <a href="/gear">Track shoes, bikes, swim kit and strength equipment on the Gear page</a>.</p>
       </section>
       ${ROADMAP_703.length ? `
       <section class="card">
@@ -4071,12 +4807,12 @@ function renderActivityWeekChart(acts, year, filter, now) {
     const timeLabel = formatHours(timeSec);
     const stats = count ? [
       `<span>Sessions <strong>${count}</strong></span>`,
-      ...active.map((cat) => `<span>${YEAR_SPORT_LABEL[cat]} <strong>${row.byCat[cat].toFixed(1)} km</strong></span>`),
-      ...(active.length > 1 ? [`<span>Total <strong>${total.toFixed(1)} km</strong></span>`] : []),
+      ...active.map((cat) => `<span>${YEAR_SPORT_LABEL[cat]} <strong>${fmtDistWithUnit(row.byCat[cat], 1)}</strong></span>`),
+      ...(active.length > 1 ? [`<span>Total <strong>${fmtDistWithUnit(total, 1)}</strong></span>`] : []),
       ...(timeLabel ? [`<span>Time <strong>${esc(timeLabel)}</strong></span>`] : []),
     ] : [`<span>No sessions</span>`];
     const summary = count
-      ? `${count} session${count === 1 ? "" : "s"}, ${active.map((cat) => `${YEAR_SPORT_LABEL[cat]} ${row.byCat[cat].toFixed(1)} km`).join(", ")}${timeLabel ? `, ${timeLabel}` : ""}`
+      ? `${count} session${count === 1 ? "" : "s"}, ${active.map((cat) => `${YEAR_SPORT_LABEL[cat]} ${fmtDistWithUnit(row.byCat[cat], 1)}`).join(", ")}${timeLabel ? `, ${timeLabel}` : ""}`
       : "no sessions";
     const tipSide = i < 5 ? " tip-start" : i >= rows.length - 5 ? " tip-end" : "";
     const x = padL + i * bw;
@@ -4097,11 +4833,11 @@ function renderActivityWeekChart(acts, year, filter, now) {
 
   const totals = Object.fromEntries(cats.map((cat) => [cat, rows.reduce((s, r) => s + r.byCat[cat], 0)]));
   const sessions = rows.reduce((s, r) => s + r.count, 0);
-  const legend = cats.map((cat) => `<span><i class="lg-${cat}"></i>${YEAR_SPORT_LABEL[cat]}${totals[cat] ? ` ${totals[cat].toFixed(1)} km` : ""}</span>`).join("");
+  const legend = cats.map((cat) => `<span><i class="lg-${cat}"></i>${YEAR_SPORT_LABEL[cat]}${totals[cat] ? ` ${fmtDistWithUnit(totals[cat], 1)}` : ""}</span>`).join("");
   return `
     <div class="year-month">
       <div class="year-month-head">
-        <h3>${filter ? `${YEAR_SPORT_LABEL[filter]} km by week` : "Weekly volume"}</h3>
+        <h3>${filter ? `${YEAR_SPORT_LABEL[filter]} ${distUnit()} by week` : "Weekly volume"}</h3>
         <span class="muted">${sessions ? `${sessions} session${sessions === 1 ? "" : "s"} in ${year}` : `No sessions in ${year}`}</span>
       </div>
       <div class="chart-scroll">
@@ -4201,7 +4937,7 @@ function renderActivities(acts, now) {
     </section>`;
 }
 
-const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup"]);
+const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup", "create-plan"]);
 
 function pathParts() {
   return location.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
@@ -4244,13 +4980,17 @@ function go(path, { replace = false } = {}) {
   const [nextBase] = path.replace(/^\/+|\/+$/g, "").split("/");
   const sameSection = pathParts()[0] === nextBase;
   if (location.pathname + location.search === next && !location.hash) {
-    if (!APP_READY && nextBase !== "setup" && window.CURRENT_USER_ID) return window.bootApp?.();
+    if (!APP_READY && nextBase !== "setup" && nextBase !== "create-plan" && window.CURRENT_USER_ID) {
+      return window.bootApp?.();
+    }
     render();
     return;
   }
   if (replace || sameSection) history.replaceState(null, "", next);
   else history.pushState(null, "", next);
-  if (!APP_READY && nextBase !== "setup" && window.CURRENT_USER_ID) return window.bootApp?.();
+  if (!APP_READY && nextBase !== "setup" && nextBase !== "create-plan" && window.CURRENT_USER_ID) {
+    return window.bootApp?.();
+  }
   render();
 }
 
@@ -4263,10 +5003,10 @@ function renderView(route, acts, now) {
   if (route === "settings") return renderSettings();
   if (route === "activities") return renderActivities(acts, now);
   if (route === "events") return renderPastEvents(now);
+  if (route === "gear") return renderGear();
   if (!hasPlan()) return renderNoPlanHome(acts, now);
   if (route === "plan") return renderPlan(acts, now);
   if (route === "progress") return renderProgress(acts, now);
-  if (route === "gear") return renderGear();
   return renderHome(acts, now);
 }
 
@@ -4278,6 +5018,13 @@ function render(force = false) {
     const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
     if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
       window.renderOnboarding();
+    }
+    return;
+  }
+  if (currentRoute() === "create-plan") {
+    const hasForm = document.querySelector(".setup-form[data-create-only='1']");
+    if (typeof window.renderCreatePlan === "function" && !hasForm) {
+      window.renderCreatePlan();
     }
     return;
   }
@@ -4374,6 +5121,7 @@ async function cloudRequest(method, url, body) {
         effort: "easy",
         note: "",
         event_note: clipText(body.event_note, 140),
+        location: clipText(body.location, 80),
         race: false,
         is_public: body.is_public === "yes" || body.is_public === true,
         sport: ["run", "swim", "bike", "triathlon"].includes(body.sport) ? body.sport : "run",
@@ -4386,6 +5134,10 @@ async function cloudRequest(method, url, body) {
         delete row.event_note;
         ({ data, error } = await sb.from("events").insert(row).select("*").single());
         if (!error) data.event_note_skipped = true;
+      }
+      if (error && columnMissing(error, "location")) {
+        delete row.location;
+        ({ data, error } = await sb.from("events").insert(row).select("*").single());
       }
       if (error) throw error;
       await sb.from("changes").insert({ user_id: uid, id: newId(), type: "event", summary: `New event: ${row.name}, ${row.km} km on ${row.date}`, details: row, status: "pending" });
@@ -4419,7 +5171,7 @@ async function cloudRequest(method, url, body) {
           const name = String(body.name || "").trim();
           const km = Number(body.km);
           if (!name) throw new Error("Name is required");
-          if (!(km > 0 && km < 300)) throw new Error("Distance must be a positive number of km");
+          if (!(km > 0 && km < 500)) throw new Error("Distance must be a positive number");
           patch.name = name;
           patch.km = km;
         }
@@ -4504,25 +5256,67 @@ async function cloudRequest(method, url, body) {
       const type = GEAR_KINDS[body.type] ? body.type : null;
       const name = String(body.name || "").trim().slice(0, 80);
       const note = String(body.note || "").trim().slice(0, 140);
-      if (!type) throw new Error("Type must be shoes, bike, swimsuit or wetsuit");
+      if (!type) throw new Error("Pick a gear type");
       if (!name) throw new Error("Name is required");
+      let weightKg = null;
+      if (gearHasWeight(type)) {
+        weightKg = body.weightKg != null ? Number(body.weightKg) : null;
+        if (!(weightKg > 0)) throw new Error(`Enter a weight in ${weightUnit()}.`);
+      }
+      let shoeKind = null;
+      let maxKm = null;
+      let notifyWear = false;
+      if (type === "shoes") {
+        shoeKind = SHOE_KINDS[body.shoeKind] ? body.shoeKind : "daily";
+        maxKm = body.maxKm != null ? Number(body.maxKm) : shoeMaxKmDefault(shoeKind);
+        if (!(maxKm > 0)) throw new Error(`Enter a lifespan target in ${distUnit()}.`);
+        notifyWear = !!body.notifyWear;
+      }
       const { data, error } = await sb.from("gear").insert({
-        id: newId(), user_id: uid, type, name, note, retired: false,
+        id: newId(),
+        user_id: uid,
+        type,
+        name,
+        note,
+        retired: false,
+        weight_kg: weightKg,
+        shoe_kind: shoeKind,
+        max_km: maxKm,
+        notify_wear: notifyWear,
       }).select("*").single();
       if (error) throw error;
-      return { id: data.id, type: data.type, name: data.name, note: data.note || "", retired: !!data.retired, addedAt: data.added_at };
+      return mapGearRow(data);
     }
     if (method === "POST" && id) {
       const patch = {};
+      const existing = GEAR.items.find((g) => g.id === id);
       if (typeof body.retired === "boolean") patch.retired = body.retired;
       const name = String(body.name || "").trim().slice(0, 80);
       if (name) patch.name = name;
       if (body.note != null) patch.note = String(body.note).trim().slice(0, 140);
+      if (body.weightKg !== undefined) {
+        if (existing && gearHasWeight(existing.type)) {
+          const weightKg = body.weightKg == null || body.weightKg === "" ? null : Number(body.weightKg);
+          if (!(weightKg > 0)) throw new Error(`Enter a weight in ${weightUnit()}.`);
+          patch.weight_kg = weightKg;
+        }
+      }
+      if (existing?.type === "shoes") {
+        if (body.shoeKind !== undefined) {
+          patch.shoe_kind = SHOE_KINDS[body.shoeKind] ? body.shoeKind : "daily";
+        }
+        if (body.maxKm !== undefined) {
+          const maxKm = Number(body.maxKm);
+          if (!(maxKm > 0)) throw new Error(`Enter a lifespan target in ${distUnit()}.`);
+          patch.max_km = maxKm;
+        }
+        if (body.notifyWear !== undefined) patch.notify_wear = !!body.notifyWear;
+      }
       if (!Object.keys(patch).length) throw new Error("Nothing to update");
       const { data, error } = await sb.from("gear").update(patch).eq("user_id", uid).eq("id", id).select("*").maybeSingle();
       if (error) throw error;
       if (!data) throw new Error("Gear not found");
-      return { id: data.id, type: data.type, name: data.name, note: data.note || "", retired: !!data.retired, addedAt: data.added_at };
+      return mapGearRow(data);
     }
   }
   if (url.match(/^\/api\/activity-gear$/)) {
@@ -4554,7 +5348,7 @@ async function cloudRequest(method, url, body) {
       if (cat === "swim") {
         if (!(dist >= 25 && dist <= 20000)) throw new Error("Swim distance should be metres, between 25 and 20,000");
       } else if (!(dist > 0 && dist < 400)) {
-        throw new Error("Distance should be a positive number of km");
+        throw new Error("Distance should be a positive number");
       }
       let hr = null;
       if (body.hr !== "" && body.hr != null) {
@@ -4623,6 +5417,19 @@ async function refreshEvents() {
 document.addEventListener("click", async (e) => {
   const dialog = document.getElementById("day-dialog");
   if (e.target === dialog) return dialog.close();
+  const unitsBtn = e.target.closest("button[data-units]");
+  if (unitsBtn) {
+    const form = unitsBtn.closest("form");
+    const value = unitsBtn.dataset.units;
+    if (form && (value === "metric" || value === "imperial")) {
+      const hidden = form.querySelector("[name=units]");
+      if (hidden) hidden.value = value;
+      form.querySelectorAll("[data-units]").forEach((b) => {
+        b.classList.toggle("is-on", b.dataset.units === value);
+      });
+    }
+    return;
+  }
   const accountTrigger = e.target.closest("[data-action=account-menu]");
   if (accountTrigger) {
     e.preventDefault();
@@ -4639,7 +5446,7 @@ document.addEventListener("click", async (e) => {
       e.preventDefault();
       closeAccountMenu();
       const dest = url.pathname.replace(/\/+$/, "") || "/home";
-      if (document.body.classList.contains("onboarding") && dest !== "/setup") {
+      if (document.body.classList.contains("onboarding") && dest !== "/setup" && dest !== "/create-plan") {
         if (dest === "/home" && typeof window.leaveSetupToHome === "function") {
           await window.leaveSetupToHome();
         } else if (typeof window.saveSetupDraftNow === "function") {
@@ -4661,6 +5468,32 @@ document.addEventListener("click", async (e) => {
       rememberPlanWeek(wk, opening);
       syncPlanWeekPath(opening ? wk : PLAN_FOCUS_WEEK);
     }
+  }
+  const eventSportBtn = e.target.closest("[data-event-sport]");
+  if (eventSportBtn) {
+    const form = eventSportBtn.closest(".event-form");
+    if (form && !form.classList.contains("from-public")) {
+      if (form.sport) form.sport.value = eventSportBtn.dataset.eventSport;
+      form.querySelectorAll("[data-event-sport]").forEach((b) => {
+        b.classList.toggle("active", b === eventSportBtn);
+      });
+      paintAgendaDistances(form, eventSportBtn.dataset.eventSport, false);
+    }
+    return;
+  }
+  const eventPresetBtn = e.target.closest("[data-event-preset]");
+  if (eventPresetBtn) {
+    const form = eventPresetBtn.closest(".event-form");
+    if (form && !form.classList.contains("from-public")) {
+      applyAgendaPreset(form, eventPresetBtn.dataset.eventPreset);
+    }
+    return;
+  }
+  const eventPublicBtn = e.target.closest("[data-event-public]");
+  if (eventPublicBtn) {
+    const form = eventPublicBtn.closest(".event-form");
+    if (form) setAgendaPublic(form, eventPublicBtn.dataset.eventPublic);
+    return;
   }
   const btn = e.target.closest("[data-action]");
   if (!btn) {
@@ -4778,14 +5611,14 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (btn.dataset.action === "start-plan") {
-    if (typeof window.renderOnboarding === "function") window.renderOnboarding();
-    else go("/setup");
+    if (typeof window.renderCreatePlan === "function") window.renderCreatePlan();
+    else go("/create-plan");
     return;
   }
   if (btn.dataset.action === "remove-plan") {
     if (!window.CURRENT_PLAN) return;
     const name = eventLabel();
-    if (!confirm(`Remove the ${name} plan and start a new one? Your activities stay. The goal race on this plan is removed.`)) return;
+    if (!confirm(`Remove the ${name} plan? Your activities stay. The goal race on this plan is removed. You can start a new plan from Home.`)) return;
     btn.disabled = true;
     try {
       await window.removeCurrentPlan();
@@ -4845,7 +5678,25 @@ document.addEventListener("click", async (e) => {
     }
     document.querySelector(".event-personal.is-followup")?.remove();
     form.hidden = false;
+    paintAgendaDistances(form, form.sport?.value || "run", true);
     form.querySelector("input[name=date]")?.focus();
+    return;
+  }
+  if (btn.dataset.action === "use-similar-event") {
+    const form = btn.closest(".event-form");
+    if (!form) return;
+    let ev = null;
+    try { ev = JSON.parse(btn.getAttribute("data-similar-event") || ""); } catch { ev = null; }
+    if (!ev) return;
+    applyPublicEventToAgenda(form, ev);
+    return;
+  }
+  if (btn.dataset.action === "keep-own-event") {
+    const form = btn.closest(".event-form");
+    if (!form) return;
+    form.dataset.skipSimilar = "1";
+    hideSimilarEventPrompt(form);
+    form.requestSubmit();
     return;
   }
   if (btn.dataset.action === "pick-effort") {
@@ -4902,6 +5753,14 @@ document.addEventListener("click", async (e) => {
     if (!wrap) return;
     if (wrap.hidden) openGearForm();
     else closeGearForm();
+  }
+  if (btn.dataset.action === "quick-gear") {
+    try {
+      await quickAddStrengthGear(btn.dataset.type);
+    } catch (err) {
+      toast(err.message || "Could not add gear.", true);
+    }
+    return;
   }
   if (btn.dataset.action === "edit-gear") {
     const item = GEAR.items.find((g) => g.id === btn.dataset.id);
@@ -4980,6 +5839,13 @@ document.addEventListener("submit", async (e) => {
         await saveUsernameQuiet(username);
         render(true);
         toast("Name saved.");
+        return;
+      }
+      if (settingsForm.dataset.settings === "units") {
+        const units = normalizeUnits(settingsForm.units?.value || profileUnits());
+        await saveUnitsQuiet(units);
+        render(true);
+        toast(units === "imperial" ? "Using miles and lb." : "Using km and kg.");
         return;
       }
       if (settingsForm.dataset.settings === "password") {
@@ -5119,16 +5985,40 @@ document.addEventListener("submit", async (e) => {
     const id = gearForm.dataset.id;
     const name = gearForm.name.value;
     const note = gearForm.note?.value || "";
+    const type = gearForm.type?.value;
+    const existing = id ? GEAR.items.find((g) => g.id === id) : null;
+    const effectiveType = existing?.type || type;
+    let weightKg = null;
+    if (gearHasWeight(effectiveType)) {
+      weightKg = parseWeightInput(gearForm.weight?.value);
+      if (!(weightKg > 0)) {
+        errorEl.textContent = `Enter a weight in ${weightUnit()}.`;
+        return;
+      }
+    }
+    let shoeKind;
+    let maxKm;
+    let notifyWear;
+    if (effectiveType === "shoes") {
+      shoeKind = SHOE_KINDS[gearForm.shoe_kind?.value] ? gearForm.shoe_kind.value : "daily";
+      maxKm = parseDistInput(gearForm.max_km?.value);
+      if (!(maxKm > 0)) {
+        errorEl.textContent = `Enter a lifespan target in ${distUnit()}.`;
+        return;
+      }
+      notifyWear = !!gearForm.notify_wear?.checked;
+    }
     const submit = gearForm.querySelector("button[type=submit]");
     if (submit) submit.disabled = true;
     try {
+      const payload = { name, note, weightKg, shoeKind, maxKm, notifyWear };
       if (id) {
-        await apiRequest("POST", `/api/gear/${encodeURIComponent(id)}`, { name, note });
+        await apiRequest("POST", `/api/gear/${encodeURIComponent(id)}`, payload);
         GEAR = await loadGear();
         render(true);
         toast("Gear updated.");
       } else {
-        await apiRequest("POST", "/api/gear", { type: gearForm.type.value, name, note });
+        await apiRequest("POST", "/api/gear", { type, ...payload });
         GEAR = await loadGear();
         render(true);
         toast("Gear added.");
@@ -5149,11 +6039,14 @@ document.addEventListener("submit", async (e) => {
     submit.disabled = true;
     const pageForm = logForm.classList.contains("log-form-page");
     const date = pageForm ? logForm.date.value : logForm.dataset.date;
+    const sport = logForm.type.value;
+    const rawDist = logForm.distance.value;
+    const distance = sport === "swim" ? rawDist : String(parseDistInput(rawDist));
     try {
       await apiRequest("POST", "/api/activities", {
         date,
-        type: logForm.type.value,
-        distance: logForm.distance.value,
+        type: sport,
+        distance,
         duration: logForm.duration.value,
         hr: logForm.hr.value,
       });
@@ -5181,7 +6074,7 @@ document.addEventListener("submit", async (e) => {
     try {
       const saved = await apiRequest("PATCH", `/api/events/${encodeURIComponent(editForm.dataset.id)}`, {
         name: editForm.name.value,
-        km: editForm.km.value,
+        km: parseDistInput(editForm.km.value),
         event_note: editForm.event_note?.value || "",
       });
       await refreshEvents();
@@ -5221,16 +6114,46 @@ document.addEventListener("submit", async (e) => {
   if (!form) return;
   e.preventDefault();
   const data = Object.fromEntries(new FormData(form));
-  data.km = Number(data.km);
+  const presetId = data.preset || "";
+  const sport = ["run", "swim", "bike", "triathlon"].includes(data.sport) ? data.sport : "run";
+  data.sport = sport;
+  if (presetId && presetId !== "custom") {
+    const km = eventPresetKm(sport, presetId);
+    if (km != null) data.km = km;
+    const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
+    if (preset?.swim) data.swim_m = preset.swim;
+    if (preset?.bike) data.bike_km = preset.bike;
+  } else {
+    data.km = parseDistInput(data.km);
+  }
+  data.location = clipText(data.location, 80);
   data.is_public = data.is_public === "yes";
   if (form.classList.contains("from-public")) data.event_note = "";
+  if (!(Number(data.km) > 0)) {
+    form.querySelector(".form-error").textContent = "Pick a distance.";
+    return;
+  }
   const submit = form.querySelector("button[type=submit]");
   if (submit) submit.disabled = true;
   try {
+    if (!form.dataset.skipSimilar && !form.classList.contains("from-public") && !data.source_id) {
+      const similar = await findSimilarPublicEvents({
+        date: data.date,
+        km: data.km,
+        location: data.location,
+        sport,
+      });
+      if (similar.length) {
+        showSimilarEventPrompt(form, similar);
+        return;
+      }
+    }
+    delete form.dataset.skipSimilar;
     const saved = await apiRequest("POST", "/api/events", data);
     form.reset();
     form.hidden = true;
     setAgendaEventLocked(form, false);
+    hideSimilarEventPrompt(form);
     eventFormDraft = null;
     eventFollowUpId = saved?.id || null;
     await refreshEvents();
@@ -5258,7 +6181,7 @@ document.addEventListener("change", async (e) => {
     const form = typeSel.form;
     const swim = typeSel.value === "swim";
     const unit = form.querySelector("[data-unit]");
-    if (unit) unit.textContent = swim ? "m" : "km";
+    if (unit) unit.textContent = logDistUnit(typeSel.value);
     form.distance.min = swim ? "25" : "0.1";
     form.distance.step = swim ? "25" : "0.01";
     if (swim && form.distance.value && Number(form.distance.value) < 25) form.distance.value = "";
@@ -5267,6 +6190,14 @@ document.addEventListener("change", async (e) => {
   const gearType = e.target.closest(".gear-form [name=type]");
   if (gearType) {
     syncGearNamePlaceholder(gearType.form);
+    syncGearWeightVisibility(gearType.form);
+    syncShoeFieldsVisibility(gearType.form);
+    if (gearType.value === "shoes") applyShoeKindDefault(gearType.form);
+    return;
+  }
+  const shoeKind = e.target.closest(".gear-form [name=shoe_kind]");
+  if (shoeKind) {
+    applyShoeKindDefault(shoeKind.form);
     return;
   }
   const share = e.target.closest("[data-action=strava-share]");
@@ -5376,6 +6307,7 @@ window.bootApp = function bootApp() {
       await resumeFeedbackJob();
     }
     render(true);
+    maybeToastShoeWear();
   })();
   return APP_BOOTING;
 };

@@ -95,10 +95,26 @@ async function handleEvent(event: Record<string, unknown>) {
   const detail = await getActivity(access, objectId);
   const row = mapStravaToRow(conn.user_id, detail, detail);
   if (!row) return;
+
+  const twin = await findGarminTwin(admin, conn.user_id, row);
+  if (twin) {
+    const stravaId = Number(detail.id);
+    if (Number.isFinite(stravaId)) {
+      const nextRaw = { ...twin.raw, stravaActivityId: stravaId };
+      await admin.from("activities").update({ raw: nextRaw })
+        .eq("user_id", conn.user_id)
+        .eq("activity_type", twin.activity_type)
+        .eq("started_at", twin.started_at);
+    }
+    await assignStravaGearIfNeeded(admin, access, conn.user_id, twin.started_at, twin.activity_type, detail);
+    return;
+  }
+
   const { error } = await admin.from("activities").upsert(row, {
     onConflict: "user_id,activity_type,started_at",
   });
   if (error) throw new Error(error.message);
+  await assignStravaGearIfNeeded(admin, access, conn.user_id, row.started_at, row.activity_type, detail);
 }
 
 function adminClient() {
@@ -184,6 +200,115 @@ async function deleteByStravaId(admin: Sb, userId: string, stravaId: number) {
         .eq("started_at", row.started_at);
     }
   }
+}
+
+async function findGarminTwin(
+  admin: Sb,
+  userId: string,
+  row: { activity_type: string; started_at: string; distance: number | null },
+) {
+  const cat = categorize(row.activity_type);
+  if (!cat) return null;
+  const { data, error } = await admin
+    .from("activities")
+    .select("activity_type,started_at,distance,raw")
+    .eq("user_id", userId)
+    .eq("raw->>Source", "garmin-api");
+  if (error) throw new Error(error.message);
+  const want = Date.parse(String(row.started_at).replace(" ", "T"));
+  if (!Number.isFinite(want)) return null;
+  let best: { activity_type: string; started_at: string; raw: Record<string, unknown> } | null = null;
+  let bestDelta = Infinity;
+  for (const item of data || []) {
+    if (categorize(String(item.activity_type || "")) !== cat) continue;
+    const started = formatStarted(item.started_at);
+    const got = Date.parse(started.replace(" ", "T"));
+    if (!Number.isFinite(got)) continue;
+    const delta = Math.abs(got - want);
+    if (delta > 120_000) continue;
+    const dist = item.distance == null ? null : Number(item.distance);
+    if (row.distance != null && dist != null && Number.isFinite(dist) && dist > 0 && row.distance > 0) {
+      const gap = Math.abs(dist - row.distance);
+      if (gap > 0.25 && gap / Math.max(dist, row.distance) > 0.05) continue;
+    }
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = {
+        activity_type: String(item.activity_type),
+        started_at: started,
+        raw: item.raw && typeof item.raw === "object" ? item.raw as Record<string, unknown> : {},
+      };
+    }
+  }
+  return best;
+}
+
+async function assignStravaGearIfNeeded(
+  admin: Sb,
+  accessToken: string,
+  userId: string,
+  startedAt: string,
+  activityType: string,
+  detail: Record<string, unknown>,
+) {
+  const gearId = String(detail.gear_id || "").trim();
+  if (!gearId || gearId === "none") return;
+  const { data: existing } = await admin
+    .from("activity_gear")
+    .select("activity")
+    .eq("user_id", userId)
+    .eq("activity", startedAt)
+    .maybeSingle();
+  if (existing) return;
+
+  const type = gearId.startsWith("b") ? "bike" : "shoes";
+  const cat = categorize(activityType);
+  if (type === "shoes" && cat !== "run" && cat !== "walk") return;
+  if (type === "bike" && cat !== "bike") return;
+
+  let name = gearId.startsWith("b") ? "Bike" : "Shoes";
+  let retired = false;
+  try {
+    const res = await fetch(`${STRAVA_API}/gear/${encodeURIComponent(gearId)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.ok) {
+      const gear = await res.json() as Record<string, unknown>;
+      name = String(gear.name || name).slice(0, 80);
+      retired = !!gear.retired;
+    }
+  } catch {
+    // Keep fallback name.
+  }
+
+  let localId = gearId.slice(0, 40);
+  const { data: byUuid } = await admin
+    .from("gear")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("strava_uuid", gearId)
+    .maybeSingle();
+  if (byUuid?.id) localId = String(byUuid.id);
+  else {
+    const { data: byId } = await admin.from("gear").select("id").eq("user_id", userId).eq("id", localId).maybeSingle();
+    if (!byId) {
+      await admin.from("gear").insert({
+        id: localId,
+        user_id: userId,
+        type,
+        name,
+        note: "From Strava",
+        retired,
+        strava_uuid: gearId,
+      });
+    }
+  }
+
+  await admin.from("activity_gear").upsert({
+    user_id: userId,
+    activity: startedAt,
+    gear_id: localId,
+  });
 }
 
 function mapStravaToRow(

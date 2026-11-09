@@ -145,6 +145,31 @@ const GUIDES = {
     ],
     targets: [["Equipment", "None: stair, wall, pillow"], ["Knee cue", "Knee over 2nd toe, no caving in"], ["Fallback day", "Sunday, 2 rounds (never Friday)"]],
   },
+  strengthHome: {
+    title: "Strength & stability (home kit, 25–35 min)",
+    why: "Loaded hip hinges and single-leg work build tendon resilience without a gym. Use your kettlebell, dumbbells or bands after an easy run so quality days stay fresh.",
+    how: [
+      "Warm-up: ankle circles, leg swings, 10 bodyweight squats, 8 hip hinges with a light load.",
+      "Feet & calves (1 round): single-leg calf raises on a step 12–15 per leg (straight and bent knee), arch doming 10 × 5 s, single-leg balance 3 × 30–45 s.",
+      "Main (2–3 rounds, 60–90 s rest): goblet squat or banded squat 8–10, single-leg Romanian deadlift 8 per leg (kettlebell/dumbbell), reverse lunge or split squat 8 per leg, band pull-apart or face-pull 12–15, optional pull-up / band row 5–8.",
+      "Core: side plank 30–40 s per side, dead bug or pallof press 8 per side.",
+      "Progress by slowing the lower (3 s), then adding load. Cutback weeks: 2 rounds. Taper: bodyweight only, no jumps.",
+      "Stop 2–3 reps before failure. Sharp knee or Achilles pain: drop the load or skip that move.",
+    ],
+    targets: [["Equipment", "Kettlebell / dumbbells / bands"], ["Knee cue", "Knee over 2nd toe"], ["Fallback", "Bodyweight session if travelling"]],
+  },
+  strengthGym: {
+    title: "Strength & stability (gym, 30–40 min)",
+    why: "A short gym block after easy running covers hips, calves and posterior chain with machines or free weights — keep it submaximal so it supports mileage instead of stealing from it.",
+    how: [
+      "Warm-up: 5 min easy bike or row, ankle circles, 10 bodyweight squats, 8 hip hinges.",
+      "Main (2–3 rounds, 90 s rest): goblet or back squat 6–8, Romanian deadlift or hip hinge machine 6–8, walking lunge or split squat 8 per leg, calf raise (straight + bent knee) 12–15, lat pulldown or assisted pull-up 8–10, optional hip abduction 12–15.",
+      "Core: side plank 30–40 s per side, dead bug or cable anti-rotation 8 per side.",
+      "Leave 2–3 reps in reserve on every set. No max lifts, no failure, no novel PRs in build/peak weeks.",
+      "Cutback / travel: swap to the home or bodyweight session. Taper: 1 light round or skip.",
+    ],
+    targets: [["Equipment", "Full gym"], ["Effort", "RPE 6–7, never failure"], ["Fallback", "Home kit or bodyweight"]],
+  },
   walk: {
     title: "Office walk",
     why: "Active recovery on office days. It keeps blood flowing and adds easy aerobic time without running stress.",
@@ -238,12 +263,29 @@ const GUIDES = {
   },
 };
 
+function paceUnitSuffix() {
+  return typeof window.isImperial === "function" && window.isImperial() ? "/mi" : "/km";
+}
+
+function displayPaceRange(range) {
+  const text = String(range || "");
+  if (!(typeof window.isImperial === "function" && window.isImperial())) return text;
+  return text.replace(/\d+:\d{2}/g, (m) => {
+    const parts = m.split(":").map(Number);
+    if (parts.length !== 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return m;
+    const sec = parts[0] * 60 + parts[1];
+    const mi = Math.round(sec * 1.609344);
+    return `${Math.floor(mi / 60)}:${String(mi % 60).padStart(2, "0")}`;
+  });
+}
+
 function stampPaces(guide) {
   const z = paceZones();
+  const unit = paceUnitSuffix();
   const map = {
-    "Easy zone": `${z.easy.range} /km`,
-    "Steady / cruise": `${z.steady.range} /km`,
-    "Marathon pace": `${z.mp.range} /km`,
+    "Easy zone": `${displayPaceRange(z.easy.range)} ${unit}`,
+    "Steady / cruise": `${displayPaceRange(z.steady.range)} ${unit}`,
+    "Marathon pace": `${displayPaceRange(z.mp.range)} ${unit}`,
     "Aspirational from plan paces": `${raceGoalClock()} (aspirational)`,
     "See pace guide": raceSolidBand(),
   };
@@ -251,6 +293,13 @@ function stampPaces(guide) {
     ...guide,
     targets: (guide.targets || []).map(([k, v]) => [k, map[v] || v]),
   };
+}
+
+function strengthGuideForAccess() {
+  const level = typeof window.strengthAccessLevel === "function" ? window.strengthAccessLevel() : "bodyweight";
+  if (level === "gym") return GUIDES.strengthGym;
+  if (level === "home") return GUIDES.strengthHome;
+  return GUIDES.strength;
 }
 
 function guidesFor(kind, label) {
@@ -272,7 +321,7 @@ function guidesFor(kind, label) {
     else out = [GUIDES.quality];
   } else {
     out = /short mp/.test(l) ? [GUIDES.shortMP] : /strides/.test(l) ? [GUIDES.easy, GUIDES.strides] : [GUIDES.easy];
-    if (/strength/.test(l)) out.push(GUIDES.strength);
+    if (/strength/.test(l)) out.push(strengthGuideForAccess());
   }
   return out.map(stampPaces);
 }

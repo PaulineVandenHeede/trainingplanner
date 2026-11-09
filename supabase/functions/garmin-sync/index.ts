@@ -116,9 +116,10 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
     const token = await obtainToken(conn.api_key);
     const startDate = full ? null : syncStartDate(conn.last_sync_at);
     const summaries = await listActivities(token, startDate);
-    const known = await loadKnownKeys(sb, userId);
+    const index = await loadCrossSourceIndex(sb, userId);
     let added = 0;
     let updated = 0;
+    let replacedDup = 0;
     let total = 0;
     let detailed = 0;
     let detailBudget = DETAIL_FETCH_BUDGET;
@@ -127,8 +128,8 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
     const ordered = [...summaries].sort((a, b) => {
       const rowA = mapGarminToRow(userId, a, a, null);
       const rowB = mapGarminToRow(userId, b, b, null);
-      const knownA = rowA ? known.has(`${rowA.activity_type}|${rowA.started_at}`) : true;
-      const knownB = rowB ? known.has(`${rowB.activity_type}|${rowB.started_at}`) : true;
+      const knownA = rowA ? index.exact.has(`${rowA.activity_type}|${rowA.started_at}`) : true;
+      const knownB = rowB ? index.exact.has(`${rowB.activity_type}|${rowB.started_at}`) : true;
       if (knownA === knownB) return 0;
       return knownA ? 1 : -1;
     });
@@ -140,7 +141,11 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
       const preview = mapGarminToRow(userId, summary, summary, null);
       if (!preview) continue;
       const key = `${preview.activity_type}|${preview.started_at}`;
-      const existed = known.has(key);
+      const existed = index.exact.has(key);
+      const cat = categorize(preview.activity_type) || categorize(String(preview.title || ""));
+      const stravaTwin = !existed
+        ? findStravaTwin(index, cat, preview.started_at, preview.distance)
+        : null;
 
       // Never rewrite a saved activity from the short list summary. That would drop
       // detail, splits and heart-rate fields already stored on the row.
@@ -153,7 +158,7 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
       let workouts: unknown = null;
       // List summaries are enough for the app UI. Only spend rate-limit budget on new items.
       // A full history pass skips detail calls so shoe matching still has room under Garmin's rate limit.
-      if (!full && !existed && detailBudget > 0) {
+      if (!full && detailBudget > 0) {
         try {
           detail = await garminGet(token, `/activity-service/activity/${id}`) as Record<string, unknown>;
           detailBudget -= 1;
@@ -175,15 +180,27 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
 
       const row = mapGarminToRow(userId, summary, detail, workouts);
       if (!row) continue;
+      if (stravaTwin) {
+        const stravaId = Number(stravaTwin.raw.stravaActivityId);
+        if (Number.isFinite(stravaId) && stravaId > 0) {
+          (row.raw as Record<string, unknown>).stravaActivityId = stravaId;
+        }
+        await deleteActivityRow(sb, userId, stravaTwin.activity_type, stravaTwin.started_at);
+        removeFromIndex(index, stravaTwin);
+        replacedDup += 1;
+      }
       const { error } = await sb.from("activities").upsert(row, {
         onConflict: "user_id,activity_type,started_at",
       });
       if (error) throw new Error(error.message);
-      if (existed) updated += 1;
-      else {
-        known.add(key);
-        added += 1;
-      }
+      rememberIndexRow(index, {
+        activity_type: row.activity_type,
+        started_at: row.started_at,
+        distance: row.distance,
+        source: "garmin-api",
+        raw: row.raw as Record<string, unknown>,
+      });
+      added += 1;
       total += 1;
     }
 
@@ -209,9 +226,10 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
     const now = new Date().toISOString();
     const kept = Math.max(0, total - added);
     const splitNote = splitsAdded ? ` ${splitsAdded} run${splitsAdded === 1 ? "" : "s"} gained km splits.` : "";
+    const dupNote = replacedDup ? ` Replaced ${replacedDup} Strava duplicate${replacedDup === 1 ? "" : "s"} with Garmin.` : "";
     const status = full
-      ? `Full history: ${added} added, ${kept} already saved.${splitNote}${gearNote}`
-      : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} with full detail` : ""}).${splitNote}${gearNote}`;
+      ? `Full history: ${added} added, ${kept} already saved.${splitNote}${dupNote}${gearNote}`
+      : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} with full detail` : ""}).${splitNote}${dupNote}${gearNote}`;
     await admin.from("garmin_connections").update({
       last_sync_at: now,
       last_sync_status: status,
@@ -224,6 +242,7 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
       connected: true,
       added,
       updated,
+      replacedDup,
       total,
       detailed,
       gearAssigned,
@@ -248,17 +267,102 @@ async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today
   }
 }
 
-async function loadKnownKeys(sb: Sb, userId: string) {
+type CrossSourceRow = {
+  activity_type: string;
+  started_at: string;
+  distance: number | null;
+  source: string;
+  raw: Record<string, unknown>;
+};
+
+type CrossSourceIndex = {
+  exact: Set<string>;
+  rows: CrossSourceRow[];
+};
+
+async function loadCrossSourceIndex(sb: Sb, userId: string): Promise<CrossSourceIndex> {
   const { data, error } = await sb
     .from("activities")
-    .select("activity_type,started_at")
+    .select("activity_type,started_at,distance,raw")
     .eq("user_id", userId);
   if (error) throw new Error(error.message);
-  const set = new Set<string>();
+  const exact = new Set<string>();
+  const rows: CrossSourceRow[] = [];
   for (const row of data || []) {
-    set.add(`${row.activity_type}|${formatStarted(row.started_at)}`);
+    const started = formatStarted(row.started_at);
+    const raw = row.raw && typeof row.raw === "object" ? row.raw as Record<string, unknown> : {};
+    const item: CrossSourceRow = {
+      activity_type: String(row.activity_type || ""),
+      started_at: started,
+      distance: row.distance == null ? null : Number(row.distance),
+      source: String(raw.Source || ""),
+      raw,
+    };
+    exact.add(`${item.activity_type}|${item.started_at}`);
+    rows.push(item);
   }
-  return set;
+  return { exact, rows };
+}
+
+function rememberIndexRow(index: CrossSourceIndex, row: CrossSourceRow) {
+  index.exact.add(`${row.activity_type}|${row.started_at}`);
+  index.rows.push(row);
+}
+
+function removeFromIndex(index: CrossSourceIndex, row: CrossSourceRow) {
+  index.exact.delete(`${row.activity_type}|${row.started_at}`);
+  index.rows = index.rows.filter((item) =>
+    !(item.activity_type === row.activity_type && item.started_at === row.started_at)
+  );
+}
+
+function startedMs(value: string) {
+  const ms = Date.parse(String(value || "").replace(" ", "T"));
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function distanceClose(a: number | null, b: number | null) {
+  if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return true;
+  if (a <= 0 || b <= 0) return true;
+  const delta = Math.abs(a - b);
+  return delta <= 0.25 || delta / Math.max(a, b) <= 0.05;
+}
+
+function findStravaTwin(
+  index: CrossSourceIndex,
+  cat: string | null,
+  startedAt: string,
+  distance: number | null,
+): CrossSourceRow | null {
+  if (!cat) return null;
+  const want = startedMs(startedAt);
+  if (!Number.isFinite(want)) return null;
+  let best: CrossSourceRow | null = null;
+  let bestDelta = Infinity;
+  for (const row of index.rows) {
+    if (row.source !== "strava-api") continue;
+    if (categorize(row.activity_type) !== cat) continue;
+    if (!distanceClose(row.distance, distance)) continue;
+    const got = startedMs(row.started_at);
+    if (!Number.isFinite(got)) continue;
+    const delta = Math.abs(got - want);
+    if (delta > 120_000) continue;
+    if (delta < bestDelta) {
+      best = row;
+      bestDelta = delta;
+    }
+  }
+  return best;
+}
+
+async function deleteActivityRow(sb: Sb, userId: string, activityType: string, startedAt: string) {
+  // Keep activity_gear / feedback keyed by started_at — Garmin twin reuses the same timestamp.
+  const { error } = await sb.from("activities")
+    .delete()
+    .eq("user_id", userId)
+    .eq("activity_type", activityType)
+    .eq("started_at", startedAt);
+  if (error) throw new Error(error.message);
 }
 
 function syncStartDate(lastSyncAt: string | null): string {

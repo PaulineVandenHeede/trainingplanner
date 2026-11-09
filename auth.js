@@ -283,13 +283,22 @@ function showUser(user) {
 window.showUser = showUser;
 
 async function loadProfile(userId) {
+  const fallbackUnits = typeof window.guessUnitsFromLocale === "function"
+    ? window.guessUnitsFromLocale()
+    : "metric";
   if (!userId) {
-    window.CURRENT_PROFILE = { username: "" };
+    window.CURRENT_PROFILE = { username: "", units: fallbackUnits };
     return window.CURRENT_PROFILE;
   }
-  const { data, error } = await sb.from("profiles").select("username").eq("user_id", userId).maybeSingle();
-  if (error) window.CURRENT_PROFILE = { username: "" };
-  else window.CURRENT_PROFILE = { username: data?.username || "" };
+  const { data, error } = await sb.from("profiles").select("username,units").eq("user_id", userId).maybeSingle();
+  if (error) {
+    window.CURRENT_PROFILE = { username: "", units: fallbackUnits };
+  } else {
+    const units = data?.units === "imperial" || data?.units === "metric"
+      ? data.units
+      : fallbackUnits;
+    window.CURRENT_PROFILE = { username: data?.username || "", units };
+  }
   return window.CURRENT_PROFILE;
 }
 window.loadProfile = loadProfile;
