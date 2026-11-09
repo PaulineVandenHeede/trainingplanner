@@ -1,6 +1,5 @@
 data/
 data.js
-config.js
 .env
 .env.*
 !.env.example
@@ -10,6 +9,9 @@ supabase/.temp/
 *.pem
 *.key
 secrets/
+
+# config.js is committed on purpose: it only has the public Supabase URL + anon/publishable key
+# (safe in the browser). Never put service-role keys or passwords here.
 
 # Local deploy scratch from agent/CLI attempts
 .cursor-garmin-*

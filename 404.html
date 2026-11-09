@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Training Plan</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="logged-out">
+  <header class="topbar" id="app-header" hidden>
+    <a href="/home" class="brand" title="Training Plan" aria-label="Training Plan">
+      <span class="brand-mark" aria-hidden="true">TP</span>
+      <span class="brand-name">Training Plan</span>
+    </a>
+    <nav>
+      <a href="/home" class="nav-btn" data-route="home" title="Home" aria-label="Home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 10.8 12 4l8 6.8V20a1 1 0 0 1-1 1h-5.2v-6.2H10.2V21H5a1 1 0 0 1-1-1z"/>
+        </svg>
+      </a>
+      <a href="/plan" class="nav-btn" data-route="plan" title="Full plan" aria-label="Full plan">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="5" width="17" height="15.5" rx="2"/>
+          <path d="M8 3.5v3M16 3.5v3M3.5 9.5h17"/>
+        </svg>
+        <span class="nav-badge" hidden></span>
+      </a>
+      <a href="/activities" class="nav-btn" data-route="activities" title="All activities" aria-label="All activities">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 7h14M5 12h14M5 17h9"/>
+        </svg>
+      </a>
+      <a href="/gear" class="nav-btn" data-route="gear" title="Gear" aria-label="Gear">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 8.4h8a2 2 0 0 1 2 2V19a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-8.6a2 2 0 0 1 2-2z"/>
+          <path d="M9 8.4V7a3 3 0 0 1 6 0v1.4"/>
+          <path d="M10 13.4h4"/>
+        </svg>
+      </a>
+      <span class="nav-sep" aria-hidden="true"></span>
+      <button class="nav-btn sync-btn" type="button" data-action="nav-sync" title="Sync activities" aria-label="Sync activities">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M16.5 7.5A6.5 6.5 0 1 0 18 12"/>
+          <path d="M14.5 5.5 17 8l2.5-2.5"/>
+          <rect x="9.2" y="11.2" width="5.6" height="8.2" rx="2.2"/>
+          <path d="M11 13.2h2.4"/>
+        </svg>
+      </button>
+      <button class="nav-btn import-btn" type="button" data-action="import" title="Import a Garmin Connect Activities.csv export" aria-label="Import CSV">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 16.5V5.5M8 8.5l4-4 4 4"/>
+          <path d="M5 19h14"/>
+        </svg>
+      </button>
+      <input type="file" id="csv-input" accept=".csv,text/csv" hidden />
+      <a href="/profile" class="nav-btn user-chip" data-route="profile" title="Your profile" aria-label="Your profile">
+        <span class="user-avatar" id="user-avatar" aria-hidden="true">?</span>
+        <span class="visually-hidden" id="user-email"></span>
+      </a>
+      <button class="nav-btn" type="button" data-action="logout" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10 5H6.2A1.2 1.2 0 0 0 5 6.2v11.6A1.2 1.2 0 0 0 6.2 19H10"/>
+          <path d="M13 12h7M17.2 8.8 20.5 12l-3.3 3.2"/>
+        </svg>
+      </button>
+    </nav>
+  </header>
+  <main id="app"><p class="muted auth-loading">Loading…</p></main>
+  <dialog id="day-dialog"></dialog>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="/config.js"></script>
+  <script src="/plan-gen.js"></script>
+  <script src="/plan.js"></script>
+  <script src="/auth.js"></script>
+  <script src="/coach.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
