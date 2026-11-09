@@ -1,0 +1,6 @@
+data/
+data.js
+config.js
+.DS_Store
+.cursor/
+supabase/.temp/

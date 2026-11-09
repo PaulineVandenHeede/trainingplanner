@@ -1,0 +1,8 @@
+# Minimal Supabase config for deploying Edge Functions from this repo.
+# Set the project ref at deploy time: npx supabase functions deploy --project-ref YOUR_PROJECT_REF
+
+[functions.coach]
+verify_jwt = true
+
+[functions.garmin-sync]
+verify_jwt = true

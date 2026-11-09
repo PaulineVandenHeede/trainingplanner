@@ -1,0 +1,1650 @@
+window.CURRENT_USER_ID = null;
+window.CURRENT_PLAN = null;
+window.PLAN_SKIPPED = false;
+window.PLAN_START = null;
+window.MARATHON_DATE = null;
+window.PHASES = [];
+window.WEEKS = [];
+window.PACES = [];
+window.ROADMAP_703 = [];
+
+function skipKey(userId) {
+  return `plan-skipped:${userId}`;
+}
+function hasSkipped(userId) {
+  return !!userId && localStorage.getItem(skipKey(userId)) === "1";
+}
+function markSkipped(userId) {
+  window.PLAN_SKIPPED = true;
+  if (userId) localStorage.setItem(skipKey(userId), "1");
+}
+function clearSkipped(userId) {
+  window.PLAN_SKIPPED = false;
+  if (userId) localStorage.removeItem(skipKey(userId));
+}
+
+function applyPlanRow(row) {
+  window.CURRENT_PLAN = row;
+  window.PLAN_START = row.start_date;
+  window.MARATHON_DATE = row.event_date;
+  window.PHASES = row.phases || [];
+  window.WEEKS = row.weeks || [];
+  window.PACES = row.paces || [];
+  window.ROADMAP_703 = row.roadmap || [];
+  if (typeof window.syncPlanDates === "function") window.syncPlanDates();
+}
+
+function clearPlanRow() {
+  window.CURRENT_PLAN = null;
+  window.PLAN_SKIPPED = false;
+  window.PLAN_START = null;
+  window.MARATHON_DATE = null;
+  window.PHASES = [];
+  window.WEEKS = [];
+  window.PACES = [];
+  window.ROADMAP_703 = [];
+}
+
+async function removeCurrentPlan() {
+  const userId = window.CURRENT_USER_ID;
+  if (!userId) throw new Error("Sign in required");
+  const { error } = await sb.from("plans").delete().eq("user_id", userId);
+  if (error) throw error;
+  await sb.from("events").delete().eq("user_id", userId).eq("race", true);
+  clearSkipped(userId);
+  clearPlanRow();
+  history.replaceState(null, "", "/home" + location.search);
+  renderOnboarding();
+}
+window.removeCurrentPlan = removeCurrentPlan;
+
+function setupFields(sport, preset) {
+  const run = sport === "run" || sport === "triathlon";
+  const swim = sport === "swim" || sport === "triathlon";
+  const bike = sport === "bike" || sport === "triathlon";
+  const custom = preset === "custom";
+  return { run: run && custom, swim: swim && custom, bike: bike && custom };
+}
+
+function renderOnboarding(message = "") {
+  document.body.classList.add("onboarding");
+  document.body.classList.remove("logged-out");
+  const setupPath = "/setup" + location.search;
+  if (location.pathname + location.search !== setupPath) {
+    history.replaceState(null, "", setupPath);
+  }
+  const header = document.getElementById("app-header");
+  if (header) header.hidden = false;
+  document.querySelectorAll(".topbar [data-route], .import-btn, .sync-btn").forEach((el) => { el.hidden = true; });
+  const app = document.getElementById("app");
+  if (app) {
+    app.dataset.route = "setup";
+    app.hidden = false;
+  }
+  window.scrollTo(0, 0);
+  const minDate = new Date();
+  const min = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, "0")}-${String(minDate.getDate()).padStart(2, "0")}`;
+  document.getElementById("app").innerHTML = `
+    <section class="auth-card setup-card">
+      <div class="eyebrow">New plan</div>
+      <h1>What are you training for?</h1>
+      <p class="muted">Pick a race, a time goal, or general fitness. Then set your current volume and training days.</p>
+      <form class="setup-form" novalidate>
+        <fieldset class="goal-field">
+          <legend>Goal</legend>
+          <div class="choice-row">
+            <button class="choice-btn active" type="button" data-goal="race">A race</button>
+            <button class="choice-btn" type="button" data-goal="time">A time goal</button>
+            <button class="choice-btn" type="button" data-goal="fitness">General fitness</button>
+          </div>
+          <input type="hidden" name="goal_type" value="race" />
+        </fieldset>
+        <div class="event-entry" data-for-goal="race">
+          <div class="event-search">
+            <label>Search public events
+              <input type="search" name="event_search" placeholder="e.g. Gent Marathon, Samson 10K" autocomplete="off" />
+            </label>
+            <ul class="search-results" hidden></ul>
+          </div>
+          <button class="button ghost" type="button" data-action="add-own-event">Add your own event</button>
+          <button class="button ghost" type="button" data-action="cancel-own-event" hidden>Back to search</button>
+        </div>
+        <div class="picked-event" hidden>
+          <div class="eyebrow">Selected event</div>
+          <p class="picked-name"></p>
+          <p class="muted small-text picked-meta"></p>
+          <p class="muted small-text">Public event details stay as listed. Your week below defaults to this event type.</p>
+          <button class="button ghost small" type="button" data-action="clear-picked-event">Choose a different event</button>
+        </div>
+        <fieldset data-own-event data-for-goal="race,fitness">
+          <legend id="sport-legend">Event type</legend>
+          <div class="choice-row" id="sport-choices">
+            ${["run", "swim", "bike", "triathlon"].map((s) => `
+              <button class="choice-btn" type="button" data-sport="${s}">${SPORT_LABEL[s]}</button>`).join("")}
+          </div>
+          <input type="hidden" name="sport" />
+        </fieldset>
+        <fieldset data-own-event data-for-goal="race,time">
+          <legend>Distance</legend>
+          <div class="choice-row" id="distance-choices"><p class="muted">Pick an event type first.</p></div>
+          <input type="hidden" name="preset" />
+        </fieldset>
+        <div class="custom-dists" hidden data-own-event data-for-goal="race,time">
+          <label class="custom-run" hidden>Run (km)<input type="number" name="custom_run" min="0.1" step="0.1" /></label>
+          <label class="custom-swim" hidden>Swim (m)<input type="number" name="custom_swim" min="50" step="50" /></label>
+          <label class="custom-bike" hidden>Bike (km)<input type="number" name="custom_bike" min="1" step="0.1" /></label>
+        </div>
+        <label data-own-event data-for-goal="race">Event name<input type="text" name="event_name" required placeholder="e.g. Gent Marathon, Kwart tri Leuven" /></label>
+        <label data-own-event data-for-goal="race,time" id="event-date-wrap">
+          <span class="date-label">Event date</span>
+          <input type="date" name="event_date" required min="${min}" />
+        </label>
+        <fieldset data-for-goal="time">
+          <legend>Time goal</legend>
+          <div class="choice-row" id="time-goal-choices"><p class="muted">Pick a distance first.</p></div>
+          <input type="hidden" name="time_goal" />
+        </fieldset>
+        <fieldset data-for-goal="fitness">
+          <legend>How long?</legend>
+          <div class="choice-row">
+            ${(window.FITNESS_WEEKS || [8, 12, 16]).map((n) => `
+              <button class="choice-btn${n === 12 ? " active" : ""}" type="button" data-fitness-weeks="${n}">${n} weeks</button>`).join("")}
+          </div>
+          <input type="hidden" name="fitness_weeks" value="12" />
+        </fieldset>
+        <fieldset data-own-event data-for-goal="race">
+          <legend>Share this event</legend>
+          <div class="choice-row">
+            <button class="choice-btn active" type="button" data-is-public="no">Just for me</button>
+            <button class="choice-btn" type="button" data-is-public="yes">Public — name, date and distance only</button>
+          </div>
+          <input type="hidden" name="is_public" value="no" />
+        </fieldset>
+        <label class="weekly-volume-field">Current weekly volume (km)
+          <input type="number" name="weekly_km" required min="1" max="200" step="0.1" placeholder="e.g. 25" />
+        </label>
+        <p class="muted small-text" id="weekly-hint">Use your current typical week: run km for running or triathlon, swim km for a swim event, bike km for a bike event.</p>
+        <fieldset class="level-field">
+          <legend>Where are you now?</legend>
+          <div class="choice-row" id="experience-choices">
+            <button class="choice-btn" type="button" data-experience="beginner">Beginner</button>
+            <button class="choice-btn active" type="button" data-experience="intermediate">Intermediate</button>
+            <button class="choice-btn" type="button" data-experience="advanced">Advanced</button>
+          </div>
+          <input type="hidden" name="experience" value="intermediate" />
+          <p class="setup-hint" id="experience-hint">Defaults from your weekly volume — change it if that doesn’t fit.</p>
+        </fieldset>
+        <fieldset class="run-days-field" hidden>
+          <legend>How many run days?</legend>
+          <div class="choice-row" id="run-day-choices">
+            ${[3, 4, 5, 6].map((n) => `<button class="choice-btn" type="button" data-run-days="${n}">${n} days</button>`).join("")}
+          </div>
+          <input type="hidden" name="run_days" />
+          <p class="setup-hint" id="run-days-hint">Pick a distance to see a research-based minimum.</p>
+        </fieldset>
+        <fieldset class="strength-field">
+          <legend>Strength sessions</legend>
+          <div class="choice-row">
+            <button class="choice-btn" type="button" data-strength="yes">Yes, add them</button>
+            <button class="choice-btn" type="button" data-strength="no">No strength</button>
+          </div>
+          <input type="hidden" name="strength" />
+          <p class="setup-hint" id="strength-hint">Pick a distance first. Strength matters more as the race gets longer.</p>
+        </fieldset>
+        <fieldset class="week-blocks-field" hidden>
+          <legend>Your week</legend>
+          <p class="muted small-text" id="week-blocks-hint">Tap training days, and mark busy days you can’t train.</p>
+          <div id="week-blocks"></div>
+          <div class="extra-discipline" id="extra-discipline" hidden>
+            <p class="muted small-text">Add extra discipline</p>
+            <div class="choice-row" id="extra-discipline-choices"></div>
+          </div>
+          <input type="hidden" name="run_weekdays" />
+          <input type="hidden" name="strength_weekdays" />
+          <input type="hidden" name="swim_weekdays" />
+          <input type="hidden" name="bike_weekdays" />
+          <input type="hidden" name="busy_weekdays" />
+          <p class="setup-hint" id="overlap-info"></p>
+          <p class="setup-hint warn" id="overlap-warn"></p>
+        </fieldset>
+        <p class="form-error">${message}</p>
+        <div class="setup-actions">
+          <button class="button" type="submit">Create my plan</button>
+          <button class="button ghost" type="button" data-action="skip-setup">Skip for now</button>
+        </div>
+      </form>
+    </section>`;
+  const form = document.querySelector(".setup-form");
+  bindSetupForm(form);
+  restoreSetupDraft(form);
+  applyGoalType(form, fieldValue(form, "goal_type") || "race");
+  syncRestoredChoices(form);
+  fillWeeklyFromCsv(form);
+  if (typeof window.loadActivities === "function") {
+    window.loadActivities().then((acts) => {
+      window._setupActs = acts;
+      fillWeeklyFromCsv(form);
+    });
+  }
+}
+window.renderOnboarding = renderOnboarding;
+
+function setupSport(form) {
+  if (setupGoal(form) === "time") return "run";
+  return fieldValue(form, "sport");
+}
+
+function setupGoal(form) {
+  return fieldValue(form, "goal_type") || "race";
+}
+
+function effectivePreset(form) {
+  const goal = setupGoal(form);
+  if (goal === "time") {
+    const g = (window.TIME_GOALS || []).find((t) => t.id === fieldValue(form, "time_goal"));
+    return g ? g.preset : fieldValue(form, "preset");
+  }
+  if (goal === "fitness") {
+    const sport = setupSport(form);
+    if (sport === "run") return "10k";
+    if (sport === "swim") return "1500";
+    if (sport === "bike") return "40";
+    if (sport === "triathlon") return "halve";
+    return "";
+  }
+  return fieldValue(form, "preset");
+}
+
+function fieldOf(form, name) {
+  if (!form) return null;
+  const byName = form.querySelector(`input[name="${name}"], select[name="${name}"], textarea[name="${name}"]`);
+  if (byName) return byName;
+  if (form.elements && typeof form.elements.namedItem === "function") {
+    const named = form.elements.namedItem(name);
+    if (named && !named.length && "value" in named) return named;
+    if (named && named[0] && "value" in named[0]) return named[0];
+  }
+  return null;
+}
+
+function fieldValue(form, name) {
+  return fieldOf(form, name)?.value || "";
+}
+
+function setupAdvice(form) {
+  if (!form) return null;
+  const sport = setupSport(form);
+  if (!sport) return null;
+  return trainingAdvice(sport, effectivePreset(form), {
+    run: fieldValue(form, "custom_run"),
+    swim: fieldValue(form, "custom_swim"),
+    bike: fieldValue(form, "custom_bike"),
+  }, fieldValue(form, "experience") || "intermediate");
+}
+
+function syncChoiceButtons(root, attr, value) {
+  const buttonOnly = new Set(["data-goal", "data-experience", "data-strength", "data-sport"]);
+  const sel = buttonOnly.has(attr) ? `button[${attr}]` : `[${attr}]`;
+  root.querySelectorAll(sel).forEach((b) => {
+    b.classList.toggle("active", b.getAttribute(attr) === String(value));
+  });
+}
+
+function setChoice(form, name, value, attr) {
+  const el = fieldOf(form, name);
+  if (!el) return;
+  el.value = value == null ? "" : String(value);
+  syncChoiceButtons(form, attr || `data-${name.replace(/_/g, "-")}`, el.value);
+}
+
+function pickExperience(form, value) {
+  if (!form || !value) return;
+  setChoice(form, "experience", value, "data-experience");
+  form.dataset.experiencePicked = "1";
+  delete form.dataset.runDaysPicked;
+  delete form.dataset.blocksPicked;
+  const runEl = fieldOf(form, "run_weekdays");
+  if (runEl) runEl.value = "";
+  updateTrainingAdvice();
+  saveSetupDraft(form);
+}
+
+function pickStrength(form, value) {
+  if (!form || !value) return;
+  setChoice(form, "strength", value, "data-strength");
+  form.dataset.strengthPicked = "1";
+  delete form.dataset.blocksPicked;
+  updateTrainingAdvice();
+  saveSetupDraft(form);
+}
+
+function bindSetupForm(form) {
+  if (!form || form.dataset.bound === "1") return;
+  form.dataset.bound = "1";
+  form.addEventListener("click", (e) => {
+    const clearEv = e.target.closest("[data-action=clear-picked-event]");
+    if (clearEv && form.contains(clearEv)) {
+      e.preventDefault();
+      e.stopPropagation();
+      unlockPickedEvent(form);
+      return;
+    }
+    const exp = e.target.closest("button[data-experience]");
+    if (exp && form.contains(exp)) {
+      e.preventDefault();
+      e.stopPropagation();
+      pickExperience(form, exp.dataset.experience);
+      return;
+    }
+    const str = e.target.closest("button[data-strength]");
+    if (str && form.contains(str)) {
+      e.preventDefault();
+      e.stopPropagation();
+      pickStrength(form, str.dataset.strength);
+      return;
+    }
+    const days = e.target.closest("[data-run-days]");
+    if (days && form.contains(days)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setRunDays(form, days.dataset.runDays, true);
+      delete form.dataset.blocksPicked;
+      updateTrainingAdvice();
+      return;
+    }
+    const addDisc = e.target.closest("[data-add-discipline]");
+    if (addDisc && form.contains(addDisc)) {
+      e.preventDefault();
+      e.stopPropagation();
+      pickExtraDiscipline(form, addDisc.getAttribute("data-add-discipline"));
+      return;
+    }
+    const removeDisc = e.target.closest("[data-remove-discipline]");
+    if (removeDisc && form.contains(removeDisc)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = removeDisc.getAttribute("data-remove-discipline");
+      setExtras(form, parseExtras(form).filter((k) => k !== key));
+      const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
+      if (field) field.value = "";
+      form.dataset.blocksPicked = "1";
+      paintWeekBlocks(form);
+      saveSetupDraft(form);
+    }
+  }, true);
+}
+
+function primaryDisciplines(sport) {
+  if (sport === "triathlon") return ["run", "swim", "bike"];
+  if (sport === "swim") return ["swim"];
+  if (sport === "bike") return ["bike"];
+  if (sport === "run") return ["run"];
+  return [];
+}
+
+function parseExtras(form) {
+  return String(form?.dataset.extraDisciplines || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function setExtras(form, list) {
+  form.dataset.extraDisciplines = list.join(",");
+}
+
+function weekdayField(form, key) {
+  return form?.querySelector?.(`[name="${key}_weekdays"]`) || form?.[`${key}_weekdays`];
+}
+
+function addExtraDiscipline(form, key, seedDay = true) {
+  if (!["run", "swim", "bike"].includes(key)) return;
+  const sport = setupSport(form);
+  if (primaryDisciplines(sport).includes(key)) return;
+  const extras = parseExtras(form);
+  if (!extras.includes(key)) {
+    extras.push(key);
+    setExtras(form, extras);
+  }
+  const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
+  if (seedDay && field && !parseDays(field.value).length) {
+    field.value = String(defaultExtraDay(form, key));
+  }
+  form.dataset.blocksPicked = "1";
+}
+
+function pickExtraDiscipline(form, key) {
+  addExtraDiscipline(form, key, true);
+  paintWeekBlocks(form);
+  saveSetupDraft(form);
+}
+
+function defaultExtraDay(form, key) {
+  const used = new Set(["run", "swim", "bike", "strength"].flatMap((k) => {
+    if (k === key) return [];
+    return parseDays(weekdayField(form, k)?.value);
+  }));
+  const prefer = [2, 1, 3, 0, 4, 6, 5];
+  return prefer.find((d) => !used.has(d)) ?? 2;
+}
+
+function draftKey(id = window.CURRENT_USER_ID || "anon") {
+  return `plan-setup-draft:${id}`;
+}
+
+function saveSetupDraft(form) {
+  if (!form) return;
+  const data = {
+    goal_type: fieldValue(form, "goal_type") || "race",
+    sport: fieldValue(form, "sport"),
+    preset: fieldValue(form, "preset"),
+    custom_run: fieldValue(form, "custom_run"),
+    custom_swim: fieldValue(form, "custom_swim"),
+    custom_bike: fieldValue(form, "custom_bike"),
+    event_name: fieldValue(form, "event_name"),
+    event_date: fieldValue(form, "event_date"),
+    is_public: fieldValue(form, "is_public") || "no",
+    weekly_km: fieldValue(form, "weekly_km"),
+    experience: fieldValue(form, "experience") || "intermediate",
+    run_days: fieldValue(form, "run_days"),
+    strength: fieldValue(form, "strength"),
+    run_weekdays: fieldValue(form, "run_weekdays"),
+    strength_weekdays: fieldValue(form, "strength_weekdays"),
+    swim_weekdays: fieldValue(form, "swim_weekdays"),
+    bike_weekdays: fieldValue(form, "bike_weekdays"),
+    busy_weekdays: fieldValue(form, "busy_weekdays"),
+    time_goal: fieldValue(form, "time_goal"),
+    time_custom: fieldValue(form, "time_custom"),
+    fitness_weeks: fieldValue(form, "fitness_weeks") || "12",
+    extraDisciplines: form.dataset.extraDisciplines || "",
+    pickedEvent: form.dataset.pickedEvent || "",
+    ownEvent: form.dataset.ownEvent || "",
+    sourceEvent: form.dataset.sourceEvent || "",
+    pickedName: form.dataset.pickedEvent ? (form.querySelector(".picked-name")?.textContent || "") : "",
+    pickedMeta: form.dataset.pickedEvent ? (form.querySelector(".picked-meta")?.textContent || "") : "",
+    runDaysPicked: form.dataset.runDaysPicked || "",
+    strengthPicked: form.dataset.strengthPicked || "",
+    experiencePicked: form.dataset.experiencePicked || "",
+    blocksPicked: form.dataset.blocksPicked || "",
+    weeklyPicked: form.dataset.weeklyPicked || "",
+    agendaEventId: form.dataset.agendaEventId || "",
+    agendaEventName: form.dataset.agendaEventName || "",
+    agendaEventDate: form.dataset.agendaEventDate || "",
+  };
+  try { localStorage.setItem(draftKey(), JSON.stringify(data)); } catch { /* ignore */ }
+}
+
+function persistSetupDraft() {
+  const form = document.querySelector(".setup-form");
+  if (form) saveSetupDraft(form);
+}
+window.saveSetupDraftNow = persistSetupDraft;
+
+function readSetupDraft() {
+  try {
+    const primary = JSON.parse(localStorage.getItem(draftKey()) || "null");
+    if (primary) return primary;
+    if (window.CURRENT_USER_ID) {
+      const anon = JSON.parse(localStorage.getItem(draftKey("anon")) || "null");
+      if (anon) {
+        localStorage.setItem(draftKey(), JSON.stringify(anon));
+        localStorage.removeItem(draftKey("anon"));
+        return anon;
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+
+function clearSetupDraft() {
+  try { localStorage.removeItem(draftKey()); } catch { /* ignore */ }
+}
+
+function restoreSetupDraft(form) {
+  const draft = readSetupDraft();
+  if (!form || !draft) return;
+  if (draft.agendaEventId) {
+    form.dataset.agendaEventId = draft.agendaEventId;
+    form.dataset.agendaEventName = draft.agendaEventName || draft.event_name || "";
+    form.dataset.agendaEventDate = draft.agendaEventDate || draft.event_date || "";
+  }
+  if (draft.sport) {
+    form.sport.value = draft.sport;
+    syncChoiceButtons(form, "data-sport", draft.sport);
+    paintDistances(draft.sport, { keepPreset: true });
+  }
+  if (draft.preset) {
+    form.preset.value = draft.preset;
+    form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === draft.preset));
+    toggleCustom(draft.sport, draft.preset);
+  }
+  ["custom_run", "custom_swim", "custom_bike", "event_name", "event_date", "weekly_km",
+    "run_days", "run_weekdays", "strength_weekdays", "swim_weekdays", "bike_weekdays", "busy_weekdays",
+    "time_goal", "time_custom", "fitness_weeks", "goal_type", "is_public", "experience", "strength"].forEach((name) => {
+    if (fieldOf(form, name) && draft[name] != null) fieldOf(form, name).value = draft[name];
+  });
+  syncChoiceButtons(form, "data-goal", fieldValue(form, "goal_type") || "race");
+  paintTimeTargets(form);
+  const timeCustom = fieldOf(form, "time_custom");
+  if (timeCustom && draft.time_custom != null) timeCustom.value = draft.time_custom;
+  syncChoiceButtons(form, "data-time-target", fieldValue(form, "time_goal"));
+  syncChoiceButtons(form, "data-fitness-weeks", fieldValue(form, "fitness_weeks") || "12");
+  syncChoiceButtons(form, "data-is-public", fieldValue(form, "is_public") || "no");
+  syncChoiceButtons(form, "data-experience", fieldValue(form, "experience") || "intermediate");
+  syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
+  if (draft.run_days) setRunDays(form, draft.run_days);
+  if (draft.extraDisciplines) form.dataset.extraDisciplines = draft.extraDisciplines;
+  if (draft.ownEvent) form.dataset.ownEvent = draft.ownEvent;
+  if (draft.runDaysPicked) form.dataset.runDaysPicked = draft.runDaysPicked;
+  if (draft.strengthPicked) form.dataset.strengthPicked = draft.strengthPicked;
+  if (draft.experiencePicked) form.dataset.experiencePicked = draft.experiencePicked;
+  if (draft.blocksPicked) form.dataset.blocksPicked = draft.blocksPicked;
+  if (draft.weeklyPicked) form.dataset.weeklyPicked = draft.weeklyPicked;
+  if (draft.pickedEvent && draft.event_name) {
+    form.dataset.pickedEvent = "1";
+    if (draft.sourceEvent) form.dataset.sourceEvent = draft.sourceEvent;
+    const sport = draft.sport || fieldValue(form, "sport") || "run";
+    lockPickedEvent(form, {
+      name: draft.pickedName || draft.event_name,
+      date: draft.event_date,
+      km: "",
+      sport,
+      id: draft.sourceEvent,
+    }, draft.pickedMeta || pickedEventMeta({ name: draft.event_name, date: draft.event_date, sport }, sport));
+  }
+  if (draft.weekly_km && !draft.experiencePicked) syncExperienceFromWeekly(form);
+}
+
+function syncRestoredChoices(form) {
+  if (!form) return;
+  syncChoiceButtons(form, "data-goal", fieldValue(form, "goal_type") || "race");
+  syncChoiceButtons(form, "data-sport", fieldValue(form, "sport"));
+  syncChoiceButtons(form, "data-experience", fieldValue(form, "experience") || "intermediate");
+  syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
+  syncChoiceButtons(form, "data-is-public", fieldValue(form, "is_public") || "no");
+  const preset = fieldValue(form, "preset");
+  form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.preset === preset);
+  });
+}
+
+function applyGoalType(form, goal) {
+  if (!form) return;
+  if (!["race", "time", "fitness"].includes(goal)) goal = "race";
+  setChoice(form, "goal_type", goal, "data-goal");
+  const sportLegend = document.getElementById("sport-legend");
+  if (sportLegend) sportLegend.textContent = goal === "fitness" ? "Focus" : "Event type";
+  const dateLabel = form.querySelector(".date-label");
+  if (dateLabel) dateLabel.textContent = goal === "time" ? "Target date" : "Event date";
+  const picked = !!form.dataset.pickedEvent;
+  const adding = form.dataset.ownEvent === "1";
+  if (form.event_name) form.event_name.required = false;
+  if (form.event_date) form.event_date.required = false;
+  form.querySelectorAll("[data-for-goal]").forEach((el) => {
+    const allowed = el.getAttribute("data-for-goal").split(",").map((s) => s.trim());
+    if (!allowed.includes(goal)) {
+      el.hidden = true;
+      return;
+    }
+    if (goal === "race" && el.hasAttribute("data-own-event") && !adding) {
+      el.hidden = true;
+      return;
+    }
+    if (picked && goal === "race" && (el.hasAttribute("data-own-event") || el.classList.contains("event-entry"))) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+  });
+  const addBtn = form.querySelector("[data-action=add-own-event]");
+  const cancelBtn = form.querySelector("[data-action=cancel-own-event]");
+  const searchBox = form.querySelector(".event-search");
+  if (addBtn) addBtn.hidden = goal !== "race" || picked || adding;
+  if (cancelBtn) cancelBtn.hidden = goal !== "race" || picked || !adding;
+  if (searchBox) searchBox.hidden = picked || (goal === "race" && adding);
+  if (form.event_name) form.event_name.required = goal === "race" && adding && !picked;
+  if (form.event_date) form.event_date.required = (goal === "race" && adding && !picked) || goal === "time";
+  if (goal === "time") {
+    if (!fieldValue(form, "sport")) setChoice(form, "sport", "run", "data-sport");
+    paintDistances("run", { keepPreset: true, resetExtras: false });
+    paintTimeTargets(form);
+  } else if (goal === "race") {
+    const sport = fieldValue(form, "sport");
+    const box = document.getElementById("distance-choices");
+    if (sport) paintDistances(sport, { keepPreset: true, resetExtras: false });
+    else if (box) box.innerHTML = `<p class="muted">Pick an event type first.</p>`;
+  }
+  const card = form.querySelector(".picked-event");
+  if (card) card.hidden = !(goal === "race" && picked);
+  updateTrainingAdvice();
+  saveSetupDraft(form);
+}
+
+const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function parseDays(value) {
+  return String(value || "").split(",").map(Number).filter((n) => n >= 0 && n <= 6);
+}
+
+function setRunDays(form, n, userPicked = false) {
+  const el = fieldOf(form, "run_days");
+  if (el) el.value = n ? String(n) : "";
+  if (userPicked) form.dataset.runDaysPicked = "1";
+  form.querySelectorAll("[data-run-days]").forEach((b) => b.classList.toggle("active", Number(b.dataset.runDays) === Number(n)));
+}
+
+function visibleWeekdays(form, key) {
+  if (key === "strength") return fieldValue(form, "strength") === "yes" ? parseDays(form.strength_weekdays.value) : [];
+  const sport = setupSport(form);
+  const extras = parseExtras(form);
+  if (primaryDisciplines(sport).includes(key) || extras.includes(key)) return parseDays(form[`${key}_weekdays`]?.value);
+  return [];
+}
+
+function currentBlocks(form) {
+  const sport = setupSport(form);
+  const extras = parseExtras(form);
+  const primary = primaryDisciplines(sport);
+  const strengthOn = fieldValue(form, "strength") === "yes";
+  const show = (key) => primary.includes(key) || extras.includes(key);
+  return {
+    run: show("run") ? parseDays(fieldValue(form, "run_weekdays")) : [],
+    strength: strengthOn ? parseDays(fieldValue(form, "strength_weekdays")) : [],
+    swim: show("swim") ? parseDays(fieldValue(form, "swim_weekdays")) : [],
+    bike: show("bike") ? parseDays(fieldValue(form, "bike_weekdays")) : [],
+    busy: parseDays(fieldValue(form, "busy_weekdays")),
+  };
+}
+
+function fillProposedWeek(form, force = false) {
+  const sport = setupSport(form);
+  if (!sport || typeof defaultTrainingBlocks !== "function") return false;
+  if (!form) return false;
+  const primary = primaryDisciplines(sport);
+  if (!primary.length) return false;
+  const mainKey = primary[0];
+  const mainEl = fieldOf(form, `${mainKey}_weekdays`);
+  if (!mainEl) return false;
+  if (!force && (form.dataset.blocksPicked || parseDays(mainEl.value).length)) return false;
+  const n = Number(fieldValue(form, "run_days")) || 3;
+  const strength = fieldValue(form, "strength") === "yes";
+  const busy = parseDays(fieldValue(form, "busy_weekdays"));
+  const blocks = defaultTrainingBlocks(sport, n, strength, busy);
+  if (primary.includes("run")) {
+    const runEl = fieldOf(form, "run_weekdays");
+    if (runEl) runEl.value = (blocks.run || []).join(",");
+    if (!form.dataset.runDaysPicked) setRunDays(form, (blocks.run || []).length);
+  }
+  if (primary.includes("swim")) {
+    const swimEl = fieldOf(form, "swim_weekdays");
+    if (swimEl) swimEl.value = (blocks.swim || []).join(",");
+  }
+  if (primary.includes("bike")) {
+    const bikeEl = fieldOf(form, "bike_weekdays");
+    if (bikeEl) bikeEl.value = (blocks.bike || []).join(",");
+  }
+  if (strength) {
+    const strengthEl = fieldOf(form, "strength_weekdays");
+    if (strengthEl && (force || !parseDays(strengthEl.value).length)) {
+      strengthEl.value = (blocks.strength || []).join(",");
+    }
+  }
+  return true;
+}
+
+function applyDefaultBlocks(form) {
+  const sport = setupSport(form);
+  if (!sport || typeof defaultTrainingBlocks !== "function") {
+    paintWeekBlocks(form);
+    return;
+  }
+  const strength = fieldValue(form, "strength") === "yes";
+  const n = Number(fieldValue(form, "run_days")) || 3;
+  const busy = parseDays(fieldValue(form, "busy_weekdays"));
+  const blocks = defaultTrainingBlocks(sport, n, strength, busy);
+  const extras = parseExtras(form);
+  const primary = primaryDisciplines(sport);
+  const keep = {
+    run: extras.includes("run") ? fieldValue(form, "run_weekdays") : "",
+    swim: extras.includes("swim") ? fieldValue(form, "swim_weekdays") : "",
+    bike: extras.includes("bike") ? fieldValue(form, "bike_weekdays") : "",
+  };
+  const setDays = (name, value) => {
+    const el = fieldOf(form, name);
+    if (el) el.value = value;
+  };
+  setDays("run_weekdays", primary.includes("run") ? blocks.run.join(",") : keep.run);
+  setDays("strength_weekdays", strength ? blocks.strength.join(",") : "");
+  setDays("swim_weekdays", primary.includes("swim") ? blocks.swim.join(",") : keep.swim);
+  setDays("bike_weekdays", primary.includes("bike") ? blocks.bike.join(",") : keep.bike);
+  paintWeekBlocks(form);
+}
+
+function paintWeekBlocks(form) {
+  const box = document.getElementById("week-blocks");
+  const wrap = form.querySelector(".week-blocks-field");
+  if (!box || !wrap) return;
+  fillProposedWeek(form, !form.dataset.blocksPicked);
+  const sport = setupSport(form);
+  const strength = fieldValue(form, "strength") === "yes";
+  const extras = parseExtras(form);
+  const primary = primaryDisciplines(sport);
+  const rows = [];
+  [["run", "Run"], ["swim", "Swim"], ["bike", "Bike"]].forEach(([key, label]) => {
+    const extra = extras.includes(key) && !primary.includes(key);
+    if (extra && !parseDays(weekdayField(form, key)?.value).length) addExtraDiscipline(form, key, true);
+    if (primary.includes(key) || extras.includes(key)) rows.push([key, label, extra]);
+  });
+  if (strength) rows.push(["strength", "Strength", false]);
+  if (sport || rows.length) rows.push(["busy", "Busy", false]);
+  const showWeek = !!sport || rows.some(([k]) => k !== "busy");
+  wrap.hidden = !showWeek;
+  if (!showWeek) wrap.setAttribute("hidden", "");
+  else wrap.removeAttribute("hidden");
+  if (!showWeek) {
+    box.innerHTML = "";
+    return;
+  }
+  const blocks = currentBlocks(form);
+  const overlapDays = new Set();
+  for (let i = 0; i < 7; i++) {
+    if (blocks.busy.includes(i)) continue;
+    const count = ["run", "strength", "swim", "bike"].filter((k) => blocks[k].includes(i)).length;
+    if (count > 1) overlapDays.add(i);
+  }
+  const notes = typeof trainingOverlapNotes === "function" ? trainingOverlapNotes(sport, blocks) : { warns: [], info: [] };
+  box.innerHTML = `
+    <table class="week-picker">
+      <thead><tr><th></th>${WEEKDAY_NAMES.map((d) => `<th>${d}</th>`).join("")}</tr></thead>
+      <tbody>
+        ${rows.map(([key, label, extra]) => `
+          <tr class="${key === "busy" ? "busy-row" : ""}">
+            <th>${label}${extra ? `<button class="row-remove" type="button" data-remove-discipline="${key}" aria-label="Remove ${label}">×</button>` : ""}</th>
+            ${WEEKDAY_NAMES.map((_, i) => {
+              const on = blocks[key].includes(i);
+              const blocked = key !== "busy" && blocks.busy.includes(i);
+              const overlap = on && overlapDays.has(i);
+              const risky = overlap && notes.warns.some((w) => w.startsWith(WEEKDAY_NAMES[i]));
+              return `<td><button class="day-toggle ${on ? "active" : ""} ${key === "busy" && on ? "busy-on" : ""} ${blocked ? "day-busy" : ""} ${overlap ? (risky ? "overlap-warn" : "overlap-ok") : ""}" type="button" data-block="${key}" data-day="${i}" aria-pressed="${on}" ${blocked ? "disabled" : ""}>${on ? "✓" : ""}</button></td>`;
+            }).join("")}
+          </tr>`).join("")}
+      </tbody>
+    </table>`;
+  paintExtraDisciplineChoices(form, primary, extras);
+  const info = document.getElementById("overlap-info");
+  const warn = document.getElementById("overlap-warn");
+  const hint = document.getElementById("week-blocks-hint");
+  if (hint) {
+    const sportLabel = (window.SPORT_LABEL && window.SPORT_LABEL[sport]) || sport;
+    const proposed = (blocks.run || []).map((i) => WEEKDAY_NAMES[i]).join(", ");
+    const busyLabel = (blocks.busy || []).map((i) => WEEKDAY_NAMES[i]).join(", ");
+    if (busyLabel) {
+      hint.textContent = `Busy: ${busyLabel}. Those days stay clear of training.`;
+    } else if (sport === "triathlon") {
+      hint.textContent = "Tap the days for each session. Mark busy days you can’t train. Triathlon often stacks sessions on the same day.";
+    } else if (proposed && (sport === "run" || primary.includes("run"))) {
+      hint.textContent = `${sportLabel || "Run"} days proposed: ${proposed}. Tap to change, or mark busy days.`;
+    } else if (primary.length) {
+      hint.textContent = `Defaults for ${sportLabel || "this event"}. Tap days to change, and mark busy days you can’t train.`;
+    } else {
+      hint.textContent = "Tap the days you want to train. Mark busy days you can’t train.";
+    }
+  }
+  if (info) info.textContent = notes.info.join(" ");
+  if (warn) warn.textContent = notes.warns.join(" ");
+}
+
+function paintExtraDisciplineChoices(form, primary, extras) {
+  const bar = document.getElementById("extra-discipline");
+  const box = document.getElementById("extra-discipline-choices");
+  if (!bar || !box) return;
+  const available = ["run", "swim", "bike"].filter((k) => !primary.includes(k) && !extras.includes(k));
+  bar.hidden = !available.length;
+  if (available.length) bar.removeAttribute("hidden");
+  const labels = { run: "Run", swim: "Swim", bike: "Bike" };
+  box.innerHTML = available.map((k) => `
+    <button class="choice-btn" type="button" data-add-discipline="${k}">${labels[k]}</button>`).join("");
+}
+
+function clearDayFromTraining(form, day) {
+  ["run", "strength", "swim", "bike"].forEach((key) => {
+    const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
+    if (!field) return;
+    const days = parseDays(field.value).filter((d) => d !== day);
+    field.value = days.join(",");
+    if (key === "run") setRunDays(form, days.length || "");
+  });
+}
+
+function toggleBlockDay(form, key, day) {
+  const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
+  if (!field) return;
+  const days = parseDays(field.value);
+  const turningOn = !days.includes(day);
+  if (key === "busy" && turningOn) clearDayFromTraining(form, day);
+  if (key !== "busy" && turningOn) {
+    const busyField = fieldOf(form, "busy_weekdays");
+    if (busyField) {
+      busyField.value = parseDays(busyField.value).filter((d) => d !== day).join(",");
+    }
+  }
+  const next = turningOn ? [...days, day].sort((a, b) => a - b) : days.filter((d) => d !== day);
+  field.value = next.join(",");
+  form.dataset.blocksPicked = "1";
+  if (key === "run") setRunDays(form, next.length || "");
+  paintWeekBlocks(form);
+  updateTrainingAdvice();
+}
+
+function syncExperienceFromWeekly(form) {
+  if (!form || form.dataset.experiencePicked) return;
+  const km = fieldValue(form, "weekly_km");
+  if (!(Number(km) > 0) || typeof window.experienceFromWeeklyKm !== "function") return;
+  const level = window.experienceFromWeeklyKm(km);
+  setChoice(form, "experience", level, "data-experience");
+  const hint = document.getElementById("experience-hint");
+  if (hint) {
+    const label = level === "beginner" ? "beginner" : level === "advanced" ? "advanced" : "intermediate";
+    hint.textContent = `Suggested ${label} from ${km} km/week. Change it if that doesn’t fit — it adjusts recommended run days.`;
+  }
+}
+
+function updateTrainingAdvice() {
+  const form = document.querySelector(".setup-form");
+  if (!form) return;
+  syncExperienceFromWeekly(form);
+  const advice = setupAdvice(form);
+  const runField = form.querySelector(".run-days-field");
+  const daysHint = document.getElementById("run-days-hint");
+  const strengthHint = document.getElementById("strength-hint");
+  const expHint = document.getElementById("experience-hint");
+  if (expHint && form.dataset.experiencePicked) {
+    expHint.textContent = "This changes how many run days are recommended.";
+  }
+  if (!advice) {
+    if (runField) runField.hidden = true;
+    paintWeekBlocks(form);
+    return;
+  }
+  if (runField) {
+    runField.hidden = !advice.showRunDays;
+    if (advice.showRunDays) runField.removeAttribute("hidden");
+  }
+  form.querySelectorAll("[data-run-days]").forEach((b) => {
+    const rec = Number(b.dataset.runDays) === advice.recDays;
+    b.classList.toggle("recommended", rec);
+    if (rec && !b.querySelector(".rec")) b.insertAdjacentHTML("beforeend", `<span class="rec">recommended</span>`);
+    if (!rec) b.querySelector(".rec")?.remove();
+  });
+  if (advice.showRunDays && !form.dataset.runDaysPicked) setRunDays(form, advice.recDays);
+  const chosen = Number(fieldValue(form, "run_days"));
+  if (daysHint) {
+    const belowMin = chosen > 0 && chosen < advice.minDays;
+    daysHint.classList.toggle("warn", belowMin);
+    if (belowMin) {
+      daysHint.textContent = `That's below the ${advice.minDays}-day minimum for this distance. You can still continue, but sessions will be longer and injury risk goes up.`;
+    } else if (advice.experience === "beginner" && setupGoal(form) === "race") {
+      daysHint.textContent = "";
+    } else {
+      daysHint.textContent = advice.daysHint;
+    }
+    daysHint.hidden = !daysHint.textContent;
+  }
+  if (strengthHint) strengthHint.textContent = advice.strengthHint;
+  if (!form.dataset.strengthPicked) {
+    if (!fieldValue(form, "strength")) {
+      setChoice(form, "strength", advice.strengthRecommended ? "yes" : "no", "data-strength");
+    } else if (advice.strengthRecommended) {
+      setChoice(form, "strength", "yes", "data-strength");
+    }
+  }
+  syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
+  const sport = setupSport(form);
+  const primary = primaryDisciplines(sport);
+  const needsPrimary = primary.some((key) => !parseDays(fieldValue(form, `${key}_weekdays`)).length);
+  if (!form.dataset.blocksPicked || needsPrimary) applyDefaultBlocks(form);
+  else paintWeekBlocks(form);
+  saveSetupDraft(form);
+}
+
+function paintTimeTargets(form) {
+  const box = document.getElementById("time-goal-choices");
+  if (!box || !form) return;
+  const preset = fieldValue(form, "preset");
+  const savedTime = fieldValue(form, "time_custom");
+  const timeInput = (placeholder) => `
+    <label class="time-custom-label">Target time
+      <input type="text" name="time_custom" inputmode="text" placeholder="${placeholder}" value="${escAttr(savedTime)}" />
+    </label>`;
+  if (!preset) {
+    box.innerHTML = `<p class="muted">Pick a distance first.</p>`;
+    return;
+  }
+  if (preset === "custom") {
+    setChoice(form, "time_goal", "custom", "data-time-target");
+    box.innerHTML = timeInput("e.g. 28:00 or 1:25:00");
+    return;
+  }
+  const goals = (window.TIME_GOALS || []).filter((g) => g.preset === preset);
+  const current = fieldValue(form, "time_goal");
+  box.innerHTML = goals.map((g) => `
+    <button class="choice-btn" type="button" data-time-target="${g.id}">${g.label}</button>`).join("")
+    + `<button class="choice-btn" type="button" data-time-target="custom">Custom</button>`;
+  if (current && current !== "custom" && !goals.some((g) => g.id === current)) {
+    const el = fieldOf(form, "time_goal");
+    if (el) el.value = "";
+  }
+  if (fieldValue(form, "time_goal") === "custom") {
+    box.insertAdjacentHTML("beforeend", timeInput("e.g. 28:00"));
+  }
+  syncChoiceButtons(form, "data-time-target", fieldValue(form, "time_goal"));
+}
+
+function paintDistances(sport, opts = {}) {
+  const box = document.getElementById("distance-choices");
+  const form = document.querySelector(".setup-form");
+  if (!box || !form) return;
+  const goal = setupGoal(form);
+  let presets = EVENT_PRESETS[sport] || [];
+  if (goal === "time") presets = presets.filter((p) => (window.TIME_PRESETS || []).includes(p.id));
+  box.innerHTML = presets.map((p) => `
+    <button class="choice-btn" type="button" data-preset="${p.id}">${p.label}</button>`).join("");
+  if (!opts.keepPreset) {
+    const presetEl = fieldOf(form, "preset");
+    if (presetEl) presetEl.value = "";
+    delete form.dataset.runDaysPicked;
+    delete form.dataset.strengthPicked;
+    delete form.dataset.blocksPicked;
+    if (opts.resetExtras !== false) form.dataset.extraDisciplines = "";
+    toggleCustom(sport, "");
+  } else {
+    const preset = fieldValue(form, "preset");
+    form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.preset === preset);
+    });
+    toggleCustom(sport, preset);
+  }
+  if (goal === "time") paintTimeTargets(form);
+  updateTrainingAdvice();
+}
+
+function toggleCustom(sport, preset) {
+  const wrap = document.querySelector(".custom-dists");
+  if (!wrap) return;
+  const fields = setupFields(sport, preset);
+  wrap.hidden = !fields.run && !fields.swim && !fields.bike;
+  wrap.querySelector(".custom-run").hidden = !fields.run;
+  wrap.querySelector(".custom-swim").hidden = !fields.swim;
+  wrap.querySelector(".custom-bike").hidden = !fields.bike;
+  updateTrainingAdvice();
+}
+
+function showAppChrome() {
+  document.body.classList.remove("onboarding", "logged-out");
+  const header = document.getElementById("app-header");
+  if (header) header.hidden = false;
+  const hasPlan = !!window.CURRENT_PLAN;
+  document.querySelectorAll("[data-route]").forEach((el) => {
+    if (el.dataset.route === "home" || el.dataset.route === "profile" || el.dataset.route === "activities") el.hidden = false;
+    else el.hidden = !hasPlan;
+  });
+  const importBtn = document.querySelector(".import-btn");
+  if (importBtn) importBtn.hidden = false;
+  const syncBtn = document.querySelector(".sync-btn");
+  if (syncBtn) syncBtn.hidden = false;
+}
+
+async function leaveSetupToHome() {
+  persistSetupDraft();
+  if (!window.CURRENT_PLAN) markSkipped(window.CURRENT_USER_ID);
+  const app = document.getElementById("app");
+  if (app) {
+    app.hidden = false;
+    app.dataset.route = "";
+  }
+  showAppChrome();
+  history.replaceState(null, "", "/home" + location.search);
+  if (!window.CURRENT_PLAN && window.CURRENT_USER_ID) {
+    try { await loadOrCreatePlan({ id: window.CURRENT_USER_ID }); } catch { /* still go home */ }
+  }
+  showAppChrome();
+  history.replaceState(null, "", "/home" + location.search);
+  try {
+    if (typeof window.bootApp === "function") await window.bootApp();
+  } catch { /* still paint home */ }
+  if (typeof window.go === "function") window.go("/home", { replace: true });
+}
+window.leaveSetupToHome = leaveSetupToHome;
+
+async function saveGeneratedPlan(userId, input) {
+  const generated = generateTrainingPlan(input);
+  const row = { user_id: userId, ...generated };
+  const { data, error } = await sb.from("plans").insert(row).select("*").single();
+  if (error) throw error;
+  const raceKm = generated.run_km || generated.bike_km || (generated.swim_m ? generated.swim_m / 1000 : 0);
+  const raceRow = {
+    date: generated.event_date,
+    name: generated.event_name,
+    km: raceKm || 0,
+    race: true,
+    sport: generated.sport,
+    swim_m: generated.swim_m,
+    bike_km: generated.bike_km,
+  };
+  let linked = false;
+  if (input.agendaEventId) {
+    const patch = { ...raceRow };
+    if (!input.sourceId) patch.is_public = !!input.isPublic;
+    const { data: updated, error: updErr } = await sb.from("events")
+      .update(patch)
+      .eq("user_id", userId)
+      .eq("id", input.agendaEventId)
+      .select("id")
+      .maybeSingle();
+    if (updErr) throw updErr;
+    linked = !!updated;
+  }
+  if (!linked) {
+    const { error: insErr } = await sb.from("events").insert({
+      user_id: userId,
+      id: `race-${generated.event_date}`,
+      ...raceRow,
+      effort: "race",
+      note: "",
+      is_public: !!input.isPublic,
+      source_id: input.sourceId || null,
+    });
+    if (insErr) throw insErr;
+  }
+  const others = (input.otherEvents || []).filter((e) => e && e.date && e.name && !e.existing);
+  for (const ev of others) {
+    await sb.from("events").upsert({
+      user_id: userId,
+      id: ev.id || `ev-${ev.date}-${Date.now().toString(36)}`,
+      date: ev.date,
+      name: ev.name,
+      km: Number(ev.km) || 0.1,
+      effort: ev.effort || "easy",
+      note: ev.note || "",
+      race: false,
+      is_public: false,
+      sport: ev.sport || "run",
+      source_id: ev.source_id || ev.id || null,
+      swim_m: ev.swim_m || null,
+      bike_km: ev.bike_km || null,
+    });
+  }
+  return data;
+}
+
+async function loadOrCreatePlan(user) {
+  window.CURRENT_USER_ID = user.id;
+  const { data, error } = await sb.from("plans").select("*").eq("user_id", user.id).maybeSingle();
+  if (error) throw error;
+  if (data) {
+    applyPlanRow(data);
+    showAppChrome();
+    return true;
+  }
+  if (hasSkipped(user.id)) {
+    window.PLAN_SKIPPED = true;
+    showAppChrome();
+    return true;
+  }
+  renderOnboarding();
+  return false;
+}
+
+function setupRouteOpen() {
+  const base = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0];
+  return base === "setup" || document.body.classList.contains("onboarding") || !!document.querySelector(".setup-form");
+}
+
+let ENSURING = null;
+window.ensurePlan = function ensurePlan(user) {
+  window.CURRENT_USER_ID = user.id;
+  if (setupRouteOpen() && !window.CURRENT_PLAN) {
+    if (typeof window.renderOnboarding === "function" && !document.querySelector(".setup-form")) {
+      window.renderOnboarding();
+    }
+    return Promise.resolve(false);
+  }
+  if (window.CURRENT_PLAN && window.CURRENT_PLAN.user_id === user.id) {
+    showAppChrome();
+    return Promise.resolve(true);
+  }
+  if (window.PLAN_SKIPPED && window.CURRENT_USER_ID === user.id && !window.CURRENT_PLAN) {
+    showAppChrome();
+    return Promise.resolve(true);
+  }
+  if (ENSURING) return ENSURING;
+  ENSURING = loadOrCreatePlan(user).finally(() => { ENSURING = null; });
+  return ENSURING;
+};
+
+function typicalWeeklyFromActs(sport) {
+  if (typeof window.typicalWeeklyKm === "function") return window.typicalWeeklyKm(window.peekActivities?.() || [], sport);
+  return null;
+}
+
+function fillWeeklyFromCsv(form) {
+  if (!form || form.dataset.weeklyPicked || fieldValue(form, "weekly_km")) return;
+  const sport = setupSport(form);
+  const km = typicalWeeklyFromActs(sport);
+  if (!(km > 0)) return;
+  const weeklyEl = fieldOf(form, "weekly_km");
+  if (weeklyEl) weeklyEl.value = km;
+  const hint = document.getElementById("weekly-hint");
+  if (hint) hint.textContent = `Defaulted to ${km} km from your imported activities over recent weeks. Change it if that week was unusual.`;
+  syncExperienceFromWeekly(form);
+  updateTrainingAdvice();
+}
+
+function pickedEventMeta(ev, sport) {
+  const sportLabel = (window.SPORT_LABEL && window.SPORT_LABEL[sport]) || sport;
+  const bits = [ev.date, sportLabel];
+  if (sport === "swim" && ev.swim_m) bits.push(`${ev.swim_m} m`);
+  else if (sport === "bike" && (ev.bike_km || ev.km)) bits.push(`${ev.bike_km || ev.km} km`);
+  else if (sport === "triathlon") {
+    const tri = [ev.swim_m ? `${ev.swim_m} m` : "", ev.bike_km ? `${ev.bike_km} km` : "", ev.km ? `${ev.km} km run` : ""].filter(Boolean);
+    if (tri.length) bits.push(tri.join(" / "));
+    else if (ev.km) bits.push(`${ev.km} km`);
+  } else if (ev.km) bits.push(`${ev.km} km`);
+  return bits.filter(Boolean).join(" · ");
+}
+
+function clearAgendaLink(form) {
+  if (!form) return;
+  delete form.dataset.agendaEventId;
+  delete form.dataset.agendaEventName;
+  delete form.dataset.agendaEventDate;
+}
+
+function customFromAgenda(sport, preset, ev) {
+  if (preset !== "custom") return { custom_run: "", custom_swim: "", custom_bike: "" };
+  return {
+    custom_run: (sport === "run" || sport === "triathlon") && ev.km ? String(ev.km) : "",
+    custom_swim: (sport === "swim" || sport === "triathlon") && ev.swim_m ? String(ev.swim_m) : "",
+    custom_bike: sport === "bike"
+      ? String(ev.bike_km || ev.km || "")
+      : (sport === "triathlon" && ev.bike_km ? String(ev.bike_km) : ""),
+  };
+}
+
+window.startPlanForAgendaEvent = async function startPlanForAgendaEvent(ev, { replace = false } = {}) {
+  const userId = window.CURRENT_USER_ID;
+  if (!userId) throw new Error("Sign in required");
+  if (!ev?.id || !ev.date || !ev.name) throw new Error("Pick an event first.");
+  if (replace && window.CURRENT_PLAN) {
+    const { error } = await sb.from("plans").delete().eq("user_id", userId);
+    if (error) throw error;
+    const { error: evErr } = await sb.from("events").delete().eq("user_id", userId).eq("race", true).neq("id", ev.id);
+    if (evErr) throw evErr;
+    clearPlanRow();
+  }
+  clearSkipped(userId);
+  const sport = window.inferSportFromEvent(ev);
+  const preset = window.inferPresetFromEvent(sport, ev);
+  const custom = customFromAgenda(sport, preset, ev);
+  const fromCatalog = !!ev.source_id;
+  const date = String(ev.date).slice(0, 10);
+  const draft = {
+    goal_type: "race",
+    sport,
+    preset,
+    custom_run: custom.custom_run,
+    custom_swim: custom.custom_swim,
+    custom_bike: custom.custom_bike,
+    event_name: ev.name,
+    event_date: date,
+    is_public: ev.is_public ? "yes" : "no",
+    weekly_km: "",
+    experience: "intermediate",
+    run_days: "",
+    strength: "",
+    run_weekdays: "",
+    strength_weekdays: "",
+    swim_weekdays: "",
+    bike_weekdays: "",
+    busy_weekdays: "",
+    time_goal: "",
+    time_custom: "",
+    fitness_weeks: "12",
+    extraDisciplines: "",
+    pickedEvent: fromCatalog ? "1" : "",
+    ownEvent: fromCatalog ? "" : "1",
+    sourceEvent: ev.source_id || "",
+    pickedName: ev.name,
+    pickedMeta: pickedEventMeta(ev, sport),
+    agendaEventId: ev.id,
+    agendaEventName: ev.name,
+    agendaEventDate: date,
+    runDaysPicked: "",
+    strengthPicked: "",
+    experiencePicked: "",
+    blocksPicked: "",
+    weeklyPicked: "",
+  };
+  try { localStorage.setItem(draftKey(), JSON.stringify(draft)); } catch { /* ignore */ }
+  renderOnboarding();
+};
+
+function applyPublicEventToForm(form, ev) {
+  if (!form || !ev) return;
+  clearAgendaLink(form);
+  delete form.dataset.ownEvent;
+  setChoice(form, "goal_type", "race", "data-goal");
+  const sport = typeof window.inferSportFromEvent === "function"
+    ? window.inferSportFromEvent(ev)
+    : (ev.sport && EVENT_PRESETS[ev.sport] ? ev.sport : "run");
+  const sportEl = fieldOf(form, "sport");
+  if (sportEl) sportEl.value = sport;
+  syncChoiceButtons(form, "data-sport", sport);
+  const preset = typeof inferPresetFromEvent === "function" ? inferPresetFromEvent(sport, ev) : "";
+  const presetEl = fieldOf(form, "preset");
+  if (presetEl) presetEl.value = preset;
+  if (preset === "custom") {
+    if (sport === "run" || sport === "triathlon") {
+      const runEl = fieldOf(form, "custom_run");
+      if (runEl && ev.km) runEl.value = ev.km;
+    }
+    if (sport === "swim" || sport === "triathlon") {
+      const swimEl = fieldOf(form, "custom_swim");
+      if (swimEl && ev.swim_m) swimEl.value = ev.swim_m;
+    }
+    if (sport === "bike" || sport === "triathlon") {
+      const bikeEl = fieldOf(form, "custom_bike");
+      if (bikeEl && (ev.bike_km || ev.km)) bikeEl.value = ev.bike_km || ev.km;
+    }
+  }
+  paintDistances(sport, { keepPreset: true, resetExtras: false });
+  const nameEl = fieldOf(form, "event_name");
+  const dateEl = fieldOf(form, "event_date");
+  if (nameEl) nameEl.value = ev.name || "";
+  if (dateEl) dateEl.value = ev.date || "";
+  form.dataset.sourceEvent = ev.id || "";
+  delete form.dataset.runDaysPicked;
+  delete form.dataset.blocksPicked;
+  lockPickedEvent(form, ev, pickedEventMeta(ev, sport));
+  applyGoalType(form, "race");
+  fillWeeklyFromCsv(form);
+  applyDefaultBlocks(form);
+  saveSetupDraft(form);
+}
+
+function lockPickedEvent(form, ev, metaText) {
+  form.dataset.pickedEvent = "1";
+  const card = form.querySelector(".picked-event");
+  if (card) {
+    card.hidden = false;
+    card.removeAttribute("hidden");
+    const name = card.querySelector(".picked-name");
+    const meta = card.querySelector(".picked-meta");
+    if (name) name.textContent = ev.name || "Selected event";
+    if (meta) {
+      const sport = fieldValue(form, "sport") || (typeof window.inferSportFromEvent === "function" ? window.inferSportFromEvent(ev) : "run");
+      meta.textContent = metaText || pickedEventMeta(ev, sport);
+    }
+  }
+  form.querySelectorAll("[data-own-event], .event-entry").forEach((el) => { el.hidden = true; });
+  const nameEl = fieldOf(form, "event_name");
+  const dateEl = fieldOf(form, "event_date");
+  if (nameEl) nameEl.required = false;
+  if (dateEl) dateEl.required = false;
+}
+
+function unlockPickedEvent(form) {
+  if (!form) return;
+  clearAgendaLink(form);
+  delete form.dataset.pickedEvent;
+  delete form.dataset.sourceEvent;
+  delete form.dataset.ownEvent;
+  const card = form.querySelector(".picked-event");
+  if (card) {
+    card.hidden = true;
+    card.setAttribute("hidden", "");
+    const name = card.querySelector(".picked-name");
+    const meta = card.querySelector(".picked-meta");
+    if (name) name.textContent = "";
+    if (meta) meta.textContent = "";
+  }
+  const nameEl = fieldOf(form, "event_name");
+  const dateEl = fieldOf(form, "event_date");
+  const presetEl = fieldOf(form, "preset");
+  const sportEl = fieldOf(form, "sport");
+  if (nameEl) nameEl.value = "";
+  if (dateEl) dateEl.value = "";
+  if (presetEl) presetEl.value = "";
+  if (sportEl) sportEl.value = "";
+  ["run_weekdays", "swim_weekdays", "bike_weekdays", "strength_weekdays"].forEach((name) => {
+    const el = fieldOf(form, name);
+    if (el) el.value = "";
+  });
+  delete form.dataset.blocksPicked;
+  delete form.dataset.runDaysPicked;
+  form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => b.classList.remove("active"));
+  form.querySelectorAll("[data-sport]").forEach((b) => b.classList.remove("active"));
+  const entry = form.querySelector(".event-entry");
+  if (entry) {
+    entry.hidden = false;
+    entry.removeAttribute("hidden");
+  }
+  const searchBox = form.querySelector(".event-search");
+  if (searchBox) {
+    searchBox.hidden = false;
+    searchBox.removeAttribute("hidden");
+  }
+  const addBtn = form.querySelector("[data-action=add-own-event]");
+  const cancelBtn = form.querySelector("[data-action=cancel-own-event]");
+  if (addBtn) addBtn.hidden = false;
+  if (cancelBtn) cancelBtn.hidden = true;
+  form.querySelectorAll("[data-own-event]").forEach((el) => { el.hidden = true; });
+  applyGoalType(form, "race");
+  toggleCustom("", "");
+  paintWeekBlocks(form);
+  saveSetupDraft(form);
+  form.querySelector("input[name=event_search]")?.focus();
+}
+
+let SEARCH_T = 0;
+async function renderEventSearch(input) {
+  const box = input.closest(".event-search, .event-form")?.querySelector(".search-results");
+  if (!box || typeof window.searchPublicEvents !== "function") return;
+  const q = input.value.trim();
+  if (q.length < 2) { box.hidden = true; box.innerHTML = ""; return; }
+  const token = ++SEARCH_T;
+  const rows = await window.searchPublicEvents(q);
+  if (token !== SEARCH_T) return;
+  if (!rows.length) {
+    box.hidden = false;
+    box.innerHTML = `<li class="muted">No public events match “${q}”.</li>`;
+    return;
+  }
+  box.hidden = false;
+  window._publicEventHits = rows;
+  box.innerHTML = rows.map((ev) => {
+    const sport = ev.sport || (typeof window.inferSportFromEvent === "function" ? window.inferSportFromEvent(ev) : "run");
+    const sportLabel = (window.SPORT_LABEL && window.SPORT_LABEL[sport]) || sport;
+    return `
+    <li>
+      <button type="button" data-public-id="${escAttr(ev.id)}" data-public-event="${escAttr(JSON.stringify({
+        id: ev.id, name: ev.name, date: ev.date, km: ev.km, sport,
+        swim_m: ev.swim_m, bike_km: ev.bike_km,
+      }))}">
+        <strong>${escAttr(ev.name)}</strong>
+        <span class="muted">${escAttr(ev.date)} · ${escAttr(sportLabel)}${ev.km ? ` · ${escAttr(ev.km)} km` : ""}</span>
+      </button>
+    </li>`;
+  }).join("");
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+document.addEventListener("change", (e) => {
+  const form = e.target.closest?.(".setup-form");
+  if (!form) return;
+  if (e.target.matches?.("input[name=custom_run], input[name=custom_swim], input[name=custom_bike]")) updateTrainingAdvice();
+  if (e.target.matches?.("input[name=weekly_km]")) {
+    form.dataset.weeklyPicked = "1";
+    delete form.dataset.experiencePicked;
+    delete form.dataset.runDaysPicked;
+    syncExperienceFromWeekly(form);
+    updateTrainingAdvice();
+  }
+  saveSetupDraft(form);
+});
+
+document.addEventListener("input", (e) => {
+  if (e.target.matches?.("input[name=event_search]")) {
+    clearTimeout(e.target._searchT);
+    e.target._searchT = setTimeout(() => renderEventSearch(e.target), 220);
+  }
+  const form = e.target.closest?.(".setup-form");
+  if (form && e.target.matches?.("input[name=weekly_km]")) {
+    form.dataset.weeklyPicked = "1";
+    delete form.dataset.experiencePicked;
+    syncExperienceFromWeekly(form);
+  }
+  if (form && e.target.matches?.("input, textarea")) saveSetupDraft(form);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") persistSetupDraft();
+});
+window.addEventListener("pagehide", persistSetupDraft);
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-action=skip-setup]")) {
+    e.preventDefault();
+    leaveSetupToHome();
+    return;
+  }
+  const form = e.target.closest(".setup-form");
+  const publicBtn = e.target.closest("[data-public-id], [data-public-event]");
+  if (publicBtn) {
+    e.preventDefault();
+    const setupForm = publicBtn.closest(".setup-form");
+    const eventForm = publicBtn.closest(".event-form");
+    let ev = null;
+    const raw = publicBtn.getAttribute("data-public-event");
+    if (raw) {
+      try { ev = JSON.parse(raw); } catch { ev = null; }
+    }
+    if (!ev) ev = window._publicEventHits?.find((row) => String(row.id) === String(publicBtn.dataset.publicId));
+    if (!ev) return;
+    if (setupForm && !eventForm) applyPublicEventToForm(setupForm, ev);
+    if (eventForm && typeof window.applyPublicEventToAgenda === "function") window.applyPublicEventToAgenda(eventForm, ev);
+    const results = publicBtn.closest(".search-results");
+    if (results) results.hidden = true;
+    const search = publicBtn.closest(".event-search")?.querySelector("input[type=search]");
+    if (search) search.value = "";
+    return;
+  }
+  if (form && e.target.closest("[data-action=add-own-event]")) {
+    form.dataset.ownEvent = "1";
+    applyGoalType(form, "race");
+    form.querySelector("[name=event_name]")?.focus();
+    return;
+  }
+  if (form && e.target.closest("[data-action=cancel-own-event]")) {
+    delete form.dataset.ownEvent;
+    applyGoalType(form, "race");
+    saveSetupDraft(form);
+    return;
+  }
+  const goalBtn = e.target.closest("button[data-goal]");
+  if (goalBtn && form) {
+    applyGoalType(form, goalBtn.getAttribute("data-goal"));
+    return;
+  }
+  const sportBtn = e.target.closest("[data-sport]");
+  if (sportBtn && form) {
+    setChoice(form, "sport", sportBtn.dataset.sport, "data-sport");
+    paintDistances(sportBtn.dataset.sport);
+    fillWeeklyFromCsv(form);
+    return;
+  }
+  const timeBtn = e.target.closest("[data-time-target]");
+  if (timeBtn && form) {
+    setChoice(form, "time_goal", timeBtn.getAttribute("data-time-target"), "data-time-target");
+    paintTimeTargets(form);
+    updateTrainingAdvice();
+    saveSetupDraft(form);
+    return;
+  }
+  const fitBtn = e.target.closest("[data-fitness-weeks]");
+  if (fitBtn && form) {
+    setChoice(form, "fitness_weeks", fitBtn.getAttribute("data-fitness-weeks"), "data-fitness-weeks");
+    saveSetupDraft(form);
+    return;
+  }
+  const expBtn = e.target.closest("button[data-experience]");
+  if (expBtn && form) {
+    pickExperience(form, expBtn.dataset.experience);
+    return;
+  }
+  const pubBtn = e.target.closest("[data-is-public]");
+  if (pubBtn && form) {
+    setChoice(form, "is_public", pubBtn.dataset.isPublic, "data-is-public");
+    saveSetupDraft(form);
+    return;
+  }
+  const strBtn = e.target.closest("button[data-strength]");
+  if (strBtn && form) {
+    pickStrength(form, strBtn.dataset.strength);
+    return;
+  }
+  const addDisc = e.target.closest("[data-add-discipline]");
+  if (addDisc && form) {
+    pickExtraDiscipline(form, addDisc.getAttribute("data-add-discipline"));
+    return;
+  }
+  const removeDisc = e.target.closest("[data-remove-discipline]");
+  if (removeDisc && form) {
+    const key = removeDisc.dataset.removeDiscipline;
+    setExtras(form, parseExtras(form).filter((k) => k !== key));
+    if (form[`${key}_weekdays`]) form[`${key}_weekdays`].value = "";
+    form.dataset.blocksPicked = "1";
+    paintWeekBlocks(form);
+    saveSetupDraft(form);
+    return;
+  }
+  const daysBtn = e.target.closest("[data-run-days]");
+  if (daysBtn && form) {
+    setRunDays(form, daysBtn.dataset.runDays, true);
+    delete form.dataset.blocksPicked;
+    updateTrainingAdvice();
+    return;
+  }
+  const dayToggle = e.target.closest("[data-block][data-day]");
+  if (dayToggle && form) {
+    toggleBlockDay(form, dayToggle.dataset.block, Number(dayToggle.dataset.day));
+    saveSetupDraft(form);
+    return;
+  }
+  if (form && e.target.closest("[data-action=clear-picked-event]")) {
+    e.preventDefault();
+    unlockPickedEvent(form);
+    return;
+  }
+  const presetBtn = e.target.closest("[data-preset]");
+  if (presetBtn && form) {
+    const presetEl = fieldOf(form, "preset");
+    if (presetEl) presetEl.value = presetBtn.dataset.preset;
+    form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => b.classList.toggle("active", b === presetBtn));
+    delete form.dataset.runDaysPicked;
+    delete form.dataset.blocksPicked;
+    toggleCustom(setupSport(form), presetBtn.dataset.preset);
+    if (setupGoal(form) === "time") paintTimeTargets(form);
+    updateTrainingAdvice();
+    saveSetupDraft(form);
+  }
+});
+
+document.addEventListener("submit", async (e) => {
+  const form = e.target.closest(".setup-form");
+  if (!form) return;
+  e.preventDefault();
+  const errorEl = form.querySelector(".form-error");
+  const goalType = setupGoal(form);
+  let sport = setupSport(form);
+  errorEl.textContent = "";
+  if (goalType === "time") sport = "run";
+  if (!sport) { errorEl.textContent = goalType === "fitness" ? "Choose a focus." : "Choose an event type."; return; }
+  if (goalType === "race" && !form.dataset.pickedEvent && form.dataset.ownEvent !== "1") {
+    errorEl.textContent = "Search for a race or add your own event.";
+    return;
+  }
+  if (goalType === "race" && !fieldValue(form, "preset") && !form.dataset.pickedEvent) { errorEl.textContent = "Choose a distance."; return; }
+  if (goalType === "time" && !fieldValue(form, "preset")) { errorEl.textContent = "Choose a distance."; return; }
+  if (goalType === "time") {
+    const presetChoice = fieldValue(form, "preset");
+    const timeGoalId = fieldValue(form, "time_goal");
+    const customTime = fieldValue(form, "time_custom").trim();
+    if (presetChoice === "custom" && !(Number(fieldValue(form, "custom_run")) > 0)) {
+      errorEl.textContent = "Enter the run distance in km.";
+      return;
+    }
+    if (presetChoice === "custom" || timeGoalId === "custom") {
+      if (!customTime) { errorEl.textContent = "Enter a target time."; return; }
+    } else if (!timeGoalId) {
+      errorEl.textContent = "Choose a time goal.";
+      return;
+    }
+  }
+  if (goalType === "time" && !form.event_date.value) { errorEl.textContent = "Pick a target date."; return; }
+  if (goalType === "race" && !form.dataset.pickedEvent && !form.event_name.value) { errorEl.textContent = "Enter the event name."; return; }
+  if (goalType === "race" && !form.dataset.pickedEvent && !form.event_date.value) { errorEl.textContent = "Pick an event date."; return; }
+  const wantsRunDays = sport === "run" || sport === "triathlon" || visibleWeekdays(form, "run").length;
+  if (wantsRunDays && !visibleWeekdays(form, "run").length && !form.run_days.value) {
+    errorEl.textContent = "Choose which days you want to run.";
+    return;
+  }
+  const strength = fieldValue(form, "strength");
+  if (!strength) { errorEl.textContent = "Choose whether you want strength sessions."; return; }
+  const submit = form.querySelector("button[type=submit]");
+  submit.disabled = true;
+  try {
+    const timeGoalId = fieldValue(form, "time_goal");
+    const timeGoal = (window.TIME_GOALS || []).find((g) => g.id === timeGoalId);
+    const customTime = fieldValue(form, "time_custom");
+    const fitnessWeeks = Number(fieldValue(form, "fitness_weeks")) || 12;
+    let eventName = fieldValue(form, "event_name");
+    let eventDate = fieldValue(form, "event_date");
+    let preset = fieldValue(form, "preset");
+    if (goalType === "time") {
+      if (preset === "custom" || timeGoalId === "custom") {
+        eventName = typeof window.timeGoalName === "function"
+          ? window.timeGoalName("custom", { time: customTime, run: fieldValue(form, "custom_run"), preset })
+          : customTime;
+      } else if (timeGoal) {
+        eventName = typeof window.timeGoalName === "function" ? window.timeGoalName(timeGoal) : timeGoal.label;
+        preset = timeGoal.preset;
+      }
+    }
+    if (goalType === "fitness") {
+      eventName = "General fitness";
+      preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
+      const end = new Date();
+      end.setDate(end.getDate() + fitnessWeeks * 7);
+      eventDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+    }
+    const row = await saveGeneratedPlan(window.CURRENT_USER_ID, {
+      goalType,
+      timeGoal: timeGoalId,
+      customTime,
+      fitnessWeeks,
+      sport,
+      preset,
+      eventName,
+      eventDate,
+      weeklyKm: form.weekly_km.value,
+      runDays: form.run_days.value || visibleWeekdays(form, "run").length,
+      runWeekdays: visibleWeekdays(form, "run"),
+      strengthWeekdays: visibleWeekdays(form, "strength"),
+      swimWeekdays: visibleWeekdays(form, "swim"),
+      bikeWeekdays: visibleWeekdays(form, "bike"),
+      busyWeekdays: parseDays(fieldValue(form, "busy_weekdays")),
+      strength: strength === "yes",
+      isPublic: goalType === "race" && !form.dataset.pickedEvent && fieldValue(form, "is_public") === "yes",
+      sourceId: form.dataset.sourceEvent || "",
+      agendaEventId: form.dataset.agendaEventId || "",
+      notes: "",
+      experience: fieldValue(form, "experience") || "intermediate",
+      otherEvents: [],
+      custom: {
+        run: fieldValue(form, "custom_run"),
+        swim: fieldValue(form, "custom_swim"),
+        bike: fieldValue(form, "custom_bike"),
+      },
+    });
+    clearSetupDraft();
+    clearSkipped(window.CURRENT_USER_ID);
+    applyPlanRow(row);
+    showAppChrome();
+    if (typeof window.bootApp === "function") await window.bootApp();
+  } catch (err) {
+    errorEl.textContent = err.message || "Could not create the plan.";
+  } finally {
+    submit.disabled = false;
+  }
+});
