@@ -4,12 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Training Plan</title>
+  <meta name="theme-color" content="#e4572e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Training Plan" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body class="logged-out">
   <header class="topbar" id="app-header" hidden>
     <a href="/home" class="brand" title="Training Plan" aria-label="Training Plan">
-      <span class="brand-mark" aria-hidden="true">TP</span>
+      <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
       <span class="brand-name">Training Plan</span>
     </a>
     <nav>
@@ -53,10 +59,17 @@
         </svg>
       </button>
       <input type="file" id="csv-input" accept=".csv,text/csv" hidden />
-      <a href="/profile" class="nav-btn user-chip" data-route="profile" title="Your profile" aria-label="Your profile">
-        <span class="user-avatar" id="user-avatar" aria-hidden="true">?</span>
-        <span class="visually-hidden" id="user-email"></span>
-      </a>
+      <div class="account-menu">
+        <button class="nav-btn user-chip" type="button" data-action="account-menu" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel" title="Account" aria-label="Account menu">
+          <span class="user-avatar" id="user-avatar" aria-hidden="true">?</span>
+          <span class="visually-hidden" id="user-email"></span>
+        </button>
+        <div class="account-menu-panel" id="account-menu-panel" role="menu" hidden>
+          <a href="/profile" role="menuitem" data-route="profile">Overview</a>
+          <a href="/connections" role="menuitem" data-route="connections">Connections</a>
+          <a href="/settings" role="menuitem" data-route="settings">Settings</a>
+        </div>
+      </div>
       <button class="nav-btn" type="button" data-action="logout" title="Sign out" aria-label="Sign out">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M10 5H6.2A1.2 1.2 0 0 0 5 6.2v11.6A1.2 1.2 0 0 0 6.2 19H10"/>

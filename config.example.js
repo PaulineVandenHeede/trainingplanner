@@ -4,4 +4,5 @@
 window.SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co";
 window.SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 // Public site used in confirmation and password-reset emails. Not localhost.
+// Signup confirmation redirects to AUTH_SITE_URL/setup; password reset stays at the root.
 window.AUTH_SITE_URL = "https://your-domain.example";

@@ -84,20 +84,20 @@ function markConnectStepDone() {
   } catch { /* ignore */ }
 }
 
+function clearConnectStepDone() {
+  try {
+    localStorage.removeItem(connectDoneKey());
+    sessionStorage.setItem("setup-pending-connect", "1");
+  } catch { /* ignore */ }
+}
+
 function shouldShowConnectStep() {
   const userId = window.CURRENT_USER_ID;
   if (!userId) return false;
   try {
     if (localStorage.getItem(connectDoneKey(userId)) === "1") return false;
   } catch { /* ignore */ }
-  if (window.GARMIN_STATUS?.connected) {
-    markConnectStepDone();
-    return false;
-  }
-  try {
-    if (sessionStorage.getItem("setup-pending-connect") === "1") return true;
-  } catch { /* ignore */ }
-  return false;
+  return true;
 }
 
 function prepareSetupShell() {
@@ -120,32 +120,113 @@ function prepareSetupShell() {
 
 function renderSetupConnectStep() {
   prepareSetupShell();
+  let username = window.CURRENT_PROFILE?.username || "";
+  try {
+    const draft = sessionStorage.getItem("setup-username-draft");
+    if (!username && draft) username = draft;
+    sessionStorage.removeItem("setup-username-draft");
+  } catch { /* ignore */ }
   document.getElementById("app").innerHTML = `
-    <section class="auth-card setup-card">
+    <section class="auth-card setup-card setup-connect-step">
       <p class="setup-step-label">Step 1 of 2</p>
       <div class="eyebrow">Welcome</div>
-      <h1>Connect your training</h1>
-      <p class="muted">Link Garmin or Strava so we can use what you’ve already done when we build your first plan. We’ll ask before syncing.</p>
-      <section class="setup-connect setup-connect-step" id="setup-connect">
+      <h1>Set up your account</h1>
+      <p class="muted">Choose a name, then connect Garmin or Strava if you want past training to shape your first plan.</p>
+      <form class="setup-identity-form" novalidate>
+        <label>Name
+          <input type="text" name="username" maxlength="40" autocomplete="name" spellcheck="false" value="${escAttr(username)}" placeholder="e.g. Jane Doe" required />
+        </label>
+        <p class="form-error username-error" role="alert"></p>
+      </form>
+      <section class="setup-connect" id="setup-connect">
+        <p class="setup-connect-legend">Connect a source <span class="muted">(optional)</span></p>
         <div id="setup-connect-body"><p class="muted small-text">Checking connections…</p></div>
       </section>
       <div class="setup-actions">
-        <button class="button" type="button" data-action="setup-connect-continue">Continue to plan</button>
-        <button class="button ghost" type="button" data-action="setup-connect-skip">Skip for now</button>
+        <button class="button" type="button" data-action="setup-connect-continue">Continue</button>
       </div>
     </section>`;
-  paintSetupConnect(null);
+  paintSetupConnect();
   if (typeof window.refreshSetupConnections === "function") {
     window.refreshSetupConnections()
-      .then(() => {
-        if (window.GARMIN_STATUS?.connected) {
-          // Already linked — don't block new accounts on this step.
-          markConnectStepDone();
-        }
-        paintSetupConnect(null);
-      })
-      .catch(() => paintSetupConnect(null));
+      .then(() => paintSetupConnect())
+      .catch(() => paintSetupConnect());
   }
+}
+
+async function finishSetupConnectStep() {
+  const input = document.querySelector(".setup-identity-form [name=username]");
+  const errorEl = document.querySelector(".setup-connect-step .username-error");
+  const continueBtn = document.querySelector("[data-action=setup-connect-continue]");
+  if (errorEl) errorEl.textContent = "";
+  const raw = input?.value || "";
+  const username = typeof window.normalizeUsername === "function"
+    ? window.normalizeUsername(raw)
+    : String(raw || "").trim().toLowerCase();
+  const invalid = typeof window.usernameError === "function"
+    ? window.usernameError(username)
+    : (!username ? "Pick a username." : "");
+  if (invalid) {
+    if (errorEl) errorEl.textContent = invalid;
+    input?.focus();
+    return;
+  }
+  if (continueBtn) continueBtn.disabled = true;
+  if (typeof window.saveUsernameQuiet === "function") {
+    try {
+      await window.saveUsernameQuiet(username);
+    } catch (err) {
+      if (errorEl) errorEl.textContent = err.message || "Could not save username.";
+      input?.focus();
+      if (continueBtn) continueBtn.disabled = false;
+      return;
+    }
+  }
+  markConnectStepDone();
+  try { sessionStorage.setItem("setup-show-plan-step", "1"); } catch { /* ignore */ }
+  renderSetupPlanForm();
+  // Sync in the background — don't block step 2. Fill weekly volume when done.
+  startSetupBackgroundSync();
+}
+window.finishSetupConnectStep = finishSetupConnectStep;
+
+let SETUP_CONNECT_SYNCING = { garmin: false, strava: false };
+
+function isSetupSyncing() {
+  return !!(SETUP_CONNECT_SYNCING.garmin || SETUP_CONNECT_SYNCING.strava);
+}
+
+function updateSetupWeeklySyncHint() {
+  const hint = document.getElementById("weekly-sync-status");
+  if (!hint) return;
+  if (isSetupSyncing()) {
+    hint.hidden = false;
+    hint.textContent = "Syncing activities… weekly volume will fill when ready.";
+    return;
+  }
+  hint.hidden = true;
+  hint.textContent = "";
+}
+
+function startSetupBackgroundSync() {
+  const g = window.GARMIN_STATUS || window.GARMIN || {};
+  const s = window.STRAVA_STATUS || window.STRAVA || {};
+  if (!(g.connected || s.connected) || typeof window.syncConnectedSourcesForSetup !== "function") {
+    updateSetupWeeklySyncHint();
+    return;
+  }
+  if (window._setupSyncInFlight) return;
+  SETUP_CONNECT_SYNCING = { garmin: !!g.connected, strava: !!s.connected };
+  updateSetupWeeklySyncHint();
+  window._setupSyncInFlight = window.syncConnectedSourcesForSetup()
+    .catch(() => null)
+    .finally(() => {
+      SETUP_CONNECT_SYNCING = { garmin: false, strava: false };
+      window._setupSyncInFlight = null;
+      const form = document.querySelector(".setup-form");
+      if (form) fillWeeklyFromSynced(form, { force: true });
+      updateSetupWeeklySyncHint();
+    });
 }
 
 function renderSetupPlanForm(message = "") {
@@ -157,10 +238,9 @@ function renderSetupPlanForm(message = "") {
   const min = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, "0")}-${String(minDate.getDate()).padStart(2, "0")}`;
   document.getElementById("app").innerHTML = `
     <section class="auth-card setup-card">
-      <p class="setup-step-label" id="setup-plan-step-label" hidden>Step 2 of 2</p>
+      <p class="setup-step-label" id="setup-plan-step-label">Step 2 of 2</p>
       <div class="eyebrow">New plan</div>
       <h1>What are you training for?</h1>
-      <p class="muted">Pick a race, a time goal, or general fitness. Then set your current volume and training days.</p>
       <form class="setup-form" novalidate>
         <fieldset class="goal-field">
           <legend>Goal</legend>
@@ -185,7 +265,6 @@ function renderSetupPlanForm(message = "") {
           <div class="eyebrow">Selected event</div>
           <p class="picked-name"></p>
           <p class="muted small-text picked-meta"></p>
-          <p class="muted small-text">Public event details stay as listed. Your week below defaults to this event type.</p>
           <button class="button ghost small" type="button" data-action="clear-picked-event">Choose a different event</button>
         </div>
         <fieldset data-own-event data-for-goal="race,fitness,time">
@@ -234,10 +313,13 @@ function renderSetupPlanForm(message = "") {
           </div>
           <input type="hidden" name="is_public" value="no" />
         </fieldset>
-        <label class="weekly-volume-field">Current weekly volume (km)
+        <label class="weekly-volume-field">
+          <span class="field-label-row">Current weekly volume (km)
+            <button class="info-tip" type="button" aria-label="About weekly volume" title="Use your current typical week: run km for running or triathlon, swim km for a swim event, bike km for a bike event.">i</button>
+          </span>
           <input type="number" name="weekly_km" required min="1" max="500" step="0.1" placeholder="e.g. 25" />
+          <p class="setup-hint weekly-sync-status" id="weekly-sync-status" hidden></p>
         </label>
-        <p class="muted small-text" id="weekly-hint">Use your current typical week: run km for running or triathlon, swim km for a swim event, bike km for a bike event.</p>
         <fieldset class="level-field">
           <legend>Where are you now?</legend>
           <div class="choice-row" id="experience-choices">
@@ -257,13 +339,15 @@ function renderSetupPlanForm(message = "") {
           <p class="setup-hint" id="run-days-hint">Pick a distance to see a research-based minimum.</p>
         </fieldset>
         <fieldset class="strength-field">
-          <legend>Strength sessions</legend>
+          <legend class="field-label-row">Strength sessions
+            <button class="info-tip" type="button" aria-label="About strength" title="Recommended as mileage builds: a short session after an easy run helps tendons, hips and running economy.">i</button>
+          </legend>
           <div class="choice-row">
             <button class="choice-btn" type="button" data-strength="yes">Yes, add them</button>
             <button class="choice-btn" type="button" data-strength="no">No strength</button>
           </div>
           <input type="hidden" name="strength" />
-          <p class="setup-hint" id="strength-hint">Pick a distance first. Strength matters more as the race gets longer.</p>
+          <p class="setup-hint" id="strength-hint" hidden></p>
         </fieldset>
         <fieldset class="week-blocks-field" hidden>
           <legend>Your week</legend>
@@ -290,10 +374,11 @@ function renderSetupPlanForm(message = "") {
           <span>I understand this plan is guidance only and I train and race at my own risk. I’m responsible for my health and for stopping if something feels wrong.</span>
         </label>
         <p class="form-error">${message}</p>
-        <div class="setup-actions">
+        <div class="setup-actions setup-actions-row">
+          <button class="button ghost" type="button" data-action="setup-back-to-connect">Back</button>
           <button class="button" type="submit">Create my plan</button>
-          <button class="button ghost" type="button" data-action="skip-setup">Skip for now</button>
         </div>
+        <button class="button ghost setup-skip" type="button" data-action="skip-setup">Skip for now</button>
       </form>
     </section>`;
   const form = document.querySelector(".setup-form");
@@ -303,23 +388,17 @@ function renderSetupPlanForm(message = "") {
   syncRestoredChoices(form);
   paintFitnessWeeks(form);
   fillWeeklyFromSynced(form);
+  updateSetupWeeklySyncHint();
   if (typeof window.loadActivities === "function") {
     window.loadActivities().then((acts) => {
       window._setupActs = acts;
-      fillWeeklyFromSynced(form);
+      fillWeeklyFromSynced(form, { force: true });
     }).catch(() => {});
   }
-  // Show "Step 2 of 2" only when this visit came from the connect step.
-  try {
-    if (sessionStorage.getItem("setup-show-plan-step") === "1") {
-      const label = document.getElementById("setup-plan-step-label");
-      if (label) {
-        label.hidden = false;
-        label.removeAttribute("hidden");
-      }
-      sessionStorage.removeItem("setup-show-plan-step");
-    }
-  } catch { /* ignore */ }
+  // If Continue already kicked off a sync, keep the hint + fill when it lands.
+  if (window._setupSyncInFlight) updateSetupWeeklySyncHint();
+  else if (isSetupSyncing()) updateSetupWeeklySyncHint();
+  try { sessionStorage.removeItem("setup-show-plan-step"); } catch { /* ignore */ }
 }
 
 function renderOnboarding(message = "") {
@@ -333,6 +412,7 @@ function renderOnboarding(message = "") {
 }
 window.renderOnboarding = renderOnboarding;
 window.renderSetupPlanForm = renderSetupPlanForm;
+window.renderSetupConnectStep = renderSetupConnectStep;
 
 function setupSport(form) {
   return fieldValue(form, "sport");
@@ -405,10 +485,8 @@ function pickExperience(form, value) {
   if (!form || !value) return;
   setChoice(form, "experience", value, "data-experience");
   form.dataset.experiencePicked = "1";
-  delete form.dataset.runDaysPicked;
-  delete form.dataset.blocksPicked;
-  const runEl = fieldOf(form, "run_weekdays");
-  if (runEl) runEl.value = "";
+  // Keep the week grid the user already edited.
+  if (!form.dataset.blocksPicked) delete form.dataset.runDaysPicked;
   updateTrainingAdvice();
   saveSetupDraft(form);
 }
@@ -417,9 +495,23 @@ function pickStrength(form, value) {
   if (!form || !value) return;
   setChoice(form, "strength", value, "data-strength");
   form.dataset.strengthPicked = "1";
-  delete form.dataset.blocksPicked;
+  const strengthEl = fieldOf(form, "strength_weekdays");
+  if (value === "no" && strengthEl) strengthEl.value = "";
+  if (value === "yes" && strengthEl && !parseDays(strengthEl.value).length && typeof defaultTrainingBlocks === "function") {
+    const sport = setupSport(form) || "run";
+    const n = Number(fieldValue(form, "run_days")) || 3;
+    const busy = parseDays(fieldValue(form, "busy_weekdays"));
+    const blocks = defaultTrainingBlocks(sport, n, true, busy);
+    strengthEl.value = (blocks.strength || []).join(",");
+  }
+  paintWeekBlocks(form);
   updateTrainingAdvice();
   saveSetupDraft(form);
+}
+
+function hasAnyWeekdaySelection(form) {
+  return ["run_weekdays", "swim_weekdays", "bike_weekdays", "strength_weekdays", "busy_weekdays"]
+    .some((name) => parseDays(fieldValue(form, name)).length > 0);
 }
 
 function bindSetupForm(form) {
@@ -832,11 +924,46 @@ function applyDefaultBlocks(form) {
   paintWeekBlocks(form);
 }
 
+function bindWeekBlocksOnce() {
+  const box = document.getElementById("week-blocks");
+  if (!box || box.dataset.weekBound === "1") return;
+  box.dataset.weekBound = "1";
+  box.addEventListener("click", (e) => {
+    const form = document.querySelector(".setup-form");
+    if (!form) return;
+    // Keep week clicks local so outside handlers can’t reset the grid.
+    const longBtn = e.target.closest("[data-set-long]");
+    const removeDisc = e.target.closest("[data-remove-discipline]");
+    const dayToggle = e.target.closest("button[data-block][data-day]");
+    if (!longBtn && !removeDisc && !dayToggle) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (longBtn) {
+      setLongRunDay(form, Number(longBtn.getAttribute("data-set-long")));
+      return;
+    }
+    if (removeDisc) {
+      const key = removeDisc.getAttribute("data-remove-discipline");
+      setExtras(form, parseExtras(form).filter((k) => k !== key));
+      const field = weekdayField(form, key) || fieldOf(form, `${key}_weekdays`);
+      if (field) field.value = "";
+      form.dataset.blocksPicked = "1";
+      paintWeekBlocks(form);
+      return;
+    }
+    if (dayToggle && !dayToggle.disabled) {
+      toggleBlockDay(form, dayToggle.getAttribute("data-block"), Number(dayToggle.getAttribute("data-day")));
+    }
+  });
+}
+
 function paintWeekBlocks(form) {
   const box = document.getElementById("week-blocks");
   const wrap = form.querySelector(".week-blocks-field");
   if (!box || !wrap) return;
-  fillProposedWeek(form, !form.dataset.blocksPicked);
+  bindWeekBlocksOnce();
+  const locked = form.dataset.blocksPicked === "1" || hasAnyWeekdaySelection(form);
+  if (!locked) fillProposedWeek(form, true);
   const sport = setupSport(form);
   const strength = fieldValue(form, "strength") === "yes";
   const extras = parseExtras(form);
@@ -979,12 +1106,13 @@ function toggleBlockDay(form, key, day) {
   field.value = next.join(",");
   form.dataset.blocksPicked = "1";
   if (key === "run") {
-    setRunDays(form, next.length || "");
+    form.dataset.runDaysPicked = "1";
+    setRunDays(form, next.length || "", true);
     if (!turningOn && currentLongWeekday(form) === day) ensureLongWeekday(form, next);
     else ensureLongWeekday(form, next, currentLongWeekday(form));
   }
+  // Repaint only — do not run updateTrainingAdvice here (it used to reseed the week).
   paintWeekBlocks(form);
-  updateTrainingAdvice();
 }
 
 function setLongRunDay(form, day) {
@@ -1104,16 +1232,18 @@ function updateTrainingAdvice() {
     }
     daysHint.hidden = !daysHint.textContent;
   }
-  if (strengthHint) strengthHint.textContent = advice.strengthHint;
+  if (strengthHint) {
+    strengthHint.textContent = "";
+    strengthHint.hidden = true;
+  }
   if (!form.dataset.strengthPicked) {
     if (!fieldValue(form, "strength")) {
       setChoice(form, "strength", advice.strengthRecommended ? "yes" : "no", "data-strength");
-    } else if (advice.strengthRecommended) {
-      setChoice(form, "strength", "yes", "data-strength");
     }
   }
   syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
-  if (!form.dataset.blocksPicked) applyDefaultBlocks(form);
+  const keepWeek = form.dataset.blocksPicked === "1" || hasAnyWeekdaySelection(form);
+  if (!keepWeek) applyDefaultBlocks(form);
   else paintWeekBlocks(form);
   saveSetupDraft(form);
 }
@@ -1236,6 +1366,18 @@ async function leaveSetupToHome() {
   if (typeof window.go === "function") window.go("/home", { replace: true });
 }
 window.leaveSetupToHome = leaveSetupToHome;
+
+function showSetupCreatingPlan() {
+  prepareSetupShell();
+  const app = document.getElementById("app");
+  if (!app) return;
+  app.innerHTML = `
+    <section class="auth-card setup-card setup-creating" aria-live="polite" aria-busy="true">
+      <p class="setup-creating-label">Creating your plan…</p>
+      <p class="muted small-text">Building weeks from your goal and current volume.</p>
+    </section>`;
+  window.scrollTo(0, 0);
+}
 
 async function finishSetupWithPlan(row) {
   clearSetupDraft();
@@ -1394,9 +1536,10 @@ function fillWeeklyFromSynced(form, { force = false } = {}) {
   delete form.dataset.experiencePicked;
   syncExperienceFromWeekly(form);
   updateTrainingAdvice();
-  const hint = document.getElementById("weekly-hint");
-  if (hint) {
-    hint.textContent = `Prefilling ${km} km/week from your synced activities (recent typical week). Change it if that doesn’t match your usual training.`;
+  const syncHint = document.getElementById("weekly-sync-status");
+  if (syncHint && !isSetupSyncing()) {
+    syncHint.hidden = false;
+    syncHint.textContent = `Prefilling ${km} km/week from your synced activities. Change it if needed.`;
   }
 }
 window.fillWeeklyFromSynced = fillWeeklyFromSynced;
@@ -1439,61 +1582,34 @@ function paintFitnessWeeks(form) {
   if (hint) hint.textContent = cfg.hint || "";
 }
 
-function paintSetupConnect(form) {
+function setupConnLabel(connected, loaded, syncing) {
+  if (syncing) return { text: "Syncing", cls: "syncing" };
+  if (!loaded) return { text: "…", cls: "off" };
+  if (connected) return { text: "Connected", cls: "on" };
+  return { text: "Not connected", cls: "off" };
+}
+
+function paintSetupConnect() {
   const box = document.getElementById("setup-connect-body");
   if (!box) return;
   const g = window.GARMIN_STATUS || window.GARMIN || { connected: false, loaded: false };
-  const acts = window.peekActivities?.() || [];
-  const actN = acts.length;
-  const weekly = form ? typicalWeeklyFromActs(setupSport(form) || "run") : null;
-  const statusBits = [];
-  if (actN) statusBits.push(`${actN} activit${actN === 1 ? "y" : "ies"} loaded`);
-  if (weekly > 0) statusBits.push(`~${weekly} km/week typical`);
-  const statusLine = statusBits.length
-    ? statusBits.join(" · ")
-    : "No activities loaded yet — connect and sync, or import a CSV.";
+  const s = window.STRAVA_STATUS || window.STRAVA || { connected: false, loaded: false };
+  const garmin = setupConnLabel(!!g.connected, !!g.loaded, !!SETUP_CONNECT_SYNCING.garmin);
+  const strava = setupConnLabel(!!s.connected, !!s.loaded, !!SETUP_CONNECT_SYNCING.strava);
+  const garminBusy = !!g.connected || !!SETUP_CONNECT_SYNCING.garmin;
+  const stravaBusy = !!s.connected || !!SETUP_CONNECT_SYNCING.strava;
 
   box.innerHTML = `
     <div class="setup-connect-grid">
-      <div class="setup-connect-card">
-        <div class="setup-connect-head">
-          <strong>Garmin</strong>
-          <span class="conn-label ${g.connected ? "on" : "off"}">${g.loaded ? (g.connected ? "Connected" : "Not connected") : "…"}</span>
-        </div>
-        ${g.connected ? `
-          <p class="muted small-text">Sync once to pull recent activities into setup before you create the plan.</p>
-          <label class="own-risk-field setup-sync-perm">
-            <input type="checkbox" name="setup_sync_garmin" value="1" checked />
-            <span>Sync my existing Garmin activities so the plan can use them.</span>
-          </label>
-          <button class="button small" type="button" data-action="setup-garmin-sync">Sync activities</button>
-          <p class="setup-hint" id="setup-garmin-status"></p>
-        ` : `
-          <p class="muted small-text">Paste your Garmin Personal API key. We’ll ask before syncing existing activities.</p>
-          <form class="garmin-form setup-garmin-form">
-            <label>Personal API key
-              <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="Paste key from Garmin Connect" />
-            </label>
-            <label class="own-risk-field setup-sync-perm">
-              <input type="checkbox" name="sync_now" value="1" checked />
-              <span>After connecting, sync my existing activities once.</span>
-            </label>
-            <p class="muted small-text">Key from <a href="https://connect.garmin.com/app/settings/personalApiToken" target="_blank" rel="noopener">Garmin Connect → Personal API</a>.</p>
-            <p class="form-error"></p>
-            <button class="button small" type="submit">Connect Garmin</button>
-          </form>
-        `}
-      </div>
-      <div class="setup-connect-card">
-        <div class="setup-connect-head">
-          <strong>Strava</strong>
-          <span class="conn-label off">Soon</span>
-        </div>
-        <p class="muted small-text">Strava connect isn’t available here yet. Import a Garmin/Strava CSV from the top bar, or use Garmin sync above.</p>
-        <button class="button ghost small" type="button" data-action="setup-import-csv">Import CSV</button>
-      </div>
-    </div>
-    <p class="muted small-text" id="setup-connect-status">${statusLine}</p>`;
+      <button class="setup-connect-btn" type="button" data-action="setup-open-garmin" ${garminBusy ? "disabled" : ""}>
+        <span class="setup-connect-btn-title">Connect Garmin</span>
+        <span class="conn-label ${garmin.cls}">${garmin.text}</span>
+      </button>
+      <button class="setup-connect-btn" type="button" data-action="setup-open-strava" ${stravaBusy ? "disabled" : ""}>
+        <span class="setup-connect-btn-title">Connect Strava</span>
+        <span class="conn-label ${strava.cls}">${strava.text}</span>
+      </button>
+    </div>`;
 }
 window.paintSetupConnect = paintSetupConnect;
 
@@ -1743,6 +1859,14 @@ function escAttr(s) {
   return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
+document.addEventListener("submit", (e) => {
+  const identity = e.target.closest?.(".setup-identity-form");
+  if (identity) {
+    e.preventDefault();
+    finishSetupConnectStep();
+  }
+});
+
 document.addEventListener("change", (e) => {
   const form = e.target.closest?.(".setup-form");
   if (!form) return;
@@ -1783,11 +1907,27 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("click", (e) => {
-  if (e.target.closest("[data-action=setup-connect-continue], [data-action=setup-connect-skip]")) {
+  if (e.target.closest("[data-action=setup-connect-continue]")) {
     e.preventDefault();
-    markConnectStepDone();
-    try { sessionStorage.setItem("setup-show-plan-step", "1"); } catch { /* ignore */ }
-    renderSetupPlanForm();
+    finishSetupConnectStep();
+    return;
+  }
+  if (e.target.closest("[data-action=setup-back-to-connect]")) {
+    e.preventDefault();
+    clearConnectStepDone();
+    renderSetupConnectStep();
+    return;
+  }
+  if (e.target.closest("[data-action=setup-open-garmin]")) {
+    e.preventDefault();
+    if (typeof window.openGarminKeyDialog === "function") window.openGarminKeyDialog({ fromSetup: true });
+    return;
+  }
+  if (e.target.closest("[data-action=setup-open-strava]")) {
+    e.preventDefault();
+    if (typeof window.openStravaPasscodeDialog === "function") {
+      window.openStravaPasscodeDialog({ fromSetup: true });
+    }
     return;
   }
   if (e.target.closest("[data-action=skip-setup]")) {
@@ -1838,31 +1978,26 @@ document.addEventListener("click", (e) => {
     setChoice(form, "sport", sportBtn.dataset.sport, "data-sport");
     delete form.dataset.experiencePicked;
     delete form.dataset.longPicked;
+    delete form.dataset.blocksPicked;
+    delete form.dataset.runDaysPicked;
+    ["run_weekdays", "swim_weekdays", "bike_weekdays", "strength_weekdays"].forEach((name) => {
+      const el = fieldOf(form, name);
+      if (el) el.value = "";
+    });
     paintDistances(sportBtn.dataset.sport);
     if (setupGoal(form) === "fitness") paintFitnessWeeks(form);
     fillWeeklyFromSynced(form, { force: true });
     syncExperienceFromWeekly(form);
-    paintSetupConnect(form);
+    updateTrainingAdvice();
     return;
   }
-  if (form && e.target.closest("[data-action=setup-import-csv]")) {
+  if (e.target.closest("[data-action=setup-garmin-sync]")) {
     e.preventDefault();
-    const fileInput = document.getElementById("csv-input");
-    if (fileInput) fileInput.click();
-    else if (typeof window.toast === "function") window.toast("Use the upload button in the top bar to import a CSV.");
-    return;
-  }
-  if (form && e.target.closest("[data-action=setup-garmin-sync]")) {
-    e.preventDefault();
-    const allow = form.querySelector("[name=setup_sync_garmin]")?.checked !== false;
-    if (!allow) {
-      if (typeof window.toast === "function") window.toast("Tick the permission box to sync existing activities.");
-      return;
-    }
+    const setupForm = document.querySelector(".setup-form");
     if (typeof window.setupGarminSync === "function") {
       window.setupGarminSync({ permission: true }).then(() => {
-        fillWeeklyFromSynced(form, { force: true });
-        paintSetupConnect(form);
+        if (setupForm) fillWeeklyFromSynced(setupForm, { force: true });
+        paintSetupConnect();
       }).catch((err) => {
         const status = document.getElementById("setup-garmin-status");
         if (status) status.textContent = err.message || "Sync failed.";
@@ -1924,18 +2059,8 @@ document.addEventListener("click", (e) => {
     updateTrainingAdvice();
     return;
   }
-  const longBtn = e.target.closest("[data-set-long]");
-  if (longBtn && form) {
-    setLongRunDay(form, Number(longBtn.dataset.setLong));
-    saveSetupDraft(form);
-    return;
-  }
-  const dayToggle = e.target.closest("[data-block][data-day]");
-  if (dayToggle && form) {
-    toggleBlockDay(form, dayToggle.dataset.block, Number(dayToggle.dataset.day));
-    saveSetupDraft(form);
-    return;
-  }
+  // Week-grid clicks are handled by bindWeekBlocksOnce on #week-blocks.
+  if (e.target.closest("#week-blocks")) return;
   if (form && e.target.closest("[data-action=clear-picked-event]")) {
     e.preventDefault();
     unlockPickedEvent(form);
@@ -2025,86 +2150,83 @@ document.addEventListener("submit", async (e) => {
     return;
   }
   updateReachability(form);
-  const submit = form.querySelector("button[type=submit]");
-  submit.disabled = true;
+  const timeGoalId = fieldValue(form, "time_goal");
+  const timeGoal = (window.TIME_GOALS || []).find((g) => g.id === timeGoalId);
+  const customTime = fieldValue(form, "time_custom");
+  let fitnessWeeks = Number(fieldValue(form, "fitness_weeks")) || 12;
+  if (goalType === "fitness") {
+    if (fieldValue(form, "fitness_weeks") === "custom") {
+      fitnessWeeks = Number(fieldValue(form, "fitness_weeks_custom"));
+      if (!(fitnessWeeks >= 4 && fitnessWeeks <= 32)) {
+        errorEl.textContent = "Enter a custom length between 4 and 32 weeks.";
+        return;
+      }
+    }
+  }
+  let eventName = fieldValue(form, "event_name");
+  let eventDate = fieldValue(form, "event_date");
+  let preset = fieldValue(form, "preset");
+  if (goalType === "time") {
+    if (preset === "custom" || timeGoalId === "custom") {
+      eventName = typeof window.timeGoalName === "function"
+        ? window.timeGoalName("custom", {
+          time: customTime,
+          run: fieldValue(form, "custom_run"),
+          swim: fieldValue(form, "custom_swim"),
+          bike: fieldValue(form, "custom_bike"),
+          preset,
+          sport,
+        })
+        : customTime;
+    } else if (timeGoal) {
+      eventName = typeof window.timeGoalName === "function"
+        ? window.timeGoalName(timeGoal, { sport })
+        : timeGoal.label;
+      preset = timeGoal.preset;
+    }
+  }
+  if (goalType === "fitness") {
+    eventName = "General fitness";
+    preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
+    const end = new Date();
+    end.setDate(end.getDate() + fitnessWeeks * 7);
+    eventDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  }
+  const planInput = {
+    goalType,
+    timeGoal: timeGoalId,
+    customTime,
+    fitnessWeeks,
+    sport,
+    preset,
+    eventName,
+    eventDate,
+    weeklyKm: form.weekly_km.value,
+    runDays: form.run_days.value || visibleWeekdays(form, "run").length,
+    runWeekdays: visibleWeekdays(form, "run"),
+    strengthWeekdays: visibleWeekdays(form, "strength"),
+    swimWeekdays: visibleWeekdays(form, "swim"),
+    bikeWeekdays: visibleWeekdays(form, "bike"),
+    busyWeekdays: parseDays(fieldValue(form, "busy_weekdays")),
+    longWeekday: currentLongWeekday(form),
+    strength: strength === "yes",
+    isPublic: goalType === "race" && !form.dataset.pickedEvent && fieldValue(form, "is_public") === "yes",
+    sourceId: form.dataset.sourceEvent || "",
+    agendaEventId: form.dataset.agendaEventId || "",
+    notes: "",
+    experience: fieldValue(form, "experience") || "intermediate",
+    otherEvents: [],
+    custom: {
+      run: fieldValue(form, "custom_run"),
+      swim: fieldValue(form, "custom_swim"),
+      bike: fieldValue(form, "custom_bike"),
+    },
+  };
+  showSetupCreatingPlan();
   try {
-    const timeGoalId = fieldValue(form, "time_goal");
-    const timeGoal = (window.TIME_GOALS || []).find((g) => g.id === timeGoalId);
-    const customTime = fieldValue(form, "time_custom");
-    let fitnessWeeks = Number(fieldValue(form, "fitness_weeks")) || 12;
-    if (goalType === "fitness") {
-      if (fieldValue(form, "fitness_weeks") === "custom") {
-        fitnessWeeks = Number(fieldValue(form, "fitness_weeks_custom"));
-        if (!(fitnessWeeks >= 4 && fitnessWeeks <= 32)) {
-          errorEl.textContent = "Enter a custom length between 4 and 32 weeks.";
-          submit.disabled = false;
-          return;
-        }
-      }
-    }
-    let eventName = fieldValue(form, "event_name");
-    let eventDate = fieldValue(form, "event_date");
-    let preset = fieldValue(form, "preset");
-    if (goalType === "time") {
-      if (preset === "custom" || timeGoalId === "custom") {
-        eventName = typeof window.timeGoalName === "function"
-          ? window.timeGoalName("custom", {
-            time: customTime,
-            run: fieldValue(form, "custom_run"),
-            swim: fieldValue(form, "custom_swim"),
-            bike: fieldValue(form, "custom_bike"),
-            preset,
-            sport,
-          })
-          : customTime;
-      } else if (timeGoal) {
-        eventName = typeof window.timeGoalName === "function"
-          ? window.timeGoalName(timeGoal, { sport })
-          : timeGoal.label;
-        preset = timeGoal.preset;
-      }
-    }
-    if (goalType === "fitness") {
-      eventName = "General fitness";
-      preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
-      const end = new Date();
-      end.setDate(end.getDate() + fitnessWeeks * 7);
-      eventDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
-    }
-    const row = await saveGeneratedPlan(window.CURRENT_USER_ID, {
-      goalType,
-      timeGoal: timeGoalId,
-      customTime,
-      fitnessWeeks,
-      sport,
-      preset,
-      eventName,
-      eventDate,
-      weeklyKm: form.weekly_km.value,
-      runDays: form.run_days.value || visibleWeekdays(form, "run").length,
-      runWeekdays: visibleWeekdays(form, "run"),
-      strengthWeekdays: visibleWeekdays(form, "strength"),
-      swimWeekdays: visibleWeekdays(form, "swim"),
-      bikeWeekdays: visibleWeekdays(form, "bike"),
-      busyWeekdays: parseDays(fieldValue(form, "busy_weekdays")),
-      longWeekday: currentLongWeekday(form),
-      strength: strength === "yes",
-      isPublic: goalType === "race" && !form.dataset.pickedEvent && fieldValue(form, "is_public") === "yes",
-      sourceId: form.dataset.sourceEvent || "",
-      agendaEventId: form.dataset.agendaEventId || "",
-      notes: "",
-      experience: fieldValue(form, "experience") || "intermediate",
-      otherEvents: [],
-      custom: {
-        run: fieldValue(form, "custom_run"),
-        swim: fieldValue(form, "custom_swim"),
-        bike: fieldValue(form, "custom_bike"),
-      },
-    });
+    const row = await saveGeneratedPlan(window.CURRENT_USER_ID, planInput);
     await finishSetupWithPlan(row);
   } catch (err) {
-    errorEl.textContent = err.message || "Could not create the plan.";
-  } finally {
-    submit.disabled = false;
+    renderSetupPlanForm(err.message || "Could not create the plan.");
   }
 });

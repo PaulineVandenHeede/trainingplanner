@@ -15,6 +15,15 @@ const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); r
 const daysBetween = (a, b) => Math.round((b - a) / 864e5);
 const fmt = (d, opts) => d.toLocaleDateString("en-GB", opts);
 const short = (d) => fmt(d, { day: "numeric", month: "short" });
+// Display-only: same as Garmin (Number(n.toFixed(2))). Keep full-precision values in data.
+const fmtKm = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "";
+  return String(Number(x.toFixed(2)));
+};
+const fmtPlanLabel = (label) => String(label ?? "").replace(/-?\d+\.\d+/g, (m) => fmtKm(m));
+window.fmtKm = fmtKm;
+window.fmtPlanLabel = fmtPlanLabel;
 
 let START, RACE;
 window.syncPlanDates = function syncPlanDates() {
@@ -97,7 +106,9 @@ function mapDbActivity(row) {
       "Activity Type": row.activity_type,
       Date: formatStarted(row.started_at),
       Title: row.title,
-      Distance: row.distance != null ? String(row.distance) : "--",
+      Distance: row.distance != null
+        ? String(/swim/i.test(String(row.activity_type || "")) ? Math.round(Number(row.distance)) : Number(Number(row.distance).toFixed(2)))
+        : "--",
       Time: row.duration || "--",
       "Avg HR": row.avg_hr != null ? String(row.avg_hr) : "--",
       "Avg Pace": row.avg_pace || "--",
@@ -241,10 +252,11 @@ function activityLine(a) {
   const dur = a.time && a.time.startsWith("00:") ? a.time.slice(3) : a.time;
   const gear = gearFor(a);
   const bits = [];
-  if (a.cat === "swim") bits.push(`Swim ${a.dist} m`);
-  else if (a.cat === "bike") bits.push(`Bike ${a.dist} km`);
-  else if (a.cat === "walk") bits.push(`Walk ${a.dist} km`);
-  else bits.push(`Run ${a.dist} km`);
+  const dist = a.cat === "swim" ? String(Math.round(Number(a.dist) || 0)) : fmtKm(a.dist);
+  if (a.cat === "swim") bits.push(`Swim ${dist} m`);
+  else if (a.cat === "bike") bits.push(`Bike ${dist} km`);
+  else if (a.cat === "walk") bits.push(`Walk ${dist} km`);
+  else bits.push(`Run ${dist} km`);
   if (dur && a.cat !== "walk") bits.push(dur);
   if (a.pace && a.cat === "run") bits.push(`${a.pace}/km`);
   else if (a.pace && a.cat === "swim") bits.push(`${a.pace}/100m`);
@@ -513,7 +525,7 @@ function eventConflict(week, dayIndex, ev) {
   const otherLong = week.days.findIndex((d, i) => i !== dayIndex && LONG_KINDS.includes(d[0]));
   if (otherLong === -1) return "";
   const [, label] = week.days[otherLong];
-  return `This week also has a long run on ${DAY_NAMES[otherLong]} (${esc(label)}). Consider letting the event replace it so you don't stack two longs.`;
+  return `This week also has a long run on ${DAY_NAMES[otherLong]} (${esc(fmtPlanLabel(label))}). Consider letting the event replace it so you don't stack two longs.`;
 }
 
 function eventLines(week, dayIndex, ds) {
@@ -527,13 +539,14 @@ function eventLines(week, dayIndex, ds) {
     }
     const conflict = eventConflict(week, dayIndex, ev);
     return `
-      <div class="event-note">★ ${esc(ev.name)} · ${ev.km} km · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
+      <div class="event-note">★ ${esc(ev.name)} · ${fmtKm(ev.km)} km · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
       ${conflict ? `<div class="event-warn">${conflict}</div>` : ""}`;
   }).join("");
 }
 
 function dayRow(week, i, acts, now) {
-  const [kind, label] = week.days[i];
+  const [kind, rawLabel] = week.days[i];
+  const label = fmtPlanLabel(rawLabel);
   const date = addDays(weekStart(week.wk), i);
   const ds = ymd(date);
   const dayActs = acts.filter((a) => a.date === ds);
@@ -657,7 +670,7 @@ function planFor(ds) {
   const day = week.days?.[i];
   if (!day) return null;
   const [kind, label, km] = day;
-  return { week, i, kind, label, km };
+  return { week, i, kind, label: fmtPlanLabel(label), km };
 }
 
 // The week to review: this week once something is logged in it, otherwise last week.
@@ -815,7 +828,7 @@ function eventPersonalForm(ev, { lead = false } = {}) {
 }
 
 function eventDetailBlock(ev) {
-  const meta = `${ev.km} km${ev.sport ? ` · ${ev.sport}` : ""}`;
+  const meta = `${fmtKm(ev.km)} km${ev.sport ? ` · ${ev.sport}` : ""}`;
   if (ownsEvent(ev)) {
     return `
       <form class="event-edit-form" data-id="${esc(ev.id)}">
@@ -1031,7 +1044,7 @@ function renderDayDetail(ds) {
 
   const walkBlocks = walks.map((a) => `
       <section class="activity k-walk">
-        ${activityMeta(a, `Walk · ${a.dist} km`)}
+        ${activityMeta(a, `Walk · ${fmtKm(a.dist)} km`)}
         ${gearPicker(a)}
       </section>`).join("");
 
@@ -1308,63 +1321,45 @@ function renderGear() {
 }
 
 function normalizeUsername(raw) {
-  return String(raw || "").trim().toLowerCase();
+  return String(raw || "").trim().replace(/\s+/g, " ");
 }
+window.normalizeUsername = normalizeUsername;
 
 function usernameError(name) {
-  if (!name) return "Pick a username.";
-  if (!/^[a-z][a-z0-9_]{2,19}$/.test(name)) {
-    return "3–20 characters, start with a letter, only letters, numbers and _.";
+  if (!name) return "Enter your name.";
+  if (name.length < 2 || name.length > 40) return "2–40 characters.";
+  // Display name: letters, spaces, hyphens, apostrophes, periods.
+  if (!/^[A-Za-zÀ-ÖØ-öø-ÿ](?:[A-Za-zÀ-ÖØ-öø-ÿ'’.\- ]*[A-Za-zÀ-ÖØ-öø-ÿ])?$/.test(name) || name.length < 2) {
+    return "Use letters, spaces, hyphens or apostrophes — e.g. Jane Doe.";
   }
   return "";
 }
+window.usernameError = usernameError;
 
-async function saveUsernameFromInput(input) {
-  if (!input || input.dataset.saving === "1") return;
-  const errorEl = document.querySelector(".username-error");
-  const username = normalizeUsername(input.value);
+async function saveUsernameQuiet(username) {
+  const normalized = normalizeUsername(username);
   const current = window.CURRENT_PROFILE?.username || "";
-  if (errorEl) errorEl.textContent = "";
-  if (username === current) {
-    input.value = current;
-    input.readOnly = true;
-    sizeUsernameInput(input);
-    return;
+  if (normalized === current) return normalized;
+  const invalid = usernameError(normalized);
+  if (invalid) throw new Error(invalid);
+  const { error } = await sb.from("profiles").upsert({
+    user_id: CURRENT_USER_ID,
+    username: normalized,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) {
+    if (error.code === "23505") throw new Error("That name is already taken.");
+    if (error.code === "23514") throw new Error("Use letters, spaces, hyphens or apostrophes — e.g. Jane Doe.");
+    throw error;
   }
-  const invalid = usernameError(username);
-  if (invalid) {
-    if (errorEl) errorEl.textContent = invalid;
-    input.focus();
-    return;
+  window.CURRENT_PROFILE = { username: normalized };
+  if (typeof window.showUser === "function") {
+    const { data: { user } } = await sb.auth.getUser();
+    window.showUser(user);
   }
-  input.dataset.saving = "1";
-  input.readOnly = true;
-  try {
-    const { error } = await sb.from("profiles").upsert({
-      user_id: CURRENT_USER_ID,
-      username,
-      updated_at: new Date().toISOString(),
-    });
-    if (error) {
-      if (error.code === "23505") throw new Error("That username is already taken.");
-      if (error.code === "23514") throw new Error("3–20 characters, start with a letter, only letters, numbers and _.");
-      throw error;
-    }
-    window.CURRENT_PROFILE = { username };
-    if (typeof window.showUser === "function") {
-      const { data: { user } } = await sb.auth.getUser();
-      window.showUser(user);
-    }
-    render(true);
-    toast("Username saved.");
-  } catch (err) {
-    input.readOnly = false;
-    if (errorEl) errorEl.textContent = err.message || "Could not save username.";
-    input.focus();
-  } finally {
-    delete input.dataset.saving;
-  }
+  return normalized;
 }
+window.saveUsernameQuiet = saveUsernameQuiet;
 
 function fmtDist(cat, dist) {
   const n = Number(dist) || 0;
@@ -1707,14 +1702,6 @@ function renderStreak(acts, now) {
     </section>`;
 }
 
-function usernameInputSize(value, placeholder) {
-  return Math.max(String(value || placeholder || "name").length, 4);
-}
-
-function sizeUsernameInput(input) {
-  if (input) input.size = usernameInputSize(input.value, input.placeholder);
-}
-
 let GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
 let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
 let STRAVA_CALLBACK_HANDLED = false;
@@ -1813,23 +1800,104 @@ async function loadStravaStatus() {
   return STRAVA;
 }
 
+function decodeStravaStateReturnTo(state) {
+  try {
+    if (!state || !state.includes(".")) return "";
+    const body = state.split(".", 2)[0];
+    const padded = body + "=".repeat((4 - (body.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded.replace(/-/g, "+").replace(/_/g, "/")));
+    if (payload?.ret === "/setup" || payload?.ret === "setup") return "/setup";
+    if (payload?.ret === "/connections" || payload?.ret === "connections") return "/connections";
+  } catch { /* ignore */ }
+  return "";
+}
+
+function readStravaReturnTo(state = "") {
+  const fromState = decodeStravaStateReturnTo(state);
+  if (fromState) return fromState;
+  try {
+    const explicit = sessionStorage.getItem("strava-return-to") || localStorage.getItem("strava-return-to");
+    if (explicit === "/setup" || explicit === "/connections") return explicit;
+    if (sessionStorage.getItem("setup-after-strava") === "1") return "/setup";
+  } catch { /* ignore */ }
+  return "/connections";
+}
+
+function clearStravaReturnFlags() {
+  try {
+    sessionStorage.removeItem("strava-return-to");
+    localStorage.removeItem("strava-return-to");
+    sessionStorage.removeItem("setup-after-strava");
+    sessionStorage.removeItem("strava-oauth-callback");
+  } catch { /* ignore */ }
+}
+
+function takeStravaOauthCallback() {
+  // Prefer the early stash from auth.js (params stripped before Supabase can eat them).
+  try {
+    const raw = sessionStorage.getItem("strava-oauth-callback");
+    if (raw) {
+      sessionStorage.removeItem("strava-oauth-callback");
+      const parsed = JSON.parse(raw);
+      if (parsed && (parsed.code || parsed.error)) return parsed;
+    }
+  } catch { /* ignore */ }
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code") || "";
+  const state = params.get("state") || "";
+  const error = params.get("error") || "";
+  if (!code && !error) return null;
+  return {
+    code,
+    state,
+    error,
+    error_description: params.get("error_description") || "",
+  };
+}
+
+async function returnAfterStrava(returnTo) {
+  clearStravaReturnFlags();
+  document.getElementById("day-dialog")?.close();
+  if (returnTo === "/setup") {
+    try {
+      sessionStorage.setItem("setup-pending-connect", "1");
+      // Clear connect-done so onboarding shows step 1 again.
+      localStorage.removeItem(`setup-connect-done:${CURRENT_USER_ID || "anon"}`);
+    } catch { /* ignore */ }
+    history.replaceState(null, "", "/setup");
+    if (typeof window.renderSetupConnectStep === "function") window.renderSetupConnectStep();
+    else if (typeof window.renderOnboarding === "function") window.renderOnboarding();
+    return;
+  }
+  history.replaceState(null, "", "/connections");
+  if (!APP_READY && typeof window.bootApp === "function") {
+    await window.bootApp();
+    return;
+  }
+  if (typeof window.go === "function") window.go("/connections", { replace: true });
+  else render(true);
+}
+
 async function maybeHandleStravaCallback() {
   if (STRAVA_CALLBACK_HANDLED || !CURRENT_USER_ID) return false;
-  const params = new URLSearchParams(location.search);
-  const code = params.get("code");
-  const state = params.get("state");
-  const oauthError = params.get("error");
+  const callback = takeStravaOauthCallback();
+  if (!callback) return false;
+  const code = callback.code || "";
+  const state = callback.state || "";
+  const oauthError = callback.error || "";
   if (!code && !oauthError) return false;
-  if (currentRoute() !== "connections") return false;
   STRAVA_CALLBACK_HANDLED = true;
-  const clean = () => {
-    const url = new URL(location.href);
-    ["code", "state", "scope", "error", "error_description"].forEach((k) => url.searchParams.delete(k));
-    history.replaceState(null, "", url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : ""));
-  };
-  clean();
+  const returnTo = readStravaReturnTo(state);
+  // Drop any leftover OAuth params from the address bar.
+  const url = new URL(location.href);
+  ["code", "state", "scope", "error", "error_description"].forEach((k) => url.searchParams.delete(k));
+  history.replaceState(null, "", url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : ""));
   if (oauthError) {
-    toast(params.get("error_description") || "Strava authorization was cancelled.", true);
+    const detail = callback.error_description || "Strava authorization was cancelled.";
+    let message = detail;
+    try { message = decodeURIComponent(String(detail).replace(/\+/g, " ")); } catch { /* keep */ }
+    toast(message, true);
+    await returnAfterStrava(returnTo);
     return true;
   }
   try {
@@ -1840,24 +1908,142 @@ async function maybeHandleStravaCallback() {
       redirectUri: stravaRedirectUri(),
     });
     await loadStravaStatus();
-    toast("Strava connected. Sync to pull activities.");
-    render(true);
+    try {
+      await performStravaSync();
+      toast("Strava connected and synced.");
+    } catch {
+      toast("Strava connected.");
+    }
+    await returnAfterStrava(returnTo);
   } catch (err) {
     STRAVA.lastError = err.message || "Could not finish Strava connect";
     STRAVA.loaded = true;
     toast(STRAVA.lastError, true);
-    render(true);
+    await returnAfterStrava(returnTo);
   }
   return true;
 }
+window.maybeHandleStravaCallback = maybeHandleStravaCallback;
 
 window.refreshSetupConnections = async function refreshSetupConnections() {
-  await loadGarminStatus();
+  await Promise.all([loadGarminStatus(), loadStravaStatus()]);
   try {
     ACTS = await loadActivities();
     window._setupActs = ACTS;
   } catch { /* keep whatever we have */ }
-  return GARMIN;
+  return { garmin: GARMIN, strava: STRAVA };
+};
+
+window.syncConnectedSourcesForSetup = async function syncConnectedSourcesForSetup() {
+  await Promise.all([
+    GARMIN.loaded ? Promise.resolve() : loadGarminStatus(),
+    STRAVA.loaded ? Promise.resolve() : loadStravaStatus(),
+  ]);
+  const jobs = [];
+  if (GARMIN.connected && typeof window.setupGarminSync === "function") {
+    jobs.push(window.setupGarminSync({ permission: true }).catch(() => null));
+  }
+  if (STRAVA.connected) {
+    jobs.push(performStravaSync().catch(() => null));
+  }
+  if (jobs.length) await Promise.all(jobs);
+  try {
+    ACTS = await loadActivities();
+    window._setupActs = ACTS;
+  } catch { /* keep whatever we have */ }
+  const setupForm = document.querySelector(".setup-form");
+  if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
+    window.fillWeeklyFromSynced(setupForm, { force: true });
+  }
+  return ACTS;
+};
+
+window.openGarminKeyDialog = function openGarminKeyDialog({ fromSetup = false } = {}) {
+  const dialog = document.getElementById("day-dialog");
+  if (!dialog) return;
+  dialog.innerHTML = `
+    <div class="dialog-body">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">Garmin Connect</div>
+          <h2>Paste your API key</h2>
+        </div>
+        <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
+      </header>
+      <p class="muted">Create a Personal API key in Garmin Connect, then paste it here. We’ll ask before syncing activities.</p>
+      <form class="garmin-form" data-from-setup="${fromSetup ? "1" : "0"}">
+        <label>Personal API key
+          <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="Paste key from Garmin Connect" />
+        </label>
+        <label class="own-risk-field">
+          <input type="checkbox" name="sync_now" value="1" checked />
+          <span>After connecting, sync my existing activities once.</span>
+        </label>
+        <p class="muted small-text">Key from <a href="https://connect.garmin.com/app/settings/personalApiToken" target="_blank" rel="noopener">Garmin Connect → Personal API</a> (shown once; treat it like a password).</p>
+        <p class="form-error" role="alert"></p>
+        <button class="button" type="submit">Save &amp; connect</button>
+      </form>
+    </div>`;
+  if (!dialog.open) dialog.showModal();
+  dialog.scrollTop = 0;
+  dialog.querySelector("[name=apiKey]")?.focus();
+};
+
+window.openStravaPasscodeDialog = function openStravaPasscodeDialog({ fromSetup = false } = {}) {
+  const dialog = document.getElementById("day-dialog");
+  if (!dialog) return;
+  dialog.innerHTML = `
+    <div class="dialog-body">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">Strava</div>
+          <h2>Enter connect passcode</h2>
+        </div>
+        <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
+      </header>
+      <p class="muted">Enter the connect passcode from the app owner. You’ll then sign in on Strava to authorize.</p>
+      <form class="strava-form" data-from-setup="${fromSetup ? "1" : "0"}">
+        <label>Connect passcode
+          <input type="password" name="passcode" required autocomplete="off" spellcheck="false" placeholder="Passcode from the app owner" />
+        </label>
+        <label class="own-risk-field">
+          <input type="checkbox" name="shareWithCoach" />
+          <span>Also send Strava session summaries (date, sport, distance, pace, heart rate) to the AI coach.</span>
+        </label>
+        <p class="form-error" role="alert"></p>
+        <button class="button" type="submit">Continue to Strava</button>
+      </form>
+    </div>`;
+  if (!dialog.open) dialog.showModal();
+  dialog.scrollTop = 0;
+  dialog.querySelector("[name=passcode]")?.focus();
+};
+
+window.startStravaConnect = async function startStravaConnect({ fromSetup = false, shareWithCoach = false, passcode = "" } = {}) {
+  if (!passcode) throw new Error("Enter the connect passcode.");
+  const returnTo = fromSetup ? "/setup" : "/connections";
+  try {
+    sessionStorage.setItem("strava-return-to", returnTo);
+    localStorage.setItem("strava-return-to", returnTo);
+    if (fromSetup) {
+      sessionStorage.setItem("setup-after-strava", "1");
+      sessionStorage.setItem("setup-pending-connect", "1");
+      // Keep username draft across the Strava redirect.
+      const draft = document.querySelector(".setup-identity-form [name=username]")?.value || "";
+      if (draft) sessionStorage.setItem("setup-username-draft", draft);
+    } else {
+      sessionStorage.removeItem("setup-after-strava");
+    }
+  } catch { /* ignore */ }
+  const data = await invokeStrava({
+    action: "connect_url",
+    passcode,
+    redirectUri: stravaRedirectUri(),
+    shareWithCoach,
+    returnTo,
+  });
+  if (!data?.url) throw new Error("Could not start Strava connect.");
+  location.href = data.url;
 };
 
 window.setupGarminSync = async function setupGarminSync({ permission = true } = {}) {
@@ -1891,7 +2077,7 @@ window.setupGarminSync = async function setupGarminSync({ permission = true } = 
     window.fillWeeklyFromSynced(setupForm, { force: true });
   }
   if (typeof window.paintSetupConnect === "function" && document.getElementById("setup-connect-body")) {
-    window.paintSetupConnect(setupForm);
+    window.paintSetupConnect();
   }
   return data;
 };
@@ -1994,6 +2180,11 @@ async function performStravaSync() {
   };
   window.STRAVA_STATUS = STRAVA;
   ACTS = await loadActivities();
+  window._setupActs = ACTS;
+  const setupForm = document.querySelector(".setup-form");
+  if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
+    window.fillWeeklyFromSynced(setupForm, { force: true });
+  }
   const n = data.added || 0;
   return n
     ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
@@ -2052,12 +2243,24 @@ function syncIconSvg() {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 7.5A6.5 6.5 0 1 0 18 12"/><path d="M14.5 5.5 17 8l2.5-2.5"/><rect x="9.2" y="11.2" width="5.6" height="8.2" rx="2.2"/><path d="M11 13.2h2.4"/></svg>`;
 }
 
-function profileTabs(active) {
-  return `
-    <nav class="profile-tabs" aria-label="Profile sections">
-      <a class="choice-btn${active === "overview" ? " active" : ""}" href="/profile"${active === "overview" ? ' aria-current="page"' : ""}>Overview</a>
-      <a class="choice-btn${active === "connections" ? " active" : ""}" href="/connections"${active === "connections" ? ' aria-current="page"' : ""}>Connections</a>
-    </nav>`;
+function closeAccountMenu() {
+  const menu = document.querySelector(".account-menu");
+  const panel = document.getElementById("account-menu-panel");
+  const btn = document.querySelector("[data-action=account-menu]");
+  if (menu) menu.classList.remove("open");
+  if (panel) panel.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function toggleAccountMenu() {
+  const menu = document.querySelector(".account-menu");
+  const panel = document.getElementById("account-menu-panel");
+  const btn = document.querySelector("[data-action=account-menu]");
+  if (!menu || !panel || !btn) return;
+  const open = panel.hidden;
+  panel.hidden = !open;
+  menu.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function renderGarminConnectionCard() {
@@ -2147,32 +2350,87 @@ function renderConnections() {
         <p class="muted">Link devices and services so activities can sync into your plan.</p>
       </div>
     </section>
-    ${profileTabs("connections")}
     ${renderGarminConnectionCard()}
     ${renderStravaConnectionCard()}
     <p class="footnote">CSV import stays available from the upload button in the top bar.</p>`;
 }
 
+function renderSettings() {
+  const username = window.CURRENT_PROFILE?.username || "";
+  const email = window.CURRENT_USER_EMAIL || "";
+  const rules = typeof window.passwordRulesHtml === "function"
+    ? window.passwordRulesHtml({ hidden: false, id: "settings-password-rules" })
+    : "";
+  return `
+    <section class="hero compact">
+      <div>
+        <div class="eyebrow">Your account</div>
+        <h1>Settings</h1>
+        <p class="muted">Change your name and password.</p>
+      </div>
+    </section>
+    <div class="settings-stack">
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">Profile</div>
+            <h2>Name</h2>
+            <p class="muted" style="margin:6px 0 0">This is how you appear in the app.</p>
+          </div>
+        </div>
+        <form class="settings-form" data-settings="username" novalidate>
+          <label>Name
+            <input type="text" name="username" maxlength="40" autocomplete="name" spellcheck="false" value="${esc(username)}" placeholder="Your name" required />
+          </label>
+          ${email ? `<p class="muted small-text">${esc(email)}</p>` : ""}
+          <p class="form-error" role="alert"></p>
+          <p class="form-note" role="status"></p>
+          <button class="button" type="submit">Save name</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">Security</div>
+            <h2>Password</h2>
+            <p class="muted" style="margin:6px 0 0">Choose a new password for this account.</p>
+          </div>
+        </div>
+        <form class="settings-form" data-settings="password" novalidate>
+          <label>Current password
+            <input type="password" name="current" required autocomplete="current-password" />
+          </label>
+          <label>New password
+            <input type="password" name="password" required autocomplete="new-password" aria-describedby="settings-password-rules" />
+          </label>
+          <label>Confirm new password
+            <input type="password" name="confirm" required autocomplete="new-password" />
+          </label>
+          ${rules}
+          <p class="form-error" role="alert"></p>
+          <p class="form-note" role="status"></p>
+          <button class="button" type="submit">Change password</button>
+        </form>
+      </section>
+    </div>`;
+}
+window.renderSettings = renderSettings;
+
 function renderProfile(acts, now) {
   const userEmail = window.CURRENT_USER_EMAIL || "";
   const username = window.CURRENT_PROFILE?.username || "";
   const letter = (username || userEmail || "?").slice(0, 1).toUpperCase();
-  const placeholder = "Choose a username";
   return `
     <section class="hero compact profile-hero">
       <div class="profile-ident">
         <span class="profile-avatar" aria-hidden="true">${esc(letter)}</span>
         <div>
           <div class="eyebrow">Your profile</div>
-          <h1 class="username-heading">
-            <input class="username-inline" type="text" name="username" maxlength="20" autocomplete="username" spellcheck="false" value="${esc(username)}" placeholder="${placeholder}" size="${usernameInputSize(username, placeholder)}" readonly data-action="edit-username" aria-label="Username" title="Click to edit" />
-          </h1>
-          <p class="form-error username-error"></p>
+          <h1>${esc(username || "Your profile")}</h1>
           <p class="muted">${userEmail ? esc(userEmail) : "This is how you appear in the app."}</p>
         </div>
       </div>
     </section>
-    ${profileTabs("overview")}
     ${renderPlanProgress(acts, now)}
     ${renderYearStats(acts, now)}
     ${renderStreak(acts, now)}
@@ -2347,7 +2605,7 @@ function eventListItem(e, now, { past = false } = {}) {
     <button type="button" class="ev-open" data-action="open-day" data-date="${esc(ds)}" title="View ${esc(e.name)}">
       <span class="ev-date"><strong>${fmt(d, { day: "numeric" })}</strong><span>${fmt(d, { month: "short" })}</span></span>
       <span class="ev-main">
-        <span class="ev-name">${esc(e.name)} · ${e.km} km <span class="muted">· ${effortLabel(e.effort)}${weekBit} · ${when}${e.is_public ? " · public" : ""}</span></span>
+        <span class="ev-name">${esc(e.name)} · ${fmtKm(e.km)} km <span class="muted">· ${effortLabel(e.effort)}${weekBit} · ${when}${e.is_public ? " · public" : ""}</span></span>
         ${e.note ? `<span class="ev-personal">${esc(e.note)}</span>` : ""}
       </span>
       <span class="day-open" aria-hidden="true">›</span>
@@ -3662,8 +3920,8 @@ async function importCSV(file) {
       if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
         window.fillWeeklyFromSynced(setupForm, { force: true });
       }
-      if (setupForm && typeof window.paintSetupConnect === "function") {
-        window.paintSetupConnect(setupForm);
+      if (typeof window.paintSetupConnect === "function" && document.getElementById("setup-connect-body")) {
+        window.paintSetupConnect();
       }
     } else {
       render(true);
@@ -3943,7 +4201,7 @@ function renderActivities(acts, now) {
     </section>`;
 }
 
-const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "progress", "setup"]);
+const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup"]);
 
 function pathParts() {
   return location.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
@@ -3974,6 +4232,7 @@ function migrateLegacyHash() {
   else if (hash.startsWith("#profile-")) path = `/profile/${hash.slice(9)}`;
   else if (hash === "#profile") path = "/profile";
   else if (hash === "#connections") path = "/connections";
+  else if (hash === "#settings") path = "/settings";
   else if (hash === "#gear") path = "/gear";
   else if (!hash && (location.pathname === "/" || location.pathname === "/index.html" || location.pathname === "")) path = "/home";
   if (!path) return;
@@ -4001,6 +4260,7 @@ migrateLegacyHash();
 function renderView(route, acts, now) {
   if (route === "profile") return renderProfile(acts, now);
   if (route === "connections") return renderConnections();
+  if (route === "settings") return renderSettings();
   if (route === "activities") return renderActivities(acts, now);
   if (route === "events") return renderPastEvents(now);
   if (!hasPlan()) return renderNoPlanHome(acts, now);
@@ -4011,6 +4271,7 @@ function renderView(route, acts, now) {
 }
 
 function render(force = false) {
+  closeAccountMenu();
   captureEventFormDraft();
   captureActivityLogDraft();
   if (currentRoute() === "setup") {
@@ -4027,12 +4288,18 @@ function render(force = false) {
   }
   const now = today();
   const route = currentRoute();
-  document.querySelectorAll("nav a").forEach((a) => {
+  document.querySelectorAll("nav > a").forEach((a) => {
     const active = a.dataset.route === route
-      || (route === "progress" && a.dataset.route === "plan")
-      || (route === "connections" && a.dataset.route === "profile");
+      || (route === "progress" && a.dataset.route === "plan");
     a.classList.toggle("active", active);
   });
+  const accountMenu = document.querySelector(".account-menu");
+  if (accountMenu) {
+    accountMenu.classList.toggle("active", ["profile", "connections", "settings"].includes(route));
+    accountMenu.querySelectorAll("[data-route]").forEach((a) => {
+      a.classList.toggle("active", a.dataset.route === route);
+    });
+  }
   updateNavSyncButton();
   const badge = document.querySelector(".nav-badge");
   const pending = pendingChanges().length;
@@ -4356,6 +4623,13 @@ async function refreshEvents() {
 document.addEventListener("click", async (e) => {
   const dialog = document.getElementById("day-dialog");
   if (e.target === dialog) return dialog.close();
+  const accountTrigger = e.target.closest("[data-action=account-menu]");
+  if (accountTrigger) {
+    e.preventDefault();
+    toggleAccountMenu();
+    return;
+  }
+  if (!e.target.closest(".account-menu")) closeAccountMenu();
   const link = e.target.closest("a[href]");
   if (link && !link.target && !link.hasAttribute("download") && e.button === 0
       && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
@@ -4363,6 +4637,7 @@ document.addEventListener("click", async (e) => {
     const url = new URL(link.getAttribute("href"), location.origin);
     if (url.origin === location.origin && isAppPath(url.pathname)) {
       e.preventDefault();
+      closeAccountMenu();
       const dest = url.pathname.replace(/\/+$/, "") || "/home";
       if (document.body.classList.contains("onboarding") && dest !== "/setup") {
         if (dest === "/home" && typeof window.leaveSetupToHome === "function") {
@@ -4397,15 +4672,6 @@ document.addEventListener("click", async (e) => {
   if (btn.dataset.action === "open-day") {
     e.preventDefault();
     openDay(btn.dataset.date);
-    return;
-  }
-  if (btn.dataset.action === "edit-username") {
-    const input = btn.matches(".username-inline") ? btn : btn.querySelector(".username-inline");
-    if (input && input.readOnly) {
-      input.readOnly = false;
-      input.focus();
-      input.select();
-    }
     return;
   }
   if (btn.dataset.action === "import") document.getElementById("csv-input").click();
@@ -4697,6 +4963,56 @@ document.addEventListener("click", async (e) => {
 });
 
 document.addEventListener("submit", async (e) => {
+  const settingsForm = e.target.closest(".settings-form");
+  if (settingsForm) {
+    e.preventDefault();
+    const errorEl = settingsForm.querySelector(".form-error");
+    const noteEl = settingsForm.querySelector(".form-note");
+    const submit = settingsForm.querySelector("button[type=submit]");
+    if (errorEl) errorEl.textContent = "";
+    if (noteEl) noteEl.textContent = "";
+    if (submit) submit.disabled = true;
+    try {
+      if (settingsForm.dataset.settings === "username") {
+        const username = normalizeUsername(settingsForm.username.value);
+        const invalid = usernameError(username);
+        if (invalid) throw new Error(invalid);
+        await saveUsernameQuiet(username);
+        render(true);
+        toast("Name saved.");
+        return;
+      }
+      if (settingsForm.dataset.settings === "password") {
+        const email = window.CURRENT_USER_EMAIL || "";
+        const current = settingsForm.current.value;
+        const password = settingsForm.password.value;
+        const confirm = settingsForm.confirm.value;
+        if (!current) throw new Error("Enter your current password.");
+        const message = typeof window.passwordError === "function"
+          ? window.passwordError(password, confirm, email)
+          : (!password || password !== confirm ? "Check your new password." : "");
+        if (message) {
+          if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(settingsForm, true);
+          throw new Error(message);
+        }
+        if (!email) throw new Error("Sign in again, then change your password.");
+        const { error: verifyError } = await sb.auth.signInWithPassword({ email, password: current });
+        if (verifyError) throw new Error("Current password is incorrect.");
+        const { error } = await sb.auth.updateUser({ password });
+        if (error) throw error;
+        settingsForm.reset();
+        if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(settingsForm);
+        if (noteEl) noteEl.textContent = "Password updated.";
+        toast("Password updated.");
+        return;
+      }
+    } catch (err) {
+      if (errorEl) errorEl.textContent = err.message || "Could not save settings.";
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
   const busyForm = e.target.closest(".busy-form");
   if (busyForm) {
     e.preventDefault();
@@ -4729,15 +5045,14 @@ document.addEventListener("submit", async (e) => {
     if (errorEl) errorEl.textContent = "";
     const submit = stravaForm.querySelector("button[type=submit]");
     if (submit) submit.disabled = true;
+    const fromSetup = stravaForm.dataset.fromSetup === "1"
+      || !!document.querySelector(".setup-connect-step");
     try {
-      const data = await invokeStrava({
-        action: "connect_url",
-        passcode: stravaForm.passcode.value,
-        redirectUri: stravaRedirectUri(),
+      await window.startStravaConnect({
+        fromSetup,
         shareWithCoach: !!stravaForm.shareWithCoach?.checked,
+        passcode: stravaForm.passcode?.value || "",
       });
-      if (!data?.url) throw new Error("Could not start Strava connect.");
-      location.href = data.url;
       return;
     } catch (err) {
       if (errorEl) errorEl.textContent = err.message || "Could not connect Strava.";
@@ -4755,25 +5070,28 @@ document.addEventListener("submit", async (e) => {
     const submit = garminForm.querySelector("button[type=submit]");
     if (submit) submit.disabled = true;
     const setupForm = garminForm.closest(".setup-form") || document.querySelector(".setup-form");
-    const onSetupConnect = !!garminForm.closest(".setup-connect-step, #setup-connect") || !!document.querySelector(".setup-connect-step");
+    const onSetupConnect = garminForm.dataset.fromSetup === "1"
+      || !!garminForm.closest(".setup-connect-step, #setup-connect")
+      || !!document.querySelector(".setup-connect-step");
     const syncNow = !!garminForm.querySelector("[name=sync_now]")?.checked;
     try {
       await invokeGarmin({ action: "save_key", apiKey: garminForm.apiKey.value });
       garminForm.reset();
       await loadGarminStatus();
+      document.getElementById("day-dialog")?.close();
       if ((setupForm || onSetupConnect) && syncNow) {
         try {
           await window.setupGarminSync({ permission: true });
         } catch (syncErr) {
           toast(syncErr.message || "Connected, but sync failed. You can retry from setup.", true);
         }
-        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect(setupForm);
+        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect();
         if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
           window.fillWeeklyFromSynced(setupForm, { force: true });
         }
       } else if (setupForm || onSetupConnect) {
-        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect(setupForm);
-        toast("Garmin connected. Tick sync permission and sync to pull existing activities.");
+        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect();
+        toast("Garmin connected.");
       } else {
         render(true);
         toast(syncNow
@@ -4982,32 +5300,15 @@ document.addEventListener("change", async (e) => {
 });
 
 document.addEventListener("input", (e) => {
-  const input = e.target.closest?.(".username-inline");
-  if (input) sizeUsernameInput(input);
-});
-
-document.addEventListener("focusout", (e) => {
-  const input = e.target.closest?.(".username-inline");
-  if (input && !input.readOnly) saveUsernameFromInput(input);
+  const form = e.target.closest?.(".settings-form[data-settings=password]");
+  if (!form || !["password", "confirm", "current"].includes(e.target.name)) return;
+  if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(form);
+  const errorEl = form.querySelector(".form-error");
+  if (errorEl) errorEl.textContent = "";
 });
 
 document.addEventListener("keydown", (e) => {
-  const usernameInput = e.target.closest?.(".username-inline");
-  if (usernameInput) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      usernameInput.blur();
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      usernameInput.value = window.CURRENT_PROFILE?.username || "";
-      usernameInput.readOnly = true;
-      sizeUsernameInput(usernameInput);
-      const errorEl = document.querySelector(".username-error");
-      if (errorEl) errorEl.textContent = "";
-    }
-    return;
-  }
+  if (e.key === "Escape") closeAccountMenu();
   const day = e.target.closest?.(".day.clickable");
   if (day && (e.key === "Enter" || e.key === " ")) {
     e.preventDefault();

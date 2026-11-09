@@ -19,8 +19,9 @@ const STATE_TTL_MS = 15 * 60 * 1000;
 const TEMP = {
   STRAVA_CLIENT_ID: "TEMP_STRAVA_CLIENT_ID",
   STRAVA_CLIENT_SECRET: "TEMP_STRAVA_CLIENT_SECRET",
-  STRAVA_CONNECT_PASSCODE: "TEMP_STRAVA_CONNECT_PASSCODE",
-  STRAVA_REDIRECT_URI: "http://localhost:8000/connections",
+  STRAVA_CONNECT_PASSCODE: "tri-friends-70.3",
+  // Comma-separated allowlist: local + production. Strava app callback domain must match the one you use.
+  STRAVA_REDIRECT_URI: "http://localhost:8000/connections,https://health.paulinevandenheede.com/connections",
   STRAVA_WEBHOOK_VERIFY_TOKEN: "temp-strava-webhook-verify",
 };
 
@@ -68,6 +69,7 @@ Deno.serve(async (req) => {
     state?: string;
     full?: boolean;
     shareWithCoach?: boolean;
+    returnTo?: string;
   } = {};
   try {
     body = await req.json();
@@ -84,6 +86,7 @@ Deno.serve(async (req) => {
         body.passcode || "",
         body.redirectUri || "",
         body.shareWithCoach === true,
+        body.returnTo || "",
       ));
     }
     if (action === "exchange") {
@@ -118,18 +121,21 @@ async function handleStatus(admin: Sb, userId: string) {
   };
 }
 
-async function handleConnectUrl(userId: string, passcode: string, redirectUri: string, shareWithCoach: boolean) {
+async function handleConnectUrl(
+  userId: string,
+  passcode: string,
+  redirectUri: string,
+  shareWithCoach: boolean,
+  returnTo = "",
+) {
   assertPasscode(passcode);
   const clientId = requireEnv("STRAVA_CLIENT_ID");
-  const expectedRedirect = requireEnv("STRAVA_REDIRECT_URI");
-  if (!redirectUri || normalizeUri(redirectUri) !== normalizeUri(expectedRedirect)) {
-    throw new Error("Redirect URI is not configured for this app.");
-  }
-  const state = await signState(userId, shareWithCoach);
+  const redirect = resolveRedirectUri(redirectUri);
+  const state = await signState(userId, shareWithCoach, returnTo);
   const url = new URL(STRAVA_AUTH);
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("redirect_uri", expectedRedirect);
+  url.searchParams.set("redirect_uri", redirect);
   url.searchParams.set("approval_prompt", "auto");
   url.searchParams.set("scope", STRAVA_SCOPES);
   url.searchParams.set("state", state);
@@ -145,12 +151,9 @@ async function handleExchange(
 ) {
   if (!code) throw new Error("Missing Strava authorization code.");
   const statePayload = await verifyState(userId, state);
-  const expectedRedirect = requireEnv("STRAVA_REDIRECT_URI");
-  if (redirectUri && normalizeUri(redirectUri) !== normalizeUri(expectedRedirect)) {
-    throw new Error("Redirect URI is not configured for this app.");
-  }
+  const redirect = resolveRedirectUri(redirectUri);
 
-  const token = await exchangeCode(code, expectedRedirect);
+  const token = await exchangeCode(code, redirect);
   const athleteId = Number(token.athlete?.id);
   if (!Number.isFinite(athleteId)) throw new Error("Strava did not return an athlete id.");
 
@@ -204,7 +207,7 @@ async function handleDisconnect(admin: Sb, userId: string) {
 
 async function handleSync(admin: Sb, userId: string, full = false) {
   const conn = await loadConn(admin, userId);
-  if (!conn) throw new Error("Connect Strava first — enter the passcode on Connections.");
+  if (!conn) throw new Error("Connect Strava first.");
 
   try {
     const access = await ensureAccessToken(admin, userId, conn);
@@ -586,13 +589,76 @@ function normalizeUri(uri: string) {
   }
 }
 
-async function signState(userId: string, shareWithCoach: boolean) {
+function allowedRedirectUris() {
+  const raw = stravaConfig("STRAVA_REDIRECT_URI");
+  const extras = Deno.env.get("STRAVA_REDIRECT_URIS") || "";
+  const parts = `${raw},${extras}`.split(",").map((s) => s.trim()).filter(Boolean);
+  // Always accept loopback on port 8000 during development.
+  parts.push("http://localhost:8000/connections", "http://127.0.0.1:8000/connections");
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of parts) {
+    const key = normalizeUri(part);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(part.replace(/\/+$/, "") || part);
+  }
+  return out;
+}
+
+function isPrivateLanHost(host: string) {
+  const h = String(host || "").toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1") return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]), d = Number(m[4]);
+  if ([a, b, c, d].some((n) => n > 255)) return false;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+/** Local/LAN http://…:8000/connections is allowed without listing every IP. */
+function isLocalDevRedirect(uri: string) {
+  try {
+    const u = new URL(uri);
+    if (u.protocol !== "http:") return false;
+    if (u.port !== "8000") return false;
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    if (path !== "/connections") return false;
+    return isPrivateLanHost(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Pick the client redirect URI if it’s on the allowlist (local, LAN, or production). */
+function resolveRedirectUri(requested: string) {
+  if (!requested) throw new Error("Redirect URI is not configured for this app.");
+  const cleaned = String(requested).replace(/\/+$/, "");
+  const want = normalizeUri(cleaned);
+  const allowed = allowedRedirectUris();
+  const match = allowed.find((uri) => normalizeUri(uri) === want);
+  if (match || isLocalDevRedirect(cleaned)) {
+    // Prefer the exact client value so token exchange matches the authorize step.
+    return cleaned || match || cleaned;
+  }
+  throw new Error("Redirect URI is not configured for this app.");
+}
+
+function normalizeReturnTo(returnTo: string) {
+  return returnTo === "/setup" ? "/setup" : "/connections";
+}
+
+async function signState(userId: string, shareWithCoach: boolean, returnTo = "") {
   const secret = requireEnv("STRAVA_CLIENT_SECRET");
   const payload = {
     uid: userId,
     exp: Date.now() + STATE_TTL_MS,
     n: crypto.randomUUID(),
     share: shareWithCoach === true,
+    ret: normalizeReturnTo(returnTo),
   };
   const body = b64url(JSON.stringify(payload));
   const sig = await hmac(secret, body);
@@ -605,7 +671,7 @@ async function verifyState(userId: string, state: string) {
   const secret = requireEnv("STRAVA_CLIENT_SECRET");
   const expected = await hmac(secret, body);
   if (!secretsEqual(sig, expected)) throw new Error("Invalid or expired Strava connect session. Try again.");
-  let payload: { uid?: string; exp?: number; share?: boolean };
+  let payload: { uid?: string; exp?: number; share?: boolean; ret?: string };
   try {
     const padded = body + "=".repeat((4 - (body.length % 4)) % 4);
     payload = JSON.parse(atob(padded.replace(/-/g, "+").replace(/_/g, "/")));
@@ -614,9 +680,9 @@ async function verifyState(userId: string, state: string) {
   }
   if (payload.uid !== userId) throw new Error("Invalid or expired Strava connect session. Try again.");
   if (!payload.exp || Date.now() > payload.exp) {
-    throw new Error("Strava connect session expired. Enter the passcode again.");
+    throw new Error("Strava connect session expired. Try connecting again.");
   }
-  return { share: payload.share === true };
+  return { share: payload.share === true, returnTo: normalizeReturnTo(payload.ret || "") };
 }
 
 async function deleteStravaActivities(admin: Sb, userId: string) {

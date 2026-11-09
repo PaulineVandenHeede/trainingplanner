@@ -1,3 +1,44 @@
+// Strava also returns ?code=&state= (or ?error=) on /connections. Stash and strip those
+// before Supabase auth can treat them as a login callback.
+(function stashStravaOauthCallback() {
+  try {
+    const base = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+    if (base !== "connections") return;
+    const q = new URLSearchParams(location.search);
+    const code = q.get("code") || "";
+    const state = q.get("state") || "";
+    const error = q.get("error") || "";
+    if (!code && !error) return;
+    if (q.get("type")) return; // Supabase email / recovery links
+    const pendingReturn = sessionStorage.getItem("strava-return-to")
+      || localStorage.getItem("strava-return-to")
+      || sessionStorage.getItem("setup-after-strava");
+    // Our Strava state is "<base64url>.<sig>"; auth codes usually aren't.
+    const looksLikeStrava = pendingReturn || (state.includes(".") && !q.get("type"));
+    if (!looksLikeStrava) return;
+    sessionStorage.setItem("strava-oauth-callback", JSON.stringify({
+      code,
+      state,
+      error,
+      error_description: q.get("error_description") || "",
+    }));
+    ["code", "state", "scope", "error", "error_description"].forEach((key) => q.delete(key));
+    // Jump straight to the page we came from so /connections doesn’t flash first.
+    let returnTo = sessionStorage.getItem("strava-return-to") || localStorage.getItem("strava-return-to") || "";
+    if (!returnTo && state.includes(".")) {
+      try {
+        const body = state.split(".", 2)[0];
+        const padded = body + "=".repeat((4 - (body.length % 4)) % 4);
+        const payload = JSON.parse(atob(padded.replace(/-/g, "+").replace(/_/g, "/")));
+        if (payload?.ret === "/setup" || payload?.ret === "setup") returnTo = "/setup";
+      } catch { /* ignore */ }
+    }
+    const path = returnTo === "/setup" ? "/setup" : "/connections";
+    const next = `${path}${q.toString() ? `?${q}` : ""}${location.hash || ""}`;
+    history.replaceState(null, "", next);
+  } catch { /* ignore */ }
+})();
+
 const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
@@ -11,15 +52,21 @@ const PASSWORD_RULES = [
   { id: "symbol", label: "One symbol", test: (password) => /[^A-Za-z0-9\s]/.test(password) },
 ];
 
-function authRedirectTo() {
+function authRedirectTo(path = "/") {
   const configured = String(window.AUTH_SITE_URL || "https://health.paulinevandenheede.com").trim();
-  return `${configured.replace(/\/+$/, "")}/`;
+  const base = configured.replace(/\/+$/, "");
+  const next = String(path || "/").startsWith("/") ? String(path || "/") : `/${path}`;
+  return `${base}${next === "/" ? "/" : next}`;
 }
 
 function readAuthLink() {
   const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
   const query = new URLSearchParams(location.search);
   const pick = (key) => hash.get(key) || query.get(key) || "";
+  // Ignore Strava OAuth errors — those are handled by the Strava callback, not login.
+  try {
+    if (sessionStorage.getItem("strava-oauth-callback")) return { type: pick("type"), error: "" };
+  } catch { /* ignore */ }
   let error = pick("error_description") || pick("error") || "";
   try { error = decodeURIComponent(error.replace(/\+/g, " ")); } catch { /* keep the raw text */ }
   return { type: pick("type"), error };
@@ -88,10 +135,13 @@ function authHeaders(extra = {}) {
 }
 window.authHeaders = authHeaders;
 
-function passwordRulesHtml() {
-  return `<ul class="password-rules" id="password-rules" hidden>${PASSWORD_RULES.map((rule) =>
+function passwordRulesHtml({ hidden = true, id = "password-rules" } = {}) {
+  return `<ul class="password-rules"${id ? ` id="${id}"` : ""}${hidden ? " hidden" : ""}>${PASSWORD_RULES.map((rule) =>
     `<li data-rule="${rule.id}">${rule.label}</li>`).join("")}</ul>`;
 }
+window.passwordError = passwordError;
+window.paintPasswordRules = paintPasswordRules;
+window.passwordRulesHtml = passwordRulesHtml;
 
 function renderLogin(message = "", options = {}) {
   document.body.classList.add("logged-out");
@@ -101,7 +151,7 @@ function renderLogin(message = "", options = {}) {
   document.getElementById("app").innerHTML = `
     <section class="auth-card">
       <div class="auth-brand">
-        <span class="brand-mark" aria-hidden="true">TP</span>
+        <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
         <div>
           <div class="eyebrow">Your training</div>
           <h1>Training Plan</h1>
@@ -143,7 +193,7 @@ function renderPasswordReset(email = "", message = "") {
   document.getElementById("app").innerHTML = `
     <section class="auth-card">
       <div class="auth-brand">
-        <span class="brand-mark" aria-hidden="true">TP</span>
+        <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
         <div>
           <div class="eyebrow">Your training</div>
           <h1>New password</h1>
@@ -238,22 +288,48 @@ async function loadProfile(userId) {
 }
 window.loadProfile = loadProfile;
 
+let enterAppInFlight = null;
 async function enterApp(session) {
-  document.body.classList.remove("logged-out");
-  const header = document.getElementById("app-header");
-  if (header) header.hidden = false;
-  await loadProfile(session.user.id);
-  showUser(session.user);
-  try {
-    const stayingOnSetup = document.body.classList.contains("onboarding")
-      || location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] === "setup";
-    const ready = typeof window.ensurePlan === "function" ? await window.ensurePlan(session.user) : true;
-    if (stayingOnSetup || document.body.classList.contains("onboarding") || document.querySelector(".setup-form")) {
-      return;
+  if (enterAppInFlight) return enterAppInFlight;
+  enterAppInFlight = (async () => {
+    document.body.classList.remove("logged-out");
+    const header = document.getElementById("app-header");
+    if (header) header.hidden = false;
+    window.CURRENT_USER_ID = session.user.id;
+    await loadProfile(session.user.id);
+    showUser(session.user);
+    try {
+      // Finish Strava OAuth before setup routing can rewrite the URL.
+      if (typeof window.maybeHandleStravaCallback === "function") {
+        const handled = await window.maybeHandleStravaCallback();
+        if (handled) return;
+      }
+      const stayingOnSetup = document.body.classList.contains("onboarding")
+        || location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] === "setup"
+        || !!document.querySelector(".setup-form, .setup-connect-step");
+      if (stayingOnSetup) {
+        // Full reload of /setup used to return here with only "Loading…" — paint setup.
+        const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
+        if (!hasSetupUi && typeof window.renderOnboarding === "function") {
+          window.renderOnboarding();
+        } else if (!hasSetupUi && typeof window.bootApp === "function") {
+          await window.bootApp();
+        }
+        return;
+      }
+      const ready = typeof window.ensurePlan === "function" ? await window.ensurePlan(session.user) : true;
+      if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step")) {
+        return;
+      }
+      if (ready && typeof window.bootApp === "function") await window.bootApp();
+    } catch (err) {
+      renderLogin(err.message || "Could not load your plan.");
     }
-    if (ready && typeof window.bootApp === "function") await window.bootApp();
-  } catch (err) {
-    renderLogin(err.message || "Could not load your plan.");
+  })();
+  try {
+    await enterAppInFlight;
+  } finally {
+    enterAppInFlight = null;
   }
 }
 
@@ -339,7 +415,7 @@ document.addEventListener("submit", async (e) => {
       const { data, error } = await sb.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: authRedirectTo() },
+        options: { emailRedirectTo: authRedirectTo("/setup") },
       });
       if (error) throw error;
       try {
@@ -388,8 +464,11 @@ sb.auth.getSession().then(({ data: { session } }) => {
     return;
   }
   if (session) {
-    enterApp(session);
-    if (authLink.error) clearAuthParams();
+    enterApp(session).then(() => {
+      if (authLink.error) clearAuthParams();
+    }).catch(() => {
+      if (authLink.error) clearAuthParams();
+    });
     return;
   }
   if (authLink.error) {

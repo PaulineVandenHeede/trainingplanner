@@ -11,8 +11,11 @@ const TYPES = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json",
 };
 const BLOCKED = new Set([
   "/server.js",
@@ -24,7 +27,7 @@ const BLOCKED = new Set([
   "/package-lock.json",
 ]);
 const BLOCKED_PREFIXES = ["/data/", "/supabase/", "/.git/", "/.cursor/", "/node_modules/"];
-const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "progress", "setup"]);
+const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup"]);
 
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",

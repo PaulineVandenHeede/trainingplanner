@@ -693,6 +693,13 @@ window.eventReachability = function eventReachability({
   };
 };
 
+// Display-only km text (same as Garmin): keep full-precision values in day[2].
+const fmtKmLabel = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return String(n ?? "");
+  return String(Number(x.toFixed(2)));
+};
+
 function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts = {}) {
   const nDays = Math.max(2, Math.min(6, Number(opts.runDays) || 3));
   const wantStrength = !!opts.strength;
@@ -706,9 +713,9 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
       if (i === raceDay) {
         const name = distances.label || "Race";
         if (sport === "swim") set(i, "race", `${name} ${distances.swim} m`);
-        else if (sport === "bike") set(i, "race", `${name} ${distances.bike} km`);
+        else if (sport === "bike") set(i, "race", `${name} ${fmtKmLabel(distances.bike)} km`);
         else if (sport === "triathlon") set(i, "race", `${name}`, distances.run);
-        else set(i, "race", `${name} ${distances.run} km`, distances.run);
+        else set(i, "race", `${name} ${fmtKmLabel(distances.run)} km`, distances.run);
       } else if (i === Math.max(0, raceDay - 3)) set(i, "run", "Shakeout 4–6 easy", 5);
       else if (i < raceDay && sport !== "swim" && sport !== "bike" && i % 2 === 0) set(i, "run", "Easy 4–5", 4);
       else set(i, "rest", i === raceDay - 1 ? "Rest / 20' shakeout" : "Rest");
@@ -719,7 +726,7 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   if (sport === "swim") {
     set(0, "swim", `Swim ${Math.max(0.6, (km * 0.3)).toFixed(1)} km`);
     set(2, "swim", `Swim ${Math.max(0.6, (km * 0.3)).toFixed(1)} km`);
-    set(5, "swim", `Long swim ${longKm} km`);
+    set(5, "swim", `Long swim ${fmtKmLabel(longKm)} km`);
     if (km > longKm + 2) set(3, "swim", "Technique + easy");
     return days;
   }
@@ -727,7 +734,7 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   if (sport === "bike") {
     set(0, "bike", "Easy spin 45–60'");
     set(2, hasQuality ? "bike" : "bike", hasQuality ? "Quality ride" : "Steady ride");
-    set(5, "bike", `Long ride ~${longKm} km`);
+    set(5, "bike", `Long ride ~${fmtKmLabel(longKm)} km`);
     if (km > 40) set(3, "bike", "Easy recovery spin");
     return days;
   }
@@ -772,10 +779,10 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
 
   easyIdx.forEach((i, n) => {
     const easyKm = Math.max(3, split.easies[n] || 4);
-    set(i, "run", `Run ${easyKm} easy`, easyKm);
+    set(i, "run", `Run ${fmtKmLabel(easyKm)} easy`, easyKm);
   });
-  if (qualityIdx != null && split.quality) set(qualityIdx, "quality", `Quality ${split.quality}`, split.quality);
-  if (longIdx != null) set(longIdx, "long", `Long ${longKm} easy`, longKm);
+  if (qualityIdx != null && split.quality) set(qualityIdx, "quality", `Quality ${fmtKmLabel(split.quality)}`, split.quality);
+  if (longIdx != null) set(longIdx, "long", `Long ${fmtKmLabel(longKm)} easy`, longKm);
 
   const band = sport === "triathlon" ? triDistanceBand(distances) : null;
   const wk = Number(opts.weekNum) || 1;
@@ -953,12 +960,12 @@ function weaveEventIntoWeek(weeks, start, ev) {
   const longIdx = week.days.findIndex((d) => d[0] === "long" || d[0] === "event" || d[0] === "race");
   const evKm = Number(ev.km) || 0;
   let km = evKm || week.long;
-  let label = `${ev.name}${evKm ? ` ${evKm} km` : ""}`;
+  let label = `${ev.name}${evKm ? ` ${fmtKmLabel(evKm)} km` : ""}`;
   if (evKm > 0 && week.long > evKm + 3 && evKm <= 16) {
     const extra = week.long - evKm;
     const pre = Math.round(extra / 2);
     const post = extra - pre;
-    label = `${ev.name}: ${pre} + ${evKm} + ${post} = ${week.long} km`;
+    label = `${ev.name}: ${pre} + ${fmtKmLabel(evKm)} + ${post} = ${fmtKmLabel(week.long)} km`;
     km = week.long;
   }
   week.days[dayIdx] = ["event", label, km];
