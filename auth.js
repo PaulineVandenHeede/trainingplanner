@@ -154,7 +154,7 @@ function renderLogin(message = "", options = {}) {
         <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
         <div>
           <div class="eyebrow">Your training</div>
-          <h1>Training Plan</h1>
+          <h1>Training Pal</h1>
         </div>
       </div>
       <p class="muted auth-lead">Sign in to open your plan.</p>

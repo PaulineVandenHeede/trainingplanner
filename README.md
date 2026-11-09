@@ -1,2 +1,2 @@
-# trainingplanner
-AI driven training planner
+# Training Pal
+AI driven training companion

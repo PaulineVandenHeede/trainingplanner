@@ -1,7 +1,7 @@
 {
-  "name": "Training Plan",
-  "short_name": "Training Plan",
-  "description": "AI driven training planner",
+  "name": "Training Pal",
+  "short_name": "Training Pal",
+  "description": "AI driven training companion",
   "start_url": "/home",
   "display": "standalone",
   "background_color": "#f6f5f1",
