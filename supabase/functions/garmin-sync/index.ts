@@ -32,12 +32,16 @@ Deno.serve(async (req) => {
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
   const anon = req.headers.get("apikey") || Deno.env.get("SUPABASE_ANON_KEY") || "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   const userClient = createClient(supabaseUrl, anon, {
     global: { headers: { Authorization: auth } },
   });
   const { data: userData, error: userErr } = await userClient.auth.getUser();
   const user = userData?.user;
   if (userErr || !user) return json({ error: "Sign in required" }, 401);
+  if (!serviceKey) return json({ error: "Server misconfigured" }, 500);
+  // Garmin api_key is revoked from the browser JWT role; only service role may touch it.
+  const admin = createClient(supabaseUrl, serviceKey);
 
   let body: { action?: string; apiKey?: string; full?: boolean; today?: string } = {};
   try {
@@ -48,10 +52,12 @@ Deno.serve(async (req) => {
 
   const action = body.action || "status";
   try {
-    if (action === "status") return json(await handleStatus(userClient, user.id));
-    if (action === "save_key") return json(await handleSaveKey(userClient, user.id, body.apiKey || ""));
-    if (action === "disconnect") return json(await handleDisconnect(userClient, user.id));
-    if (action === "sync") return json(await handleSync(userClient, user.id, body.full === true, body.today || ""));
+    if (action === "status") return json(await handleStatus(admin, user.id));
+    if (action === "save_key") return json(await handleSaveKey(admin, user.id, body.apiKey || ""));
+    if (action === "disconnect") return json(await handleDisconnect(admin, user.id));
+    if (action === "sync") {
+      return json(await handleSync(userClient, admin, user.id, body.full === true, body.today || ""));
+    }
     return json({ error: "Unknown action" }, 400);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Garmin request failed";
@@ -59,8 +65,8 @@ Deno.serve(async (req) => {
   }
 });
 
-async function handleStatus(sb: Sb, userId: string) {
-  const { data, error } = await sb
+async function handleStatus(admin: Sb, userId: string) {
+  const { data, error } = await admin
     .from("garmin_connections")
     .select("last_sync_at,last_sync_status,last_error,updated_at")
     .eq("user_id", userId)
@@ -75,13 +81,13 @@ async function handleStatus(sb: Sb, userId: string) {
   };
 }
 
-async function handleSaveKey(sb: Sb, userId: string, apiKey: string) {
+async function handleSaveKey(admin: Sb, userId: string, apiKey: string) {
   const key = String(apiKey || "").trim();
   if (!key) throw new Error("Paste your Garmin Personal API key.");
   // Save without calling Garmin here — token exchange counts toward the rate limit.
   // Sync validates the key on the next Sync activities click.
   const now = new Date().toISOString();
-  const { error } = await sb.from("garmin_connections").upsert({
+  const { error } = await admin.from("garmin_connections").upsert({
     user_id: userId,
     api_key: key,
     last_error: null,
@@ -91,14 +97,14 @@ async function handleSaveKey(sb: Sb, userId: string, apiKey: string) {
   return { ok: true, connected: true };
 }
 
-async function handleDisconnect(sb: Sb, userId: string) {
-  const { error } = await sb.from("garmin_connections").delete().eq("user_id", userId);
+async function handleDisconnect(admin: Sb, userId: string) {
+  const { error } = await admin.from("garmin_connections").delete().eq("user_id", userId);
   if (error) throw new Error(error.message);
   return { ok: true, connected: false };
 }
 
-async function handleSync(sb: Sb, userId: string, full = false, today = "") {
-  const { data: conn, error: connErr } = await sb
+async function handleSync(sb: Sb, admin: Sb, userId: string, full = false, today = "") {
+  const { data: conn, error: connErr } = await admin
     .from("garmin_connections")
     .select("api_key,last_sync_at")
     .eq("user_id", userId)
@@ -206,7 +212,7 @@ async function handleSync(sb: Sb, userId: string, full = false, today = "") {
     const status = full
       ? `Full history: ${added} added, ${kept} already saved.${splitNote}${gearNote}`
       : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} with full detail` : ""}).${splitNote}${gearNote}`;
-    await sb.from("garmin_connections").update({
+    await admin.from("garmin_connections").update({
       last_sync_at: now,
       last_sync_status: status,
       last_error: null,
@@ -233,7 +239,7 @@ async function handleSync(sb: Sb, userId: string, full = false, today = "") {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed";
     const now = new Date().toISOString();
-    await sb.from("garmin_connections").update({
+    await admin.from("garmin_connections").update({
       last_sync_status: "error",
       last_error: message,
       updated_at: now,

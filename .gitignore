@@ -1,6 +1,25 @@
 data/
 data.js
 config.js
+.env
+.env.*
+!.env.example
 .DS_Store
 .cursor/
 supabase/.temp/
+*.pem
+*.key
+secrets/
+
+# Local deploy scratch from agent/CLI attempts
+.cursor-garmin-*
+.garmin-*
+.gchunk*
+.gp*.b64
+.p[0-9].json
+.strava-*
+.mcp-deploy-rpc.json
+.content_escaped.txt
+.garmin-content.jsonstring
+d.json
+DEPLOY_GARMIN_SYNC.md

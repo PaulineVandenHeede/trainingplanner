@@ -30,37 +30,142 @@ window.EVENT_PRESETS = {
 
 window.SPORT_LABEL = { run: "Running", swim: "Swimming", bike: "Cycling", triathlon: "Triathlon" };
 
-window.TIME_PRESETS = ["5k", "10k", "half", "marathon", "custom"];
+window.TIME_PRESETS = {
+  run: ["5k", "10k", "half", "marathon", "custom"],
+  swim: ["750", "1500", "1900", "5k", "custom"],
+  bike: ["40", "90", "180", "custom"],
+  triathlon: ["kwart", "halve", "volledige", "custom"],
+};
 window.TIME_GOALS = [
-  { id: "5k-20", label: "Sub-20", preset: "5k" },
-  { id: "5k-22", label: "Sub-22", preset: "5k" },
-  { id: "5k-25", label: "Sub-25", preset: "5k" },
-  { id: "5k-30", label: "Sub-30", preset: "5k" },
-  { id: "10k-40", label: "Sub-40", preset: "10k" },
-  { id: "10k-45", label: "Sub-45", preset: "10k" },
-  { id: "10k-50", label: "Sub-50", preset: "10k" },
-  { id: "10k-60", label: "Sub-60", preset: "10k" },
-  { id: "half-130", label: "Sub-1:30", preset: "half" },
-  { id: "half-145", label: "Sub-1:45", preset: "half" },
-  { id: "half-200", label: "Sub-2:00", preset: "half" },
-  { id: "marathon-330", label: "Sub-3:30", preset: "marathon" },
-  { id: "marathon-400", label: "Sub-4:00", preset: "marathon" },
-  { id: "marathon-430", label: "Sub-4:30", preset: "marathon" },
+  { id: "5k-20", label: "Sub-20", preset: "5k", sport: "run" },
+  { id: "5k-22", label: "Sub-22", preset: "5k", sport: "run" },
+  { id: "5k-25", label: "Sub-25", preset: "5k", sport: "run" },
+  { id: "5k-30", label: "Sub-30", preset: "5k", sport: "run" },
+  { id: "10k-40", label: "Sub-40", preset: "10k", sport: "run" },
+  { id: "10k-45", label: "Sub-45", preset: "10k", sport: "run" },
+  { id: "10k-50", label: "Sub-50", preset: "10k", sport: "run" },
+  { id: "10k-60", label: "Sub-60", preset: "10k", sport: "run" },
+  { id: "half-130", label: "Sub-1:30", preset: "half", sport: "run" },
+  { id: "half-145", label: "Sub-1:45", preset: "half", sport: "run" },
+  { id: "half-200", label: "Sub-2:00", preset: "half", sport: "run" },
+  { id: "marathon-330", label: "Sub-3:30", preset: "marathon", sport: "run" },
+  { id: "marathon-400", label: "Sub-4:00", preset: "marathon", sport: "run" },
+  { id: "marathon-430", label: "Sub-4:30", preset: "marathon", sport: "run" },
+  { id: "swim-750-12", label: "Sub-12", preset: "750", sport: "swim" },
+  { id: "swim-750-15", label: "Sub-15", preset: "750", sport: "swim" },
+  { id: "swim-1500-25", label: "Sub-25", preset: "1500", sport: "swim" },
+  { id: "swim-1500-30", label: "Sub-30", preset: "1500", sport: "swim" },
+  { id: "swim-1500-35", label: "Sub-35", preset: "1500", sport: "swim" },
+  { id: "swim-1900-35", label: "Sub-35", preset: "1900", sport: "swim" },
+  { id: "swim-1900-40", label: "Sub-40", preset: "1900", sport: "swim" },
+  { id: "swim-5k-90", label: "Sub-1:30", preset: "5k", sport: "swim" },
+  { id: "swim-5k-120", label: "Sub-2:00", preset: "5k", sport: "swim" },
+  { id: "bike-40-70", label: "Sub-1:10", preset: "40", sport: "bike" },
+  { id: "bike-40-80", label: "Sub-1:20", preset: "40", sport: "bike" },
+  { id: "bike-40-90", label: "Sub-1:30", preset: "40", sport: "bike" },
+  { id: "bike-90-180", label: "Sub-3:00", preset: "90", sport: "bike" },
+  { id: "bike-90-210", label: "Sub-3:30", preset: "90", sport: "bike" },
+  { id: "bike-90-240", label: "Sub-4:00", preset: "90", sport: "bike" },
+  { id: "bike-180-360", label: "Sub-6:00", preset: "180", sport: "bike" },
+  { id: "bike-180-420", label: "Sub-7:00", preset: "180", sport: "bike" },
+  { id: "bike-180-480", label: "Sub-8:00", preset: "180", sport: "bike" },
+  { id: "tri-kwart-130", label: "Sub-1:30", preset: "kwart", sport: "triathlon" },
+  { id: "tri-kwart-200", label: "Sub-2:00", preset: "kwart", sport: "triathlon" },
+  { id: "tri-kwart-230", label: "Sub-2:30", preset: "kwart", sport: "triathlon" },
+  { id: "tri-halve-500", label: "Sub-5:00", preset: "halve", sport: "triathlon" },
+  { id: "tri-halve-530", label: "Sub-5:30", preset: "halve", sport: "triathlon" },
+  { id: "tri-halve-600", label: "Sub-6:00", preset: "halve", sport: "triathlon" },
+  { id: "tri-voll-12", label: "Sub-12:00", preset: "volledige", sport: "triathlon" },
+  { id: "tri-voll-13", label: "Sub-13:00", preset: "volledige", sport: "triathlon" },
+  { id: "tri-voll-14", label: "Sub-14:00", preset: "volledige", sport: "triathlon" },
 ];
 window.timeGoalName = function timeGoalName(goal, extra = {}) {
   const time = String(extra.time || "").trim();
-  const km = Number(extra.run);
+  const sport = extra.sport || goal?.sport || "run";
+  const presetId = extra.preset || goal?.preset;
+  const customDist = () => {
+    if (sport === "swim" && Number(extra.swim) > 0) return `${Number(extra.swim)} m`;
+    if (sport === "bike" && Number(extra.bike) > 0) return `${Number(extra.bike)} km`;
+    if (Number(extra.run) > 0) return `${Number(extra.run)} km`;
+    return "custom";
+  };
   if (goal === "custom" || goal?.id === "custom" || extra.preset === "custom") {
-    const dist = km > 0 ? `${km} km` : "custom";
+    const dist = customDist();
     return time ? `${time} · ${dist}` : dist;
   }
   if (!goal) return time || "";
-  const dist = ((window.EVENT_PRESETS || {}).run || []).find((p) => p.id === goal.preset);
+  const dist = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
   if (time) return [time, dist?.label].filter(Boolean).join(" ");
   return [goal.label, dist?.label].filter(Boolean).join(" ");
 };
 
 window.FITNESS_WEEKS = [8, 12, 16];
+// Common fitness-block lengths by focus (what public plans most often use).
+window.FITNESS_WEEKS_BY_SPORT = {
+  run: { options: [8, 12, 16], default: 12, hint: "Most run fitness blocks are 8–16 weeks; 12 is the usual sweet spot." },
+  swim: { options: [6, 8, 12], default: 8, hint: "Swim fitness blocks are often shorter — 6–12 weeks with technique focus." },
+  bike: { options: [8, 12, 16], default: 12, hint: "Cycling base blocks commonly run 8–16 weeks." },
+  triathlon: { options: [8, 12, 16], default: 12, hint: "Triathlon fitness / base blocks are most often 8–16 weeks." },
+};
+
+// Research used for triathlon (and shared endurance) plan rules.
+// Links are returned on generated plans so athletes can review the sources.
+window.TRAINING_RESEARCH = [
+  {
+    id: "triathlete-20w",
+    title: "A 20-Week Training Plan for Your First 70.3 Triathlon",
+    url: "https://www.triathlete.com/training/20-week-training-plan-first-70-3-triathlon",
+    used_for: "70.3 structure: ~8w base → build → peak, recovery every 4th week, brick pattern",
+  },
+  {
+    id: "triathlete-periodization",
+    title: "How to Use Periodization in Your Triathlon Training Plan",
+    url: "https://www.triathlete.com/training/how-to-use-periodization-in-your-triathlon-training-plan",
+    used_for: "Base/build/taper lengths; longer base for inexperienced long-course athletes; 3:1 overload/recovery",
+  },
+  {
+    id: "osb-70.3",
+    title: "Half-Ironman Specific Training (Marty Gaal / OSB Multisport)",
+    url: "https://www.osbmultisport.com/articles/halfironmantraining.pdf",
+    used_for: "Beginners emphasize aerobic base; advanced add race-specific intensity; brick/race-pace key sessions",
+  },
+  {
+    id: "scientific-taper",
+    title: "How to optimize your triathlon taper (Scientific Triathlon)",
+    url: "https://scientifictriathlon.com/tapering-for-triathlon/",
+    used_for: "8–14 day taper for 70.3; ~40–60% volume cut; keep frequency and some race intensity",
+  },
+  {
+    id: "garmin-periodisation",
+    title: "Periodisation of Training (Garmin triathlon programme)",
+    url: "https://static.garmincdn.com/shared/emea/custom/training/downloads/triathlon/Tri-Training-Programme-Periodisation-ENGLISH.pdf",
+    used_for: "Long aerobic base (8–16w); progression then specific/race-pace work; volume down in specific phase",
+  },
+  {
+    id: "corerise-split",
+    title: "How to train for triathlon: structuring swim, bike and run",
+    url: "https://corerise.ai/learn/how-to-train-for-triathlon-three-disciplines",
+    used_for: "~15% swim / 55% bike / 30% run by time; protect the run; bike carries most volume",
+  },
+  {
+    id: "usat-bricks",
+    title: "How to Use Brick Workouts in Triathlon Training (USA Triathlon)",
+    url: "https://www.usatriathlon.org/articles/training-tips/how-to-use-brick-workouts-in-triathlon-training",
+    used_for: "Bike→run bricks to practise T2 and race feel",
+  },
+  {
+    id: "triathlete-bricks",
+    title: "How Often Should You Run Off the Bike in Triathlon Training?",
+    url: "https://www.triathlete.com/training/dear-coach-how-often-should-i-run-off-the-bike/",
+    used_for: "About one brick most build/peak weeks for long-course; short mid-week option + longer weekend brick",
+  },
+  {
+    id: "tritanium-couch",
+    title: "Couch to Half Ironman (70.3) Training Plan",
+    url: "https://tri-tanium.com/resources/couch-to-70-3-training-plan/",
+    used_for: "Frequency first, then volume, then intensity; 3–4 week blocks with recovery",
+  },
+];
 
 const pgPad = (n) => String(n).padStart(2, "0");
 const pgParse = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
@@ -116,7 +221,65 @@ function longCap(sport, runKm, weekly) {
   return Math.max(8, Math.round((runKm || 8) * 1.2));
 }
 
-function phaseBlocks(n) {
+function triDistanceBand(distances = {}) {
+  const runKm = Number(distances.run) || 0;
+  const bikeKm = Number(distances.bike) || 0;
+  const swimM = Number(distances.swim) || 0;
+  if (runKm >= 40 || bikeKm >= 160 || swimM >= 3500) return "full";
+  if (runKm >= 18 || bikeKm >= 70 || swimM >= 1700) return "half";
+  if (runKm >= 8 || bikeKm >= 35 || swimM >= 1200) return "olympic";
+  return "sprint";
+}
+
+function phaseBlocks(n, opts = {}) {
+  const sport = opts.sport || "run";
+  const experience = opts.experience || "intermediate";
+  const band = sport === "triathlon" ? triDistanceBand(opts.distances) : null;
+  const longCourse = band === "half" || band === "full";
+  const beginnerLong = sport === "triathlon" && longCourse && experience === "beginner";
+  const advancedLong = sport === "triathlon" && longCourse && experience === "advanced";
+
+  // Triathlon: Triathlete/Garmin-style base → build → peak → 8–14 day taper.
+  // Inexperienced long-course athletes get a longer base and a shorter build.
+  if (sport === "triathlon") {
+    const taperW = n >= 10 ? 2 : Math.max(1, Math.min(2, n - 3));
+    if (n >= 18) {
+      const rebuild = beginnerLong ? Math.round(n * 0.12) : Math.round(n * 0.1);
+      const base = beginnerLong ? Math.round(n * 0.38) : advancedLong ? Math.round(n * 0.28) : Math.round(n * 0.34);
+      const build = beginnerLong ? Math.round(n * 0.2) : advancedLong ? Math.round(n * 0.28) : Math.round(n * 0.24);
+      const peak = Math.max(2, n - rebuild - base - build - taperW);
+      return [
+        { name: "Rebuild", weeks: Math.max(1, rebuild) },
+        { name: "Base", weeks: Math.max(4, base) },
+        { name: "Build", weeks: Math.max(3, build) },
+        { name: "Peak", weeks: Math.max(2, peak) },
+        { name: "Taper", weeks: taperW },
+      ];
+    }
+    if (n >= 12) {
+      const base = beginnerLong ? Math.round(n * 0.45) : advancedLong ? Math.round(n * 0.32) : Math.round(n * 0.4);
+      const build = beginnerLong ? Math.round(n * 0.22) : advancedLong ? Math.round(n * 0.32) : Math.round(n * 0.28);
+      const peak = Math.max(1, n - base - build - taperW);
+      return [
+        { name: "Base", weeks: Math.max(4, base) },
+        { name: "Build", weeks: Math.max(3, build) },
+        { name: "Peak", weeks: Math.max(1, peak) },
+        { name: "Taper", weeks: taperW },
+      ];
+    }
+    if (n >= 8) {
+      return [
+        { name: "Base", weeks: Math.max(3, Math.round(n * 0.4)) },
+        { name: "Build", weeks: Math.max(2, Math.round(n * 0.35)) },
+        { name: "Taper", weeks: Math.max(1, taperW) },
+      ];
+    }
+    return [
+      { name: "Build", weeks: Math.max(3, n - 2) },
+      { name: "Taper", weeks: Math.max(1, Math.min(2, n - 3)) },
+    ];
+  }
+
   if (n >= 18) return [
     { name: "Rebuild", weeks: Math.round(n * 0.16) },
     { name: "Base", weeks: Math.round(n * 0.32) },
@@ -136,8 +299,29 @@ function phaseBlocks(n) {
   ];
 }
 
-function assignPhases(n) {
-  const blocks = phaseBlocks(n);
+function phaseFocus(name, sport, band) {
+  if (sport === "triathlon") {
+    const long = band === "half" || band === "full";
+    if (name === "Rebuild") return "Ease back in: frequency over duration, technique and strength";
+    if (name === "Base") {
+      return long
+        ? "Aerobic base across swim/bike/run — mostly easy volume, form work, early short bricks"
+        : "Build consistency and aerobic endurance across all three sports";
+    }
+    if (name === "Build") return "Add race-specific intensity, longer key sessions, and weekly bike→run bricks";
+    if (name === "Peak") return "Highest race-specific load: long bricks, fueling practice, then protect recovery";
+    if (name === "Taper") return "Cut volume ~40–60%, keep session frequency and short race-pace reminders";
+  }
+  if (name === "Taper") return "Freshen up for race week";
+  if (name === "Peak") return "Highest load, then recover";
+  if (name === "Build") return "Quality + longer key session";
+  if (name === "Rebuild") return "Ease back into training";
+  return "Consistency and aerobic base";
+}
+
+function assignPhases(n, opts = {}) {
+  const blocks = phaseBlocks(n, opts);
+  const band = opts.sport === "triathlon" ? triDistanceBand(opts.distances) : null;
   const phases = [];
   let used = 0;
   blocks.forEach((b, i) => {
@@ -146,22 +330,38 @@ function assignPhases(n) {
     const len = i === blocks.length - 1 ? remaining : Math.min(remaining - (left - 1), Math.max(1, b.weeks));
     const from = used + 1;
     const to = used + len;
-    phases.push({ name: b.name, from, to, focus: b.name === "Taper" ? "Freshen up for race week" : b.name === "Peak" ? "Highest load, then recover" : b.name === "Build" ? "Quality + longer key session" : "Consistency and aerobic base" });
+    phases.push({
+      name: b.name,
+      from,
+      to,
+      focus: phaseFocus(b.name, opts.sport, band),
+    });
     used = to;
   });
   return phases;
 }
 
-function weekTargets(n, startKm, peakKm, taperFrom) {
+function weekTargets(n, startKm, peakKm, taperFrom, opts = {}) {
+  const sport = opts.sport || "run";
+  // Scientific Triathlon: ~40–60% volume cut into race week for triathlon;
+  // keep a steeper early taper drop than a linear cut.
+  const raceFloor = sport === "triathlon"
+    ? Math.max(6, Math.round(peakKm * 0.42))
+    : Math.max(6, Math.round(startKm * 0.45));
+  const taperStartFrac = sport === "triathlon" ? 0.72 : 0.78;
+  const taperEndFrac = sport === "triathlon" ? 0.48 : 0.5;
   const out = [];
   for (let i = 1; i <= n; i++) {
     if (i === n) {
-      out.push(Math.max(6, Math.round(startKm * 0.45)));
+      out.push(raceFloor);
       continue;
     }
     if (i >= taperFrom) {
       const t = (i - taperFrom + 1) / Math.max(1, n - taperFrom);
-      out.push(Math.round(peakKm * (0.78 - t * 0.28)));
+      // Fast early decay, then flatter — approximate exponential taper shape.
+      const decay = 1 - Math.exp(-2.2 * t);
+      const frac = taperStartFrac - decay * (taperStartFrac - taperEndFrac);
+      out.push(Math.round(peakKm * frac));
       continue;
     }
     const buildN = taperFrom - 1;
@@ -176,18 +376,48 @@ function weekTargets(n, startKm, peakKm, taperFrom) {
 function swimLabel(sport, phase, swimM) {
   if (sport === "run" || sport === "bike") return "—";
   if (sport === "swim") return `${Math.max(1, Math.round((swimM || 1500) / 800))} sessions`;
-  if (phase === "Taper") return "1×25–35'";
-  if (phase === "Peak") return "2×40–50'";
-  return "2×35–45'";
+  // Triathlon: keep swim frequency (~3×) even in taper; shorten duration.
+  if (phase === "Taper") return "2–3×25–35' (keep feel)";
+  if (phase === "Peak") return swimM >= 3000 ? "3×45–60'" : "3×40–50'";
+  if (phase === "Build") return swimM >= 1700 ? "3×40–50'" : "2–3×35–45'";
+  if (phase === "Rebuild") return "2×30–40' technique";
+  return swimM >= 1700 ? "3×35–45' technique + endurance" : "2–3×30–40'";
 }
 
 function bikeLabel(sport, phase, bikeKm) {
   if (sport === "run" || sport === "swim") return "—";
   if (sport === "bike") return phase === "Taper" ? "Easy spin" : "Key ride + easy";
-  if (phase === "Taper") return "40–60' spin";
-  if (bikeKm >= 160) return "2–4 h easy";
-  if (bikeKm >= 80) return "90–150' easy";
-  return "45–75' easy";
+  if (phase === "Taper") return "2×30–50' spin + short race-pace opens";
+  if (phase === "Peak") {
+    if (bikeKm >= 160) return "Long 3–5 h + mid-week quality";
+    if (bikeKm >= 80) return "Long 2–3.5 h + mid-week quality";
+    return "Long 75–120' + mid-week quality";
+  }
+  if (phase === "Build") {
+    if (bikeKm >= 160) return "Long 2.5–4 h + tempo/sweet-spot";
+    if (bikeKm >= 80) return "Long 90–180' + tempo work";
+    return "Long 60–90' + steady quality";
+  }
+  if (phase === "Rebuild") return "Easy aerobic rides, build frequency";
+  if (bikeKm >= 160) return "2–4 h easy aerobic";
+  if (bikeKm >= 80) return "90–150' easy aerobic";
+  return "45–75' easy aerobic";
+}
+
+function brickLabel(phase, band, wk) {
+  if (phase === "Taper") return "Short brick: easy bike + 8–12' run";
+  if (phase === "Peak") {
+    if (band === "full") return "Race-sim brick: long ride + 25–40' run";
+    if (band === "half") return "Race-sim brick: 2–3 h bike + 20–35' run";
+    return "Brick: 60–90' bike + 15–25' run";
+  }
+  if (phase === "Build") {
+    if (band === "half" || band === "full") return "Brick: 75–120' bike + 15–25' easy run";
+    return "Brick: 45–75' bike + 10–20' run";
+  }
+  // Base / Rebuild: infrequent short bricks
+  if (wk % 2 === 0) return "Easy brick every other week: 45–75' bike + 10–15' run";
+  return null;
 }
 
 function splitRunKm(total, longKm, hasQuality, nDays) {
@@ -215,7 +445,12 @@ function runDaySlots(nDays) {
 }
 
 function normalizeWeekdays(list, fallback = []) {
-  const raw = (Array.isArray(list) ? list : String(list || "").split(","))
+  const parts = Array.isArray(list)
+    ? list
+    : String(list ?? "").split(",");
+  const raw = parts
+    .map((x) => (typeof x === "string" ? x.trim() : x))
+    .filter((x) => x !== "" && x != null)
     .map(Number)
     .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
   const uniq = [...new Set(raw)].sort((a, b) => a - b);
@@ -228,13 +463,37 @@ window.defaultTrainingBlocks = function defaultTrainingBlocks(sport, recDays, wa
   const n = Math.max(2, Math.min(6, Number(recDays) || 3));
   const run = free((sport === "run" || sport === "triathlon") ? runDaySlots(n) : []);
   const strength = wantStrength && run.length ? free([run.includes(0) ? 0 : run[0]]) : [];
-  const swim = free(sport === "triathlon"
-    ? [1, 2, 3].filter((i) => !run.includes(i)).slice(0, 2)
-    : sport === "swim" ? [0, 2, 5] : []);
-  const bike = free(sport === "triathlon"
-    ? [run.includes(6) ? 6 : 6]
-    : sport === "bike" ? [0, 2, 5] : []);
-  return { run, strength, swim, bike, busy: [...busy].sort((a, b) => a - b) };
+  // Triathlon week template (Triathlete 20-week / ~15-55-30 time split):
+  // ~3 swim (frequency for technique), 2–3 bike (volume on the bike), run days as chosen.
+  // Prefer Tue/Thu/Sat swim and Wed + weekend bike so hard sessions are spaced.
+  let swim = [];
+  let bike = [];
+  if (sport === "triathlon") {
+    // Prefer swim frequency (~3×/week). Doubling with an easy run is normal; avoid the long-run day when possible.
+    const longRun = run.includes(5) ? 5 : (run[run.length - 1] ?? null);
+    const swimPrefer = [1, 3, 4, 2, 0].filter((i) => i !== longRun);
+    swim = free(swimPrefer).slice(0, 3);
+    if (swim.length < 3) {
+      const more = free([0, 1, 2, 3, 4, 6]).filter((d) => !swim.includes(d) && d !== longRun);
+      swim = [...swim, ...more].slice(0, 3);
+    }
+    // Weekend long bike is the key endurance session; same-day swim/run is fine for bricks.
+    const longBikeDay = free([6, 0]).find((d) => d != null) ?? free([4, 3, 2])[0];
+    const midBike = free([2, 3, 1, 4]).find((d) => d !== longBikeDay && !run.includes(d))
+      ?? free([2, 3, 1, 4]).find((d) => d !== longBikeDay);
+    bike = [...new Set([longBikeDay, midBike].filter((d) => d != null))];
+    // Optional third easy spin if the athlete has room (higher run-day athletes).
+    if (n >= 5) {
+      const extra = free([0, 1, 2, 3, 4]).find((d) => !bike.includes(d) && !run.includes(d) && !swim.includes(d));
+      if (extra != null) bike.push(extra);
+    }
+  } else if (sport === "swim") {
+    swim = free([0, 2, 5]);
+  } else if (sport === "bike") {
+    bike = free([0, 2, 5]);
+  }
+  const long = run.includes(5) ? 5 : (run.length ? run[run.length - 1] : null);
+  return { run, strength, swim, bike, busy: [...busy].sort((a, b) => a - b), long };
 };
 
 window.trainingOverlapNotes = function trainingOverlapNotes(sport, blocks) {
@@ -298,12 +557,140 @@ window.inferPresetFromEvent = function inferPresetFromEvent(sport, ev) {
   return match ? match.id : (presets.some((p) => p.id === "custom") ? "custom" : "");
 };
 
-window.experienceFromWeeklyKm = function experienceFromWeeklyKm(km) {
+// Sport-specific weekly volume → experience. Cycling 50 km/week is still beginner;
+// swimming uses km of swimming (e.g. 2 km/week beginner, 6+ advanced).
+window.experienceFromWeeklyKm = function experienceFromWeeklyKm(km, sport = "run") {
   const n = Number(km);
   if (!(n > 0)) return "intermediate";
+  if (sport === "bike") {
+    if (n < 100) return "beginner";
+    if (n < 180) return "intermediate";
+    return "advanced";
+  }
+  if (sport === "swim") {
+    if (n < 3) return "beginner";
+    if (n < 6) return "intermediate";
+    return "advanced";
+  }
+  // run + triathlon (run leg volume)
   if (n < 25) return "beginner";
   if (n < 50) return "intermediate";
   return "advanced";
+};
+
+window.experienceThresholds = function experienceThresholds(sport = "run") {
+  if (sport === "bike") return { beginner: 100, intermediate: 180, unit: "km/week on the bike" };
+  if (sport === "swim") return { beginner: 3, intermediate: 6, unit: "km/week in the pool" };
+  return { beginner: 25, intermediate: 50, unit: "km/week of running" };
+};
+
+window.needsDedicatedLongDay = function needsDedicatedLongDay(sport, presetId, custom) {
+  if (!presetId || !(sport === "run" || sport === "triathlon")) return false;
+  try {
+    const d = resolveDistances(sport, presetId, custom || {});
+    return (d.run || 0) >= 16;
+  } catch {
+    return false;
+  }
+};
+
+window.eventReachability = function eventReachability({
+  sport,
+  presetId,
+  custom,
+  weeklyKm,
+  eventDate,
+  goalType,
+} = {}) {
+  if (goalType === "fitness" || !presetId) return { level: "ok", message: "", requireAck: true };
+  let distances;
+  try {
+    distances = resolveDistances(sport, presetId, custom || {});
+  } catch {
+    return { level: "ok", message: "", requireAck: true };
+  }
+  const weekly = Number(weeklyKm);
+  if (!(weekly > 0)) return { level: "ok", message: "", requireAck: true };
+
+  const today = new Date();
+  const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const race = eventDate ? pgParse(eventDate) : null;
+  const weeks = race && !Number.isNaN(race.getTime())
+    ? Math.max(1, Math.floor(pgDays(pgMonday(todayDate), pgMonday(race)) / 7) + 1)
+    : null;
+
+  const runKm = distances.run || 0;
+  const bikeKm = distances.bike || 0;
+  const swimM = distances.swim || 0;
+  let level = "ok";
+  let message = "";
+  let minWeekly = null;
+
+  if (sport === "run" || sport === "triathlon") {
+    if (runKm >= 42) {
+      minWeekly = 35;
+      if (weekly < 25 || (weeks != null && weeks < 12 && weekly < 40)) level = "hard";
+      else if (weekly < 35) level = "warn";
+      message = level === "hard"
+        ? `A marathon-distance event from about ${weekly} km/week is a big jump${weeks != null ? ` with only ~${weeks} weeks` : ""}. Most plans want at least ~${minWeekly} km/week already, and enough time to build.`
+        : `Marathon distance from ${weekly} km/week is ambitious. Aim to build toward at least ~${minWeekly} km/week before race day.`;
+    } else if (runKm >= 21) {
+      minWeekly = 25;
+      if (weekly < 15 || (weeks != null && weeks < 8 && weekly < 25)) level = "hard";
+      else if (weekly < 22) level = "warn";
+      message = level === "hard"
+        ? `A half-marathon / 70.3 run leg from about ${weekly} km/week is tough${weeks != null ? ` in ~${weeks} weeks` : ""}. A safer base is closer to ${minWeekly} km/week.`
+        : `Half-marathon distance from ${weekly} km/week needs steady building. Plan for at least ~${minWeekly} km/week near peak.`;
+    } else if (runKm >= 16) {
+      minWeekly = 20;
+      if (weekly < 12) level = "warn";
+      message = `A 10-mile race from ${weekly} km/week is doable if you build carefully toward ~${minWeekly} km/week.`;
+    } else if (runKm >= 10 && weekly < 10) {
+      level = "warn";
+      minWeekly = 15;
+      message = `A 10K from ${weekly} km/week is still reachable, but keep most running easy and build toward ~${minWeekly} km/week.`;
+    }
+  } else if (sport === "bike") {
+    if (bikeKm >= 180) {
+      minWeekly = 150;
+      if (weekly < 80) level = "hard";
+      else if (weekly < 120) level = "warn";
+      message = `A ${bikeKm} km ride from ${weekly} km/week on the bike is ${level === "hard" ? "a very large jump" : "ambitious"}. Many riders sit near ${minWeekly}+ km/week before that distance.`;
+    } else if (bikeKm >= 90) {
+      minWeekly = 80;
+      if (weekly < 40) level = "hard";
+      else if (weekly < 60) level = "warn";
+      message = `A ${bikeKm} km target from ${weekly} km/week needs a solid long-ride progression. Aim toward ~${minWeekly} km/week.`;
+    }
+  } else if (sport === "swim") {
+    if (swimM >= 5000) {
+      minWeekly = 6;
+      if (weekly < 3) level = "hard";
+      else if (weekly < 5) level = "warn";
+      message = `A ${swimM / 1000} km swim from ${weekly} km/week is demanding. Build toward ~${minWeekly} km/week in the water.`;
+    } else if (swimM >= 1900 && weekly < 2) {
+      level = "warn";
+      minWeekly = 3;
+      message = `Open-water race distance from ${weekly} km/week is a stretch — build consistency toward ~${minWeekly} km/week.`;
+    }
+  }
+
+  if (sport === "triathlon" && (bikeKm >= 90 || swimM >= 1900)) {
+    if (level === "ok" && weekly < 30) {
+      level = "warn";
+      message = `Multi-sport volume from ${weekly} km/week of running is light for a 70.3+. Research-based weeks often land near ~10–12+ total hours (roughly 15% swim / 55% bike / 30% run by time), so expect more load than the run number alone.`;
+    } else if (level === "ok" && weeks != null && weeks < 16 && weekly < 35) {
+      level = "warn";
+      message = `A 70.3+ in ~${weeks} weeks from ${weekly} km/week run volume is tight. Many first-timer plans use 16–20 weeks with a long aerobic base before race-specific work.`;
+    }
+  }
+
+  return {
+    level,
+    message: level === "ok" ? "" : message,
+    minWeekly,
+    requireAck: true,
+  };
 };
 
 function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts = {}) {
@@ -348,7 +735,10 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   const busySet = new Set(normalizeWeekdays(opts.busyWeekdays, []));
   const freeDays = (list, fallback) => normalizeWeekdays(list, fallback).filter((d) => !busySet.has(d));
   const runIdx = freeDays(opts.runWeekdays, runDaySlots(nDays));
-  const longIdx = runIdx.includes(5) ? 5 : (runIdx[runIdx.length - 1] ?? 5);
+  const preferredLong = Number.isInteger(Number(opts.longWeekday)) ? Number(opts.longWeekday) : null;
+  const longIdx = preferredLong != null && runIdx.includes(preferredLong)
+    ? preferredLong
+    : (runIdx.includes(5) ? 5 : (runIdx[runIdx.length - 1] ?? 5));
   const qualityIdx = hasQuality
     ? (runIdx.includes(2) && 2 !== longIdx ? 2 : runIdx.find((i) => i !== longIdx && i !== 0))
     : null;
@@ -359,11 +749,17 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
     : [];
   const swimDays = freeDays(
     opts.swimWeekdays,
-    sport === "swim" ? [0, 2, 5] : sport === "triathlon" ? [1, 2, 3].filter((i) => !runIdx.includes(i)).slice(0, 2) : []
+    sport === "swim" ? [0, 2, 5]
+      : sport === "triathlon"
+        ? [1, 3, 5].filter((i) => !runIdx.includes(i)).concat([1, 2, 3, 4].filter((i) => !runIdx.includes(i))).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3)
+        : []
   );
   const bikeDays = freeDays(
     opts.bikeWeekdays,
-    sport === "bike" ? [0, 2, 5] : sport === "triathlon" ? [6] : []
+    sport === "bike" ? [0, 2, 5]
+      : sport === "triathlon"
+        ? [6, 2].filter((i, idx, arr) => arr.indexOf(i) === idx)
+        : []
   );
 
   const addOn = (i, extra) => {
@@ -381,11 +777,36 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   if (qualityIdx != null && split.quality) set(qualityIdx, "quality", `Quality ${split.quality}`, split.quality);
   if (longIdx != null) set(longIdx, "long", `Long ${longKm} easy`, longKm);
 
+  const band = sport === "triathlon" ? triDistanceBand(distances) : null;
+  const wk = Number(opts.weekNum) || 1;
+  const brick = sport === "triathlon" ? brickLabel(phase, band, wk) : null;
+  // Prefer attaching the brick to the longest bike day (usually weekend).
+  const brickBikeDay = bikeDays.length
+    ? (bikeDays.includes(6) ? 6 : bikeDays.includes(0) ? 0 : bikeDays[bikeDays.length - 1])
+    : null;
+
   swimDays.forEach((i, n) => {
-    addOn(i, { kind: "swim", label: n === 0 ? "Swim technique" : "Walk + swim", short: n === 0 ? "swim" : "swim", km: undefined });
+    const technique = phase === "Base" || phase === "Rebuild" || n === 0;
+    const label = technique
+      ? (phase === "Taper" ? "Swim: short technique + feel" : "Swim technique + easy endurance")
+      : (phase === "Build" || phase === "Peak" ? "Swim endurance / race-pace sets" : "Swim aerobic");
+    addOn(i, { kind: "swim", label, short: "swim", km: undefined });
   });
-  bikeDays.forEach((i) => {
-    addOn(i, { kind: "bike", label: bikeLabel(sport, phase, distances.bike), short: "bike", km: undefined });
+  bikeDays.forEach((i, n) => {
+    const isKey = i === brickBikeDay || n === bikeDays.length - 1;
+    let label;
+    if (sport === "triathlon" && brick && i === brickBikeDay) {
+      label = brick;
+    } else if (phase === "Taper") {
+      label = isKey ? "Easy spin + short opens" : "Recovery spin";
+    } else if (phase === "Build" || phase === "Peak") {
+      label = isKey
+        ? (band === "full" || band === "half" ? "Long aerobic / race-pace ride" : "Key ride")
+        : "Steady / sweet-spot ride";
+    } else {
+      label = isKey ? bikeLabel(sport, phase, distances.bike) : "Easy aerobic ride";
+    }
+    addOn(i, { kind: "bike", label, short: i === brickBikeDay && brick ? "brick" : "bike", km: undefined });
   });
   strengthDays.forEach((i) => {
     addOn(i, { kind: days[i][0] === "rest" ? "run" : days[i][0], label: "Strength", short: "strength", km: days[i][2] });
@@ -396,14 +817,36 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
 const EXPERIENCE_LEVELS = ["beginner", "intermediate", "advanced"];
 
 window.trainingAdvice = function trainingAdvice(sport, presetId, custom, experience) {
-  let runKm = 0;
+  let distances = { run: 0, bike: 0, swim: 0 };
   if (presetId) {
-    try { runKm = resolveDistances(sport, presetId, custom || {}).run || 0; } catch { runKm = 0; }
+    try { distances = resolveDistances(sport, presetId, custom || {}); } catch { /* keep zeros */ }
   }
+  const runKm = distances.run || 0;
   const isRunSport = sport === "run" || sport === "triathlon";
   const level = EXPERIENCE_LEVELS.includes(experience) ? experience : "intermediate";
   let minDays = 3, recDays = 3, event = "this event";
-  if (runKm >= 42 || presetId === "volledige") {
+  if (sport === "triathlon") {
+    const band = triDistanceBand(distances);
+    if (band === "full" || presetId === "volledige") {
+      event = "a full-distance triathlon";
+      if (level === "beginner") { minDays = 3; recDays = 4; }
+      else if (level === "advanced") { minDays = 4; recDays = 5; }
+      else { minDays = 3; recDays = 4; }
+    } else if (band === "half" || presetId === "halve") {
+      event = "a 70.3 / half triathlon";
+      if (level === "beginner") { minDays = 3; recDays = 3; }
+      else if (level === "advanced") { minDays = 4; recDays = 4; }
+      else { minDays = 3; recDays = 4; }
+    } else if (band === "olympic" || presetId === "kwart") {
+      event = "an Olympic / kwart triathlon";
+      minDays = 3;
+      recDays = level === "advanced" ? 4 : 3;
+    } else {
+      event = "a sprint triathlon";
+      minDays = 3;
+      recDays = 3;
+    }
+  } else if (runKm >= 42 || presetId === "volledige") {
     event = "a marathon or long-course triathlon";
     if (level === "beginner") { minDays = 3; recDays = 4; }
     else if (level === "advanced") { minDays = 5; recDays = 6; }
@@ -432,7 +875,12 @@ window.trainingAdvice = function trainingAdvice(sport, presetId, custom, experie
   }
   const strengthStrong = runKm >= 21 || sport === "triathlon";
   const strengthRecommended = strengthStrong || runKm >= 16;
-  const levelLabel = level === "beginner" ? "a beginner" : level === "advanced" ? "an advanced runner" : "an intermediate runner";
+  const levelLabel = sport === "triathlon"
+    ? (level === "beginner" ? "a beginner triathlete" : level === "advanced" ? "an advanced triathlete" : "an intermediate triathlete")
+    : (level === "beginner" ? "a beginner" : level === "advanced" ? "an advanced runner" : "an intermediate runner");
+  const triHint = sport === "triathlon" && presetId
+    ? ` For ${event}, aim for ~3 swims (technique needs frequency), most volume on the bike (~55% of training time), and protect the run (~30%). Build frequency first, then duration, then intensity. Expect one bike→run brick most build/peak weeks.`
+    : "";
   return {
     minDays,
     recDays,
@@ -443,11 +891,13 @@ window.trainingAdvice = function trainingAdvice(sport, presetId, custom, experie
     daysHint: !isRunSport ? ""
       : !presetId ? "Pick a distance and your current level to see a research-based week."
       : recDays > minDays
-        ? `For ${event}, ${levelLabel} usually needs ${minDays} run days as a minimum — ${recDays} is better, so each run stays shorter. Beginners can sit at the low end while volume is still small; advanced runners add days rather than making each run much longer.`
-        : `For ${event}, ${levelLabel} is fine on ${recDays} run days a week. Extra easy days help if the extra kilometres stay easy.`,
+        ? `For ${event}, ${levelLabel} usually needs ${minDays} run days as a minimum — ${recDays} is better, so each run stays shorter. Beginners can sit at the low end while volume is still small; advanced athletes add days rather than making each run much longer.${triHint}`
+        : `For ${event}, ${levelLabel} is fine on ${recDays} run days a week. Extra easy days help if the extra kilometres stay easy.${triHint}`,
     strengthHint: !presetId ? "Pick a distance first. Strength matters more as the race gets longer."
       : strengthStrong
-        ? "Strongly recommended at this distance: 1–2 short sessions a week cut overuse injuries by about half and improve running economy."
+        ? sport === "triathlon"
+          ? "Strongly recommended for triathlon: 1–2 short sessions in base (injury resilience), then maintain in build/peak."
+          : "Strongly recommended at this distance: 1–2 short sessions a week cut overuse injuries by about half and improve running economy."
         : strengthRecommended
           ? "Recommended as mileage builds: a short session after an easy run helps tendons, hips and running economy."
           : "Optional at this distance. Still useful if you have a history of niggles.",
@@ -558,12 +1008,28 @@ function buildRoadmap(after, race, eventName) {
 function defaultPaces(sport) {
   if (sport === "swim") return [["Easy", "Conversational effort", "Most of the volume"], ["Threshold", "Controlled hard", "Short sets"]];
   if (sport === "bike") return [["Easy", "Z2 / can talk", "Most rides"], ["Long", "Steady endurance", "Weekend ride"]];
+  if (sport === "triathlon") {
+    return [
+      ["Easy / aerobic", "Can talk in full sentences (Z1–Z2)", "Most swim/bike/run volume — especially base"],
+      ["Steady / tempo", "Controlled hard, ~70–85% threshold", "Build-phase bike/run; beginner 70.3 often stays here"],
+      ["Race pace", "Sustainable 70.3 / race effort", "Short sets in build; longer bricks in peak"],
+      ["Brick run", "Easy→steady off the bike", "Practise T2; keep early minutes relaxed"],
+      ["Strides / opens", "Fast but relaxed", "Keep neuromuscular feel in taper"],
+    ];
+  }
   return [
     ["Easy / long", "Comfortably conversational", "Most km"],
     ["Steady / cruise", "Controlled, not racing", "Mid-week quality"],
     ["Race pace", "Goal event effort", "Short segments late in the plan"],
     ["Strides", "Fast but relaxed", "6–8 × 20 sec"],
   ];
+}
+
+function researchForSport(sport) {
+  const all = window.TRAINING_RESEARCH || [];
+  if (sport === "triathlon") return all.slice();
+  // Shared endurance ideas still apply to single-sport plans.
+  return all.filter((s) => ["triathlete-periodization", "scientific-taper", "garmin-periodisation"].includes(s.id));
 }
 
 window.generateTrainingPlan = function generateTrainingPlan(input) {
@@ -576,37 +1042,47 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
   if (goalType === "time") {
-    sport = "run";
+    if (!["run", "swim", "bike", "triathlon"].includes(sport)) throw new Error("Choose an event type.");
     const customTime = String(input.customTime || "").trim();
-    const customKm = Number(input.custom?.run);
     const isCustom = input.preset === "custom" || input.timeGoal === "custom";
     if (isCustom) {
       preset = input.preset === "custom" ? "custom" : input.preset;
-      if (preset === "custom" && !(customKm > 0)) throw new Error("Enter the run distance in km.");
       if (!customTime) throw new Error("Enter a target time.");
       eventName = eventName || (typeof window.timeGoalName === "function"
-        ? window.timeGoalName("custom", { time: customTime, run: customKm, preset })
+        ? window.timeGoalName("custom", {
+          time: customTime,
+          run: input.custom?.run,
+          swim: input.custom?.swim,
+          bike: input.custom?.bike,
+          preset,
+          sport,
+        })
         : customTime);
     } else {
       const goal = (window.TIME_GOALS || []).find((g) => g.id === input.timeGoal);
       if (!goal) throw new Error("Choose a time goal.");
+      if (goal.sport && goal.sport !== sport) throw new Error("Choose a time goal for this event type.");
       preset = goal.preset;
-      eventName = eventName || (typeof window.timeGoalName === "function" ? window.timeGoalName(goal) : goal.label);
+      eventName = eventName || (typeof window.timeGoalName === "function"
+        ? window.timeGoalName(goal, { sport })
+        : goal.label);
     }
   }
   if (goalType === "fitness") {
     if (!["run", "swim", "bike", "triathlon"].includes(sport)) throw new Error("Choose a focus.");
     preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
     eventName = eventName || "General fitness";
-    const weeks = (window.FITNESS_WEEKS || [8, 12, 16]).includes(Number(input.fitnessWeeks))
-      ? Number(input.fitnessWeeks)
-      : 12;
+    const weeksIn = Number(input.fitnessWeeks);
+    const weeks = weeksIn >= 4 && weeksIn <= 32 ? Math.round(weeksIn) : 12;
     if (!eventDate) eventDate = pgYmd(pgAdd(todayDate, weeks * 7));
   }
 
   const distances = resolveDistances(sport, preset, input.custom || {});
   const weekly = Number(input.weeklyKm);
-  if (!(weekly > 0) || weekly > 200) throw new Error("Enter your current weekly kilometres (1–200).");
+  const weeklyMax = sport === "bike" ? 500 : sport === "swim" ? 40 : 200;
+  if (!(weekly > 0) || weekly > weeklyMax) {
+    throw new Error(`Enter your current weekly kilometres (1–${weeklyMax}).`);
+  }
   eventName = eventName || distances.label;
   const race = pgParse(eventDate);
   if (Number.isNaN(race.getTime())) throw new Error(goalType === "time" ? "Pick a target date." : "Pick an event date.");
@@ -636,22 +1112,26 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     ? Math.max(2, Math.min(6, runWeekdays.length || Number(input.runDays) || advice.recDays))
     : null;
   if (wantsRunDays && !runWeekdays.length && !(Number(input.runDays) > 0)) throw new Error("Choose which days you want to run.");
+  const needsLong = typeof window.needsDedicatedLongDay === "function"
+    && window.needsDedicatedLongDay(sport, preset, input.custom || {});
+  let longWeekday = Number.isInteger(Number(input.longWeekday)) ? Number(input.longWeekday) : null;
+  if (needsLong) {
+    if (longWeekday == null || !runWeekdays.includes(longWeekday)) {
+      throw new Error("Tap a run day twice to mark your long-run day before creating the plan.");
+    }
+  } else if (longWeekday != null && !runWeekdays.includes(longWeekday)) {
+    longWeekday = null;
+  }
 
   const peak = peakVolume(sport, weekly, distances.run || 0);
-  const phases = assignPhases(n);
+  const phaseOpts = { sport, experience, distances };
+  const phases = assignPhases(n, phaseOpts);
   const taper = phases.find((p) => p.name === "Taper");
-  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n - 1);
+  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n - 1, { sport });
   const cap = longCap(sport, distances.run || 0, weekly);
   const raceDay = (race.getDay() + 6) % 7;
-  const dayOpts = {
-    runDays: runDaysN || 3,
-    strength,
-    runWeekdays,
-    strengthWeekdays,
-    swimWeekdays,
-    bikeWeekdays,
-    busyWeekdays,
-  };
+  const sources = researchForSport(sport);
+  const band = sport === "triathlon" ? triDistanceBand(distances) : null;
 
   const weeks = targets.map((km, i) => {
     const wk = i + 1;
@@ -664,10 +1144,35 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     if (wantsRunDays) extras.push(`${runDaysN} run days`);
     if (strength && wantsRunDays) extras.push("strength after an easy run");
     if (busyWeekdays.length) extras.push(`${busyWeekdays.length} busy day${busyWeekdays.length > 1 ? "s" : ""}/week`);
+    if (sport === "triathlon") extras.push("~3 swim / 2–3 bike, bricks in build–peak");
+    const dayOpts = {
+      runDays: runDaysN || 3,
+      strength,
+      runWeekdays,
+      strengthWeekdays,
+      swimWeekdays,
+      bikeWeekdays,
+      busyWeekdays,
+      longWeekday,
+      weekNum: wk,
+    };
     const days = daysFor(sport, phase.name, km, longKm, raceDay, isRaceWeek, { ...distances, label: eventName }, dayOpts);
     busyWeekdays.forEach((d) => {
       if (!isRaceWeek || d !== raceDay) days[d] = ["rest", "Busy"];
     });
+    const brick = sport === "triathlon" && !isRaceWeek ? brickLabel(phase.name, band, wk) : null;
+    let note;
+    if (wk === 1) {
+      note = sport === "triathlon"
+        ? `Built from ${weekly} km/week run volume toward ${eventName}${extras.length ? ` (${extras.join("; ")})` : ""}. Research-based triathlon periodization: frequency → volume → intensity, ~10% weekly load rise max, cutback every 4th week, and a sharper race taper.`
+        : `Built from ${weekly} km/week toward ${eventName}${extras.length ? `, ${extras.join(", ")}` : ""}. Weekly load rises about 10% max, with a cutback every 4th week.`;
+    } else if (brick && (phase.name === "Build" || phase.name === "Peak")) {
+      note = `Key transition work this week: ${brick}. Practise fueling on the long ride.`;
+    } else if (phase.name === "Taper" && wk === (taper ? taper.from : n - 1)) {
+      note = sport === "triathlon"
+        ? "Taper starts: cut volume sharply, keep swim/bike/run frequency, and include short race-pace reminders."
+        : "Taper starts: reduce volume, keep some sharpness.";
+    }
     return {
       wk,
       phase: phase.name,
@@ -676,7 +1181,7 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
       swim: swimLabel(sport, phase.name, distances.swim),
       bike: bikeLabel(sport, phase.name, distances.bike),
       focus: isFitness && wk === n ? "Keep the habit and finish the block easy" : isRaceWeek ? "Race week" : phase.focus,
-      note: wk === 1 ? `Built from ${weekly} km/week toward ${eventName}${extras.length ? `, ${extras.join(", ")}` : ""}. Weekly load rises about 10% max, with a cutback every 4th week.` : undefined,
+      note,
       days,
     };
   });
@@ -702,11 +1207,15 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     strength_weekdays: strengthWeekdays,
     swim_weekdays: swimWeekdays,
     bike_weekdays: bikeWeekdays,
-    notes: "",
+    long_weekday: longWeekday,
+    notes: sport === "triathlon"
+      ? "Triathlon plan uses researched periodization (base → build → peak → taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page."
+      : "",
     experience,
     phases,
     weeks,
     paces: defaultPaces(sport),
+    sources,
     roadmap: buildRoadmap(after, race, eventName),
   };
 };

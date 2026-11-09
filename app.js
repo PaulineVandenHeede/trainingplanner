@@ -1692,6 +1692,8 @@ function sizeUsernameInput(input) {
 }
 
 let GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+let STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+let STRAVA_CALLBACK_HANDLED = false;
 
 async function invokeGarmin(body) {
   const payload = body && body.action === "sync" ? { ...body, today: ymd(today()) } : body;
@@ -1708,9 +1710,31 @@ async function invokeGarmin(body) {
   return data;
 }
 
+async function invokeStrava(body) {
+  const { data, error } = await sb.functions.invoke("strava-sync", { body: body || {} });
+  if (error) {
+    let msg = error.message || "Strava request failed";
+    try {
+      const extra = error.context ? await error.context.json() : data;
+      if (extra?.error) msg = extra.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+function stravaRedirectUri() {
+  return `${location.origin}/connections`;
+}
+
+window.GARMIN_STATUS = GARMIN;
+window.STRAVA_STATUS = STRAVA;
+
 async function loadGarminStatus() {
   if (!CURRENT_USER_ID) {
     GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+    window.GARMIN_STATUS = GARMIN;
     return GARMIN;
   }
   try {
@@ -1731,8 +1755,120 @@ async function loadGarminStatus() {
       loaded: true,
     };
   }
+  window.GARMIN_STATUS = GARMIN;
   return GARMIN;
 }
+
+async function loadStravaStatus() {
+  if (!CURRENT_USER_ID) {
+    STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+    window.STRAVA_STATUS = STRAVA;
+    return STRAVA;
+  }
+  try {
+    const data = await invokeStrava({ action: "status" });
+    STRAVA = {
+      connected: !!data.connected,
+      lastSyncAt: data.lastSyncAt || null,
+      lastSyncStatus: data.lastSyncStatus || null,
+      lastError: data.lastError || null,
+      loaded: true,
+    };
+  } catch (err) {
+    STRAVA = {
+      connected: false,
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastError: err.message || "Could not load Strava status",
+      loaded: true,
+    };
+  }
+  window.STRAVA_STATUS = STRAVA;
+  return STRAVA;
+}
+
+async function maybeHandleStravaCallback() {
+  if (STRAVA_CALLBACK_HANDLED || !CURRENT_USER_ID) return false;
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  const state = params.get("state");
+  const oauthError = params.get("error");
+  if (!code && !oauthError) return false;
+  if (currentRoute() !== "connections") return false;
+  STRAVA_CALLBACK_HANDLED = true;
+  const clean = () => {
+    const url = new URL(location.href);
+    ["code", "state", "scope", "error", "error_description"].forEach((k) => url.searchParams.delete(k));
+    history.replaceState(null, "", url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : ""));
+  };
+  clean();
+  if (oauthError) {
+    toast(params.get("error_description") || "Strava authorization was cancelled.", true);
+    return true;
+  }
+  try {
+    await invokeStrava({
+      action: "exchange",
+      code,
+      state,
+      redirectUri: stravaRedirectUri(),
+    });
+    await loadStravaStatus();
+    toast("Strava connected. Sync to pull activities.");
+    render(true);
+  } catch (err) {
+    STRAVA.lastError = err.message || "Could not finish Strava connect";
+    STRAVA.loaded = true;
+    toast(STRAVA.lastError, true);
+    render(true);
+  }
+  return true;
+}
+
+window.refreshSetupConnections = async function refreshSetupConnections() {
+  await loadGarminStatus();
+  try {
+    ACTS = await loadActivities();
+    window._setupActs = ACTS;
+  } catch { /* keep whatever we have */ }
+  return GARMIN;
+};
+
+window.setupGarminSync = async function setupGarminSync({ permission = true } = {}) {
+  if (!permission) throw new Error("Permission needed to sync existing activities.");
+  if (!GARMIN.connected) {
+    await loadGarminStatus();
+    if (!GARMIN.connected) throw new Error("Connect Garmin first.");
+  }
+  const fullKey = `garmin-full-gear:${CURRENT_USER_ID || "anon"}`;
+  const full = !localStorage.getItem(fullKey);
+  const data = await invokeGarmin({ action: "sync", full });
+  if (full) localStorage.setItem(fullKey, "1");
+  GARMIN = {
+    connected: true,
+    lastSyncAt: data.lastSyncAt || new Date().toISOString(),
+    lastSyncStatus: data.status || null,
+    lastError: null,
+    loaded: true,
+  };
+  window.GARMIN_STATUS = GARMIN;
+  applyGarminContext(data);
+  ACTS = await loadActivities();
+  window._setupActs = ACTS;
+  const n = data.inserted || 0;
+  const msg = n
+    ? `Synced ${n} activit${n === 1 ? "y" : "ies"} from Garmin.`
+    : (data.total ? `Garmin sync complete — ${data.updated || 0} already known.` : "Garmin sync complete — nothing new in range.");
+  toast(msg);
+  const setupForm = document.querySelector(".setup-form");
+  if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
+    window.fillWeeklyFromSynced(setupForm, { force: true });
+  }
+  if (typeof window.paintSetupConnect === "function" && document.getElementById("setup-connect-body")) {
+    window.paintSetupConnect(setupForm);
+  }
+  return data;
+};
 
 function garminLastSyncLabel() {
   if (!GARMIN.lastSyncAt) return null;
@@ -1751,6 +1887,25 @@ function garminStatusLine() {
   if (GARMIN.lastError) return `Last sync failed${when ? ` (${when})` : ""}: ${GARMIN.lastError}`;
   if (GARMIN.lastSyncStatus) return `${when ? `Last sync ${when} · ` : ""}${GARMIN.lastSyncStatus}`;
   return "Connected. Sync to pull sessions from Garmin Connect.";
+}
+
+function stravaLastSyncLabel() {
+  if (!STRAVA.lastSyncAt) return null;
+  const day = short(parseDate(String(STRAVA.lastSyncAt).slice(0, 10)));
+  const time = String(STRAVA.lastSyncAt).includes("T") ? ` ${String(STRAVA.lastSyncAt).slice(11, 16)}` : "";
+  return `${day}${time}`;
+}
+
+function stravaStatusLine() {
+  if (!STRAVA.loaded) return "Checking connection…";
+  if (!STRAVA.connected) {
+    if (STRAVA.lastError) return STRAVA.lastError;
+    return "Not connected. Ask for the connect passcode, then authorize Strava.";
+  }
+  const when = stravaLastSyncLabel();
+  if (STRAVA.lastError) return `Last sync failed${when ? ` (${when})` : ""}: ${STRAVA.lastError}`;
+  if (STRAVA.lastSyncStatus) return `${when ? `Last sync ${when} · ` : ""}${STRAVA.lastSyncStatus}`;
+  return "Connected. Sync to pull sessions from Strava.";
 }
 
 function syncIconSvg() {
@@ -1804,6 +1959,35 @@ function renderGarminConnectionCard() {
     </section>`;
 }
 
+function renderStravaConnectionCard() {
+  const connected = STRAVA.connected;
+  return `
+    <section class="card conn-card">
+      <div class="card-head">
+        <div>
+          <div class="eyebrow">Service</div>
+          <h2>Strava</h2>
+          <p class="muted" style="margin:6px 0 0">Connect with a shared passcode. Apple Watch sessions that sync into Strava (or anything else you upload there) can be pulled into your plan. Connecting is invite-only — you need the passcode from the app owner.</p>
+        </div>
+        <span class="conn-label ${connected ? "on" : "off"}">${connected ? "Connected" : "Not connected"}</span>
+      </div>
+      <p class="conn-meta ${STRAVA.lastError ? "warn" : ""}">${esc(stravaStatusLine())}</p>
+      ${connected ? `
+        <div class="conn-actions">
+          <button class="button" type="button" data-action="strava-sync">${syncIconSvg()} Sync</button>
+          <button class="button ghost" type="button" data-action="strava-disconnect">Disconnect</button>
+        </div>` : `
+        <form class="strava-form">
+          <label>Connect passcode
+            <input type="password" name="passcode" required autocomplete="off" spellcheck="false" placeholder="Passcode from the app owner" />
+          </label>
+          <p class="muted small-text">After the passcode is accepted you will authorize this app on Strava. Apple Watch works when activities are already in Strava.</p>
+          <p class="form-error"></p>
+          <button class="button" type="submit">Connect with Strava</button>
+        </form>`}
+    </section>`;
+}
+
 function renderConnections() {
   return `
     <section class="hero compact">
@@ -1815,7 +1999,8 @@ function renderConnections() {
     </section>
     ${profileTabs("connections")}
     ${renderGarminConnectionCard()}
-    <p class="footnote">More connections can be added later. CSV import stays available from the upload button in the top bar.</p>`;
+    ${renderStravaConnectionCard()}
+    <p class="footnote">CSV import stays available from the upload button in the top bar.</p>`;
 }
 
 function renderProfile(acts, now) {
@@ -2145,6 +2330,26 @@ function setAgendaEventLocked(form, locked) {
   } else if (hint) hint.hidden = true;
 }
 
+let HOME_WEEK = null;
+
+function calendarPlanWeek(now) {
+  return Math.max(1, Math.min(WEEKS.length, weekOf(now)));
+}
+
+function homeViewWeek(now) {
+  const cur = calendarPlanWeek(now);
+  const wk = HOME_WEEK == null ? cur : HOME_WEEK;
+  return Math.max(1, Math.min(WEEKS.length, wk));
+}
+
+function homeWeekCardTitle(viewWk, calendarWk, offset) {
+  const wk = viewWk + offset;
+  if (wk === calendarWk) return "This week";
+  if (wk === calendarWk + 1) return "Next week";
+  if (wk === calendarWk - 1) return "Last week";
+  return offset === 0 ? "Selected week" : "Following week";
+}
+
 function renderNoPlanHome(acts, now) {
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const upcoming = upcomingEventsList(now, acts);
@@ -2166,7 +2371,9 @@ function renderNoPlanHome(acts, now) {
 }
 
 function renderHome(acts, now) {
-  const wk = Math.max(1, Math.min(WEEKS.length, weekOf(now)));
+  const calendarWk = calendarPlanWeek(now);
+  const wk = homeViewWeek(now);
+  HOME_WEEK = wk === calendarWk ? null : wk;
   const current = WEEKS[wk - 1];
   const next = WEEKS[wk];
   const phase = phaseOf(wk);
@@ -2174,11 +2381,12 @@ function renderHome(acts, now) {
   const progress = Math.round((daysBetween(START, now) / daysBetween(START, RACE)) * 100);
   const upcoming = upcomingEventsList(now, acts);
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
+  const viewingPast = wk !== calendarWk;
 
   return `
     <section class="hero">
       <div>
-        <div class="eyebrow">Today · ${fmt(now, { weekday: "long", day: "numeric", month: "long" })}</div>
+        <div class="eyebrow">Today · ${fmt(now, { weekday: "long", day: "numeric", month: "long" })}${viewingPast ? ` · viewing week ${wk}` : ""}</div>
         <h1>Week ${wk} of ${WEEKS.length} <span class="muted">· ${phase.name}</span></h1>
         <p class="muted">${phase.focus}</p>
         ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
@@ -2206,9 +2414,15 @@ function renderHome(acts, now) {
 
     ${reviewCard(acts, now)}
 
+    <div class="week-nav">
+      <button class="button ghost small" type="button" data-action="home-week-prev"${wk <= 1 ? " disabled" : ""} aria-label="Previous week">← Previous week</button>
+      ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">This week</button>` : ""}
+      <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="Next week">Next week →</button>
+    </div>
+
     <div class="grid">
-      ${weekCard(current, acts, now, "This week")}
-      ${next ? weekCard(next, acts, now, "Next week") : ""}
+      ${weekCard(current, acts, now, homeWeekCardTitle(wk, calendarWk, 0))}
+      ${next ? weekCard(next, acts, now, homeWeekCardTitle(wk, calendarWk, 1)) : ""}
     </div>
 
     ${eventsCard(now, upcoming, { acts })}
@@ -2747,6 +2961,8 @@ function renderPlan(acts, now) {
         <h1>Full ${esc(eventLabel())} plan</h1>
         <p class="muted">${window.CURRENT_PLAN?.sport === "run"
           ? "The long run is the key session. If tired: keep that and cut an easy run. Weekly load rises about 10%, with a cutback every fourth week."
+          : window.CURRENT_PLAN?.sport === "triathlon"
+            ? "Triathlon structure: longer aerobic base, then build with race-specific work and bike→run bricks, then a sharper taper. If tired: cut extras first, protect the long ride and key brick. About 10% load increase week to week, cutback every fourth week."
           : "Key session wins every conflict. If tired: cut the extra sport first, then easy km. About 10% load increase week to week, with a cutback every fourth week."}</p>
         ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
       </div>
@@ -2772,6 +2988,12 @@ function renderPlan(acts, now) {
       <section class="card">
         <div class="card-head"><h2>${roadmapHeading()}</h2></div>
         <ul class="roadmap">${ROADMAP_703.map((r) => `<li><strong>${esc(r[0])}</strong><span>${esc(r[1])}</span></li>`).join("")}</ul>
+      </section>` : ""}
+      ${(window.CURRENT_PLAN?.sources || []).length ? `
+      <section class="card">
+        <div class="card-head"><h2>Research behind this plan</h2></div>
+        <ul class="roadmap">${(window.CURRENT_PLAN.sources || []).map((s) => `
+          <li><strong><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></strong><span>${esc(s.used_for || "")}</span></li>`).join("")}</ul>
       </section>` : ""}
     </div>
   `;
@@ -3266,6 +3488,7 @@ function toast(message, isError = false) {
 }
 
 async function importCSV(file) {
+  const onSetup = currentRoute() === "setup" || !!document.querySelector(".setup-form");
   try {
     if (!CURRENT_USER_ID) throw new Error("Sign in required");
     const incoming = parseCSV(await file.text());
@@ -3277,8 +3500,19 @@ async function importCSV(file) {
     const { error } = await sb.from("activities").upsert(rows, { onConflict: "user_id,activity_type,started_at" });
     if (error) throw error;
     ACTS = await loadActivities();
+    window._setupActs = ACTS;
     try { CHANGES = await loadChanges(); } catch {}
-    render(true);
+    if (onSetup) {
+      const setupForm = document.querySelector(".setup-form");
+      if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
+        window.fillWeeklyFromSynced(setupForm, { force: true });
+      }
+      if (setupForm && typeof window.paintSetupConnect === "function") {
+        window.paintSetupConnect(setupForm);
+      }
+    } else {
+      render(true);
+    }
     const latest = ACTS.map((a) => a.date).sort().at(-1);
     toast(added ? `Imported ${added} new activit${added === 1 ? "y" : "ies"} (${updated} already known).${latest ? ` Latest: ${short(parseDate(latest))}.` : ""}` : `No new activities: all ${updated} were already imported.`);
   } catch (err) {
@@ -3625,7 +3859,8 @@ function render(force = false) {
   captureEventFormDraft();
   captureActivityLogDraft();
   if (currentRoute() === "setup") {
-    if (typeof window.renderOnboarding === "function" && !document.querySelector(".setup-form")) {
+    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
+    if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
       window.renderOnboarding();
     }
     return;
@@ -4081,6 +4316,56 @@ document.addEventListener("click", async (e) => {
     }
     return;
   }
+  if (btn.dataset.action === "strava-sync") {
+    if (!STRAVA.connected) {
+      toast("Connect Strava first on the Connections page.");
+      go("/connections");
+      return;
+    }
+    const syncButtons = document.querySelectorAll("[data-action=strava-sync]");
+    syncButtons.forEach((el) => { el.disabled = true; });
+    try {
+      const fullKey = `strava-full:${CURRENT_USER_ID || "anon"}`;
+      const full = localStorage.getItem(fullKey) !== "done";
+      const data = await invokeStrava({ action: "sync", full });
+      if (data?.full) localStorage.setItem(fullKey, "done");
+      STRAVA = {
+        connected: true,
+        lastSyncAt: data.lastSyncAt || null,
+        lastSyncStatus: data.lastSyncStatus || null,
+        lastError: data.lastError || null,
+        loaded: true,
+      };
+      ACTS = await loadActivities();
+      render(true);
+      const n = data.added || 0;
+      toast(n
+        ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
+        : (data.total ? `Strava sync complete — ${data.updated || 0} already known.` : "Strava sync complete — no activities in range."));
+    } catch (err) {
+      STRAVA.lastError = err.message;
+      render(true);
+      toast(err.message || "Strava sync failed.", true);
+    } finally {
+      document.querySelectorAll("[data-action=strava-sync]").forEach((el) => { el.disabled = false; });
+    }
+    return;
+  }
+  if (btn.dataset.action === "strava-disconnect") {
+    if (!confirm("Disconnect Strava? Your imported activities stay; you can reconnect with the passcode anytime.")) return;
+    btn.disabled = true;
+    try {
+      await invokeStrava({ action: "disconnect" });
+      STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+      render(true);
+      toast("Strava disconnected.");
+    } catch (err) {
+      toast(err.message || "Could not disconnect Strava.", true);
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
   if (btn.dataset.action === "predict-mode") {
     PREDICT_MODE = btn.dataset.mode === "pace" ? "pace" : "time";
     render(true);
@@ -4093,6 +4378,17 @@ document.addEventListener("click", async (e) => {
   }
   if (btn.dataset.action === "request-feedback") {
     requestWeekFeedback();
+    return;
+  }
+  if (btn.dataset.action === "home-week-prev" || btn.dataset.action === "home-week-next" || btn.dataset.action === "home-week-today") {
+    if (!hasPlan()) return;
+    const calendarWk = calendarPlanWeek(today());
+    const cur = homeViewWeek(today());
+    if (btn.dataset.action === "home-week-today") HOME_WEEK = null;
+    else if (btn.dataset.action === "home-week-prev") HOME_WEEK = Math.max(1, cur - 1);
+    else HOME_WEEK = Math.min(WEEKS.length, cur + 1);
+    if (HOME_WEEK === calendarWk) HOME_WEEK = null;
+    render(true);
     return;
   }
   if (btn.dataset.action === "start-plan") {
@@ -4306,6 +4602,30 @@ document.addEventListener("submit", async (e) => {
     }
     return;
   }
+  const stravaForm = e.target.closest(".strava-form");
+  if (stravaForm) {
+    e.preventDefault();
+    const errorEl = stravaForm.querySelector(".form-error");
+    if (errorEl) errorEl.textContent = "";
+    const submit = stravaForm.querySelector("button[type=submit]");
+    if (submit) submit.disabled = true;
+    try {
+      const data = await invokeStrava({
+        action: "connect_url",
+        passcode: stravaForm.passcode.value,
+        redirectUri: stravaRedirectUri(),
+      });
+      if (!data?.url) throw new Error("Could not start Strava connect.");
+      location.href = data.url;
+      return;
+    } catch (err) {
+      if (errorEl) errorEl.textContent = err.message || "Could not connect Strava.";
+      else toast(err.message || "Could not connect Strava.", true);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
   const garminForm = e.target.closest(".garmin-form");
   if (garminForm) {
     e.preventDefault();
@@ -4313,12 +4633,37 @@ document.addEventListener("submit", async (e) => {
     if (errorEl) errorEl.textContent = "";
     const submit = garminForm.querySelector("button[type=submit]");
     if (submit) submit.disabled = true;
+    const setupForm = garminForm.closest(".setup-form") || document.querySelector(".setup-form");
+    const onSetupConnect = !!garminForm.closest(".setup-connect-step, #setup-connect") || !!document.querySelector(".setup-connect-step");
+    const syncNow = !!garminForm.querySelector("[name=sync_now]")?.checked;
     try {
       await invokeGarmin({ action: "save_key", apiKey: garminForm.apiKey.value });
       garminForm.reset();
       await loadGarminStatus();
-      render(true);
-      toast("Garmin key saved. Sync activities when you’re ready.");
+      if ((setupForm || onSetupConnect) && syncNow) {
+        try {
+          await window.setupGarminSync({ permission: true });
+        } catch (syncErr) {
+          toast(syncErr.message || "Connected, but sync failed. You can retry from setup.", true);
+        }
+        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect(setupForm);
+        if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
+          window.fillWeeklyFromSynced(setupForm, { force: true });
+        }
+      } else if (setupForm || onSetupConnect) {
+        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect(setupForm);
+        toast("Garmin connected. Tick sync permission and sync to pull existing activities.");
+      } else {
+        render(true);
+        toast(syncNow
+          ? "Garmin key saved."
+          : "Garmin key saved. Sync activities when you’re ready.");
+        if (syncNow) {
+          try { await window.setupGarminSync({ permission: true }); } catch (syncErr) {
+            toast(syncErr.message || "Sync failed.", true);
+          }
+        }
+      }
     } catch (err) {
       if (errorEl) errorEl.textContent = err.message || "Could not save Garmin key.";
       else toast(err.message || "Could not save Garmin key.", true);
@@ -4554,7 +4899,8 @@ let APP_BOOTING = null;
 
 window.bootApp = function bootApp() {
   if (currentRoute() === "setup") {
-    if (typeof window.renderOnboarding === "function" && !document.querySelector(".setup-form")) {
+    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
+    if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
       window.renderOnboarding();
     }
     return Promise.resolve();
@@ -4580,7 +4926,8 @@ window.bootApp = function bootApp() {
       loadGear(),
     ]);
     await loadWellness();
-    await loadGarminStatus();
+    await Promise.all([loadGarminStatus(), loadStravaStatus()]);
+    await maybeHandleStravaCallback();
     if (hasPlan()) await Promise.all([loadProgressReport(), loadWeekFeedbackStamp()]);
     APP_READY = true;
     if (hasPlan()) {
@@ -4610,8 +4957,11 @@ window.resetApp = function resetApp() {
     localStorage.removeItem(`training-metrics:${CURRENT_USER_ID || "anon"}`);
   } catch { /* ignore */ }
   GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+  STRAVA = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+  STRAVA_CALLBACK_HANDLED = false;
   PLAN_OPEN_WEEKS = null;
   PLAN_FOCUS_WEEK = null;
+  HOME_WEEK = null;
   PROGRESS_STATUS = "idle";
   PROGRESS_REPORT = null;
   COACH_STATUS = "idle";

@@ -38,8 +38,8 @@ function renderLogin(message = "") {
       </div>
       <form class="auth-form" data-mode="signin">
         <label>Email<input type="email" name="email" required autocomplete="email" /></label>
-        <label>Password<input type="password" name="password" required minlength="6" autocomplete="current-password" /></label>
-        <label class="confirm-row" hidden>Confirm password<input type="password" name="confirm" minlength="6" autocomplete="new-password" /></label>
+        <label>Password<input type="password" name="password" required minlength="8" autocomplete="current-password" /></label>
+        <label class="confirm-row" hidden>Confirm password<input type="password" name="confirm" minlength="8" autocomplete="new-password" /></label>
         <p class="form-error">${message}</p>
         <button class="button" type="submit">Sign in</button>
       </form>
@@ -150,6 +150,10 @@ document.addEventListener("submit", async (e) => {
         options: { emailRedirectTo: location.origin },
       });
       if (error) throw error;
+      try {
+        sessionStorage.setItem("setup-pending-connect", "1");
+        if (email) localStorage.setItem(`setup-pending-connect-email:${email.toLowerCase()}`, "1");
+      } catch { /* ignore */ }
       if (!data.session) {
         errorEl.textContent = "Account created. Check your email to confirm, then sign in.";
         setAuthMode("signin");
@@ -158,6 +162,11 @@ document.addEventListener("submit", async (e) => {
     } else {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      try {
+        const pending = email && localStorage.getItem(`setup-pending-connect-email:${email.toLowerCase()}`) === "1";
+        if (pending) sessionStorage.setItem("setup-pending-connect", "1");
+        else sessionStorage.removeItem("setup-pending-connect");
+      } catch { /* ignore */ }
     }
   } catch (err) {
     errorEl.textContent = err.message || "Could not sign in.";

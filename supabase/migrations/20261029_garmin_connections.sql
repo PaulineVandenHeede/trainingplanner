@@ -3,7 +3,8 @@
 -- Then deploy the Edge Function from the repo root:
 --   npx supabase login
 --   npx supabase functions deploy garmin-sync --project-ref YOUR_PROJECT_REF
--- Owner-only RLS. The app never reads api_key from the client; only the garmin-sync Edge Function does.
+-- Owner-only RLS as defense in depth. Browser JWT has no table grants;
+-- only the garmin-sync Edge Function (service role) may read/write api_key.
 
 create table if not exists public.garmin_connections (
   user_id uuid primary key references auth.users (id) on delete cascade,

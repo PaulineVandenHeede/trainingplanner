@@ -6,3 +6,9 @@ verify_jwt = true
 
 [functions.garmin-sync]
 verify_jwt = true
+
+[functions.strava-sync]
+verify_jwt = true
+
+[functions.strava-webhook]
+verify_jwt = false
