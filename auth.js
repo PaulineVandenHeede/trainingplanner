@@ -3,6 +3,77 @@ const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANO
 });
 window.sb = sb;
 
+const PASSWORD_RULES = [
+  { id: "length", label: "12 to 72 characters", test: (password) => password.length >= 12 && password.length <= 72 },
+  { id: "lower", label: "One lowercase letter", test: (password) => /[a-z]/.test(password) },
+  { id: "upper", label: "One uppercase letter", test: (password) => /[A-Z]/.test(password) },
+  { id: "digit", label: "One number", test: (password) => /[0-9]/.test(password) },
+  { id: "symbol", label: "One symbol", test: (password) => /[^A-Za-z0-9\s]/.test(password) },
+];
+
+function authRedirectTo() {
+  const configured = String(window.AUTH_SITE_URL || "https://health.paulinevandenheede.com").trim();
+  return `${configured.replace(/\/+$/, "")}/`;
+}
+
+function readAuthLink() {
+  const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
+  const query = new URLSearchParams(location.search);
+  const pick = (key) => hash.get(key) || query.get(key) || "";
+  let error = pick("error_description") || pick("error") || "";
+  try { error = decodeURIComponent(error.replace(/\+/g, " ")); } catch { /* keep the raw text */ }
+  return { type: pick("type"), error };
+}
+
+function clearAuthParams() {
+  const url = new URL(location.href);
+  ["code", "error", "error_code", "error_description", "type"].forEach((key) => url.searchParams.delete(key));
+  url.hash = "";
+  const next = `${url.pathname}${url.search}`;
+  if (next !== `${location.pathname}${location.search}` || location.hash) {
+    history.replaceState(null, "", next);
+  }
+}
+
+function passwordProblems(password, email) {
+  const problems = PASSWORD_RULES.filter((rule) => !rule.test(password)).map((rule) => rule.label);
+  if (password !== password.trim()) problems.push("No space at the start or end");
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const local = normalizedEmail.split("@")[0];
+  if (normalizedEmail && password.trim().toLowerCase() === normalizedEmail) {
+    problems.push("Can't be your email address");
+  } else if (local.length >= 4 && password.toLowerCase().includes(local)) {
+    problems.push("Can't include your email name");
+  }
+  return problems;
+}
+
+function passwordError(password, confirm, email) {
+  if (!password) return "Enter a password.";
+  if (password !== confirm) return "Passwords don't match.";
+  const problems = passwordProblems(password, email);
+  if (!problems.length) return "";
+  const extras = problems.filter((problem) => !PASSWORD_RULES.some((rule) => rule.label === problem));
+  if (extras.length === problems.length) return `${extras[0]}.`;
+  if (extras.length) return `${extras[0]}. Also meet every requirement below.`;
+  return "Meet every requirement below.";
+}
+
+function paintPasswordRules(form, checked) {
+  const list = form.querySelector(".password-rules");
+  if (!list || !form.password) return;
+  const password = form.password.value;
+  list.classList.toggle("checked", Boolean(checked) || password.length > 0);
+  list.querySelectorAll("[data-rule]").forEach((item) => {
+    const rule = PASSWORD_RULES.find((entry) => entry.id === item.dataset.rule);
+    item.classList.toggle("met", Boolean(rule && rule.test(password)));
+  });
+}
+
+const authLink = readAuthLink();
+let pendingRecovery = authLink.type === "recovery" && !authLink.error;
+let suppressAuthNavigation = false;
+
 async function getAccessToken() {
   const { data: { session } } = await sb.auth.getSession();
   return session?.access_token || "";
@@ -17,7 +88,12 @@ function authHeaders(extra = {}) {
 }
 window.authHeaders = authHeaders;
 
-function renderLogin(message = "") {
+function passwordRulesHtml() {
+  return `<ul class="password-rules" id="password-rules" hidden>${PASSWORD_RULES.map((rule) =>
+    `<li data-rule="${rule.id}">${rule.label}</li>`).join("")}</ul>`;
+}
+
+function renderLogin(message = "", options = {}) {
   document.body.classList.add("logged-out");
   const header = document.getElementById("app-header");
   if (header) header.hidden = true;
@@ -31,30 +107,98 @@ function renderLogin(message = "") {
           <h1>Training Plan</h1>
         </div>
       </div>
-      <p class="muted">Sign in to open your plan.</p>
+      <p class="muted auth-lead">Sign in to open your plan.</p>
       <div class="auth-tabs">
         <button class="auth-tab active" type="button" data-auth-mode="signin">Sign in</button>
         <button class="auth-tab" type="button" data-auth-mode="signup">Create account</button>
       </div>
-      <form class="auth-form" data-mode="signin">
-        <label>Email<input type="email" name="email" required autocomplete="email" /></label>
-        <label>Password<input type="password" name="password" required minlength="8" autocomplete="current-password" /></label>
-        <label class="confirm-row" hidden>Confirm password<input type="password" name="confirm" minlength="8" autocomplete="new-password" /></label>
-        <p class="form-error">${message}</p>
+      <form class="auth-form" data-mode="signin" novalidate>
+        <label class="email-row">Email<input type="email" name="email" required autocomplete="email" /></label>
+        <label class="password-row">Password<input type="password" name="password" required autocomplete="current-password" aria-describedby="password-rules" /></label>
+        <label class="confirm-row" hidden>Confirm password<input type="password" name="confirm" autocomplete="new-password" /></label>
+        ${passwordRulesHtml()}
+        <p class="form-error" role="alert"></p>
+        <p class="form-note" role="status"></p>
         <button class="button" type="submit">Sign in</button>
+        <p class="auth-links">
+          <button class="text-button forgot-row" type="button" data-auth-mode="forgot">Forgot password?</button>
+          <button class="text-button back-row" type="button" data-auth-mode="signin" hidden>Back to sign in</button>
+        </p>
       </form>
     </section>`;
+  setAuthMode(options.mode || "signin");
+  const form = document.querySelector(".auth-form");
+  if (form && options.email) form.email.value = options.email;
+  if (form && message) {
+    const slot = options.tone === "ok" ? ".form-note" : ".form-error";
+    form.querySelector(slot).textContent = message;
+  }
+}
+
+function renderPasswordReset(email = "", message = "") {
+  document.body.classList.add("logged-out");
+  const header = document.getElementById("app-header");
+  if (header) header.hidden = true;
+  document.getElementById("day-dialog")?.close();
+  document.getElementById("app").innerHTML = `
+    <section class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark" aria-hidden="true">TP</span>
+        <div>
+          <div class="eyebrow">Your training</div>
+          <h1>New password</h1>
+        </div>
+      </div>
+      <p class="muted auth-lead"></p>
+      <form class="auth-form" data-mode="recovery" novalidate>
+        <input type="hidden" name="email" value="" />
+        <label class="password-row">New password<input type="password" name="password" required autocomplete="new-password" aria-describedby="password-rules" /></label>
+        <label class="confirm-row">Confirm password<input type="password" name="confirm" autocomplete="new-password" /></label>
+        ${passwordRulesHtml().replace(" hidden", "")}
+        <p class="form-error" role="alert"></p>
+        <p class="form-note" role="status"></p>
+        <button class="button" type="submit">Save password</button>
+        <p class="auth-links">
+          <button class="text-button" type="button" data-action="cancel-recovery">Cancel</button>
+        </p>
+      </form>
+    </section>`;
+  const lead = document.querySelector(".auth-lead");
+  if (lead) lead.textContent = email ? `Choose a new password for ${email}.` : "Choose a new password for your account.";
+  const form = document.querySelector(".auth-form");
+  if (form) {
+    form.email.value = email || "";
+    if (message) form.querySelector(".form-error").textContent = message;
+    paintPasswordRules(form);
+  }
 }
 
 function setAuthMode(mode) {
   const form = document.querySelector(".auth-form");
-  if (!form) return;
+  if (!form || form.dataset.mode === "recovery") return;
   form.dataset.mode = mode;
-  form.querySelector(".confirm-row").hidden = mode !== "signup";
-  form.password.autocomplete = mode === "signup" ? "new-password" : "current-password";
-  form.querySelector("button[type=submit]").textContent = mode === "signup" ? "Create account" : "Sign in";
+  const signup = mode === "signup";
+  const forgot = mode === "forgot";
+  form.querySelector(".confirm-row").hidden = !signup;
+  form.querySelector(".password-row").hidden = forgot;
+  form.querySelector(".password-rules").hidden = !signup;
+  form.querySelector(".forgot-row").hidden = mode !== "signin";
+  form.querySelector(".back-row").hidden = !forgot;
+  const tabs = document.querySelector(".auth-tabs");
+  if (tabs) tabs.hidden = forgot;
+  const lead = document.querySelector(".auth-lead");
+  if (lead) {
+    lead.textContent = forgot
+      ? "Enter your email and we'll send a link to choose a new password."
+      : "Sign in to open your plan.";
+  }
+  form.password.required = !forgot;
+  form.password.autocomplete = signup ? "new-password" : "current-password";
+  form.querySelector("button[type=submit]").textContent = signup ? "Create account" : forgot ? "Send reset link" : "Sign in";
   document.querySelectorAll(".auth-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.authMode === mode));
   form.querySelector(".form-error").textContent = "";
+  form.querySelector(".form-note").textContent = "";
+  if (signup) paintPasswordRules(form);
 }
 
 window.CURRENT_PROFILE = null;
@@ -116,6 +260,13 @@ async function enterApp(session) {
 document.addEventListener("click", (e) => {
   const tab = e.target.closest("[data-auth-mode]");
   if (tab) setAuthMode(tab.dataset.authMode);
+  if (e.target.closest("[data-action=cancel-recovery]")) {
+    e.preventDefault();
+    pendingRecovery = false;
+    suppressAuthNavigation = false;
+    sb.auth.signOut();
+    return;
+  }
   if (e.target.closest("[data-action=logout]")) {
     e.preventDefault();
     if (typeof window.resetApp === "function") window.resetApp();
@@ -123,8 +274,17 @@ document.addEventListener("click", (e) => {
     window.CURRENT_USER_ID = null;
     window.CURRENT_PROFILE = null;
     window.CURRENT_USER_EMAIL = "";
+    pendingRecovery = false;
     sb.auth.signOut();
   }
+});
+
+document.addEventListener("input", (e) => {
+  const form = e.target.closest?.(".auth-form");
+  if (!form || form.dataset.mode === "signin" || form.dataset.mode === "forgot") return;
+  if (!["password", "confirm", "email"].includes(e.target.name)) return;
+  paintPasswordRules(form);
+  form.querySelector(".form-error").textContent = "";
 });
 
 document.addEventListener("submit", async (e) => {
@@ -132,22 +292,54 @@ document.addEventListener("submit", async (e) => {
   if (!form) return;
   e.preventDefault();
   const errorEl = form.querySelector(".form-error");
-  const email = form.email.value.trim();
-  const password = form.password.value;
+  const noteEl = form.querySelector(".form-note");
   const mode = form.dataset.mode;
+  let email = form.email ? form.email.value.trim() : "";
   errorEl.textContent = "";
-  if (mode === "signup" && password !== form.confirm.value) {
-    errorEl.textContent = "Passwords don't match.";
-    return;
+  noteEl.textContent = "";
+  if (mode === "recovery" && !email) {
+    const { data: { session } } = await sb.auth.getSession();
+    email = session?.user?.email || "";
   }
+  if (mode === "signup" || mode === "recovery") {
+    const message = passwordError(form.password.value, form.confirm.value, email);
+    if (message) {
+      errorEl.textContent = message;
+      paintPasswordRules(form, true);
+      return;
+    }
+  }
+  if (mode !== "recovery") {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errorEl.textContent = "Enter a valid email.";
+      return;
+    }
+  }
+  const password = form.password ? form.password.value : "";
   const submit = form.querySelector("button[type=submit]");
   submit.disabled = true;
   try {
+    if (mode === "forgot") {
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: authRedirectTo() });
+      if (error) throw error;
+      noteEl.textContent = "If an account exists for that email, a reset link is on its way.";
+      return;
+    }
+    if (mode === "recovery") {
+      suppressAuthNavigation = true;
+      const { error } = await sb.auth.updateUser({ password });
+      if (error) throw error;
+      pendingRecovery = false;
+      clearAuthParams();
+      const { data: { session } } = await sb.auth.getSession();
+      if (session) await enterApp(session);
+      return;
+    }
     if (mode === "signup") {
       const { data, error } = await sb.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: location.origin },
+        options: { emailRedirectTo: authRedirectTo() },
       });
       if (error) throw error;
       try {
@@ -155,8 +347,7 @@ document.addEventListener("submit", async (e) => {
         if (email) localStorage.setItem(`setup-pending-connect-email:${email.toLowerCase()}`, "1");
       } catch { /* ignore */ }
       if (!data.session) {
-        errorEl.textContent = "Account created. Check your email to confirm, then sign in.";
-        setAuthMode("signin");
+        renderLogin("Account created. Check your email to confirm, then sign in.", { mode: "signin", tone: "ok", email });
         return;
       }
     } else {
@@ -171,16 +362,40 @@ document.addEventListener("submit", async (e) => {
   } catch (err) {
     errorEl.textContent = err.message || "Could not sign in.";
   } finally {
+    suppressAuthNavigation = false;
     submit.disabled = false;
   }
 });
 
 sb.auth.onAuthStateChange((event, session) => {
+  if (event === "PASSWORD_RECOVERY") pendingRecovery = true;
+  if (suppressAuthNavigation) return;
+  if (pendingRecovery) {
+    renderPasswordReset(session?.user?.email || "");
+    return;
+  }
   if (session) enterApp(session);
-  else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") renderLogin();
+  else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") {
+    renderLogin(authLink.error && !session ? authLink.error : "", authLink.error ? { mode: authLink.type === "recovery" ? "forgot" : "signin" } : {});
+  }
 });
 
 sb.auth.getSession().then(({ data: { session } }) => {
-  if (session) enterApp(session);
-  else if (!document.querySelector(".auth-form")) renderLogin();
+  if (pendingRecovery) {
+    if (session) renderPasswordReset(session.user?.email || "");
+    else renderLogin("This reset link is invalid or has expired. Request a new one.", { mode: "forgot" });
+    clearAuthParams();
+    return;
+  }
+  if (session) {
+    enterApp(session);
+    if (authLink.error) clearAuthParams();
+    return;
+  }
+  if (authLink.error) {
+    renderLogin(authLink.error, { mode: authLink.type === "recovery" ? "forgot" : "signin" });
+    clearAuthParams();
+    return;
+  }
+  if (!document.querySelector(".auth-form")) renderLogin();
 });
