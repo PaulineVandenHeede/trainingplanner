@@ -201,12 +201,49 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 
 .status { font-size: 13px; font-weight: 700; width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; }
 .status.done { background: var(--run); color: #fff; }
+.status.done.conf-medium { background: color-mix(in srgb, var(--run) 78%, var(--text)); }
+.status.done.conf-low { background: color-mix(in srgb, var(--run) 45%, var(--muted)); }
 .status.missed { background: var(--line); color: var(--muted); }
 
-.actual { font-size: 12.5px; color: var(--muted); margin-top: 3px; padding-left: 10px; border-left: 2px solid var(--line); }
+.actual { font-size: 12.5px; color: var(--muted); margin-top: 3px; padding-left: 10px; border-left: 2px solid var(--line); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
 .actual.k-run { border-color: var(--run); }
 .actual.k-swim { border-color: var(--swim); }
 .actual.k-bike { border-color: var(--bike); }
+.actual.is-matched { color: var(--text); border-left-width: 3px; }
+.actual.is-unmatched { opacity: 0.78; }
+.match-tag {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 4px; line-height: 1.4; white-space: nowrap;
+}
+.match-tag.matched {
+  background: color-mix(in srgb, var(--run) 16%, transparent); color: var(--run);
+}
+.match-tag.matched.conf-medium,
+.actual.conf-medium .match-tag.matched {
+  background: color-mix(in srgb, var(--build) 18%, transparent); color: var(--build);
+}
+.match-tag.matched.conf-low,
+.actual.conf-low .match-tag.matched {
+  background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted);
+}
+.match-tag.unmatched {
+  background: color-mix(in srgb, var(--line) 80%, transparent); color: var(--muted);
+}
+.match-summary {
+  margin: 8px 0 0; font-size: 13px; color: var(--muted);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.activity.is-matched {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--run) 70%, transparent);
+}
+.activity.is-matched.conf-medium {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--build) 70%, transparent);
+}
+.activity.is-matched.conf-low {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.activity.is-unmatched { opacity: 0.88; }
+.activity-head h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .event-note { font-size: 13px; color: var(--event); margin-top: 3px; }
 .event-note-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px;

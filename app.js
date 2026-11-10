@@ -19,6 +19,147 @@ const KIND_MATCH = {
   walk: ["walk"], swim: ["swim"], walkswim: ["swim"], bike: ["bike"],
 };
 
+// Activity ↔ planned session matching (sport + distance + soft time-of-day).
+const MATCH_SPORT_SCORE = 40;
+const MATCH_DIST_MAX = 50;
+const MATCH_TIME_MAX = 12;
+
+function plannedSportCats(kind) {
+  return KIND_MATCH[kind] || [];
+}
+
+function parsePlannedDistance(plan) {
+  if (!plan) return null;
+  const cat = plannedLogSport(plan);
+  let n = Number(plan.km);
+  const label = String(plan.label || "");
+
+  if (!(n > 0)) {
+    const swimM = label.match(/(\d+(?:\.\d+)?)\s*m\b/i);
+    if (cat === "swim" && swimM) {
+      return { value: Number(swimM[1]), unit: "m", cat };
+    }
+    const range = label.match(/(\d+(?:\.\d+)?)\s*[–-]\s*(\d+(?:\.\d+)?)/);
+    if (range) n = (Number(range[1]) + Number(range[2])) / 2;
+    else {
+      const km = label.match(/(\d+(?:\.\d+)?)\s*km\b/i);
+      if (km) n = Number(km[1]);
+    }
+  }
+  if (!(n > 0)) return null;
+
+  // Swim activities store metres; plan day[2] / "X km" labels are kilometres.
+  if (cat === "swim") {
+    if (n >= 50) return { value: n, unit: "m", cat }; // already metres (race labels)
+    return { value: Math.round(n * 1000), unit: "m", cat };
+  }
+  return { value: n, unit: "km", cat };
+}
+
+function activityHour(a) {
+  const raw = String(a?.datetime || "");
+  const h = Number(raw.slice(11, 13));
+  return Number.isFinite(h) ? h : null;
+}
+
+function matchTimeBonus(plan, act) {
+  const hour = activityHour(act);
+  if (hour == null || !plan) return 0;
+  const kind = plan.kind;
+  if (kind === "long" || kind === "event" || kind === "race") {
+    if (hour >= 5 && hour <= 11) return MATCH_TIME_MAX;
+    if (hour >= 12 && hour <= 15) return 4;
+    return 0;
+  }
+  if (kind === "quality") {
+    if ((hour >= 6 && hour <= 9) || (hour >= 16 && hour <= 20)) return 10;
+    return 0;
+  }
+  return 0;
+}
+
+function matchDistanceScore(planned, act) {
+  if (!planned || !(planned.value > 0) || !(Number(act?.dist) > 0)) {
+    return { points: 0, relErr: null };
+  }
+  const relErr = Math.abs(1 - (Number(act.dist) / planned.value));
+  let points = 0;
+  if (relErr <= 0.12) points = MATCH_DIST_MAX;
+  else if (relErr <= 0.25) points = 38;
+  else if (relErr <= 0.4) points = 25;
+  else if (relErr <= 0.6) points = 12;
+  else points = 4;
+  return { points, relErr };
+}
+
+function scoreActivityAgainstPlan(act, plan) {
+  if (!act || !plan) return null;
+  const wanted = plannedSportCats(plan.kind);
+  if (!wanted.length || !wanted.includes(act.cat)) return null;
+  const planned = parsePlannedDistance(plan);
+  const dist = matchDistanceScore(planned, act);
+  const time = matchTimeBonus(plan, act);
+  const score = Math.min(100, MATCH_SPORT_SCORE + dist.points + time);
+  const confidence = score >= 78 ? "high" : score >= 55 ? "medium" : "low";
+  return {
+    score,
+    confidence,
+    sportOk: true,
+    relErr: dist.relErr,
+    plannedDist: planned,
+  };
+}
+
+function matchPlanDay(plan, dayActs) {
+  const acts = Array.isArray(dayActs) ? dayActs : [];
+  const wanted = plan ? plannedSportCats(plan.kind) : [];
+  if (!plan || !wanted.length) {
+    return {
+      trainable: false,
+      done: false,
+      matched: null,
+      match: null,
+      unmatched: acts.slice(),
+      byDatetime: {},
+    };
+  }
+
+  const scored = acts
+    .map((a) => ({ a, m: scoreActivityAgainstPlan(a, plan) }))
+    .filter((row) => row.m);
+  scored.sort((x, y) => {
+    if (y.m.score !== x.m.score) return y.m.score - x.m.score;
+    return String(x.a.datetime).localeCompare(String(y.a.datetime));
+  });
+
+  const best = scored[0] || null;
+  const matched = best?.a || null;
+  const match = best?.m || null;
+  const byDatetime = {};
+  if (matched) byDatetime[matched.datetime] = match;
+  const unmatched = acts.filter((a) => a.datetime !== matched?.datetime);
+
+  return {
+    trainable: true,
+    done: !!matched,
+    matched,
+    match,
+    unmatched,
+    byDatetime,
+  };
+}
+
+function planDayDone(plan, dayActs) {
+  return matchPlanDay(plan, dayActs).done;
+}
+
+function matchConfidenceLabel(confidence) {
+  if (confidence === "high") return tt("day.matchHigh");
+  if (confidence === "medium") return tt("day.matchMedium");
+  if (confidence === "low") return tt("day.matchLow");
+  return tt("day.matched");
+}
+
 const pad = (n) => String(n).padStart(2, "0");
 const parseDate = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -608,9 +749,9 @@ function logSessionFields(sport, { distance = "", duration = "", hr = "", date =
 function logSessionForm(ds, plan, dayActs) {
   if (parseDate(ds) > today()) return "";
   const sport = plannedLogSport(plan);
-  const wanted = plan ? (KIND_MATCH[plan.kind] || []) : [];
-  const matched = wanted.length > 0 && wanted.some((c) => dayActs.some((a) => a.cat === c));
-  const trainable = wanted.length > 0;
+  const dayMatch = matchPlanDay(plan, dayActs);
+  const matched = dayMatch.done;
+  const trainable = dayMatch.trainable;
   const prefill = plan && sport !== "swim" && Number(plan.km) > 0 ? plan.km : "";
   return `
     <section class="log-session">
@@ -762,33 +903,64 @@ function eventLines(week, dayIndex, ds) {
   }).join("");
 }
 
+function dayActivityMatchLine(a, dayMatch, planKind) {
+  const info = dayMatch?.byDatetime?.[a.datetime];
+  if (!dayMatch?.trainable) {
+    return `<div class="actual k-${a.cat}">${activityLine(a)}</div>`;
+  }
+  if (info) {
+    const conf = info.confidence || "low";
+    return `
+      <div class="actual k-${a.cat} is-matched conf-${conf}">
+        <span class="match-tag matched" title="${esc(matchConfidenceLabel(conf))}">${esc(tt("day.matched"))}</span>
+        ${activityLine(a)}
+      </div>`;
+  }
+  // Walks on non-walk days stay quiet — recovery, not a failed match.
+  if (a.cat === "walk" && !plannedSportCats(planKind).includes("walk")) {
+    return `<div class="actual k-${a.cat}">${activityLine(a)}</div>`;
+  }
+  return `
+    <div class="actual k-${a.cat} is-unmatched">
+      <span class="match-tag unmatched" title="${esc(tt("day.unmatchedHint"))}">${esc(tt("day.unmatched"))}</span>
+      ${activityLine(a)}
+    </div>`;
+}
+
 function dayRow(week, i, acts, now) {
-  const [kind, rawLabel] = week.days[i];
+  const [kind, rawLabel, km] = week.days[i];
   const label = fmtPlanLabel(rawLabel);
   const date = addDays(weekStart(week.wk), i);
   const ds = ymd(date);
   const dayActs = acts.filter((a) => a.date === ds);
   const isToday = ds === ymd(now);
   const isPast = date < now;
-  const wanted = KIND_MATCH[kind] || [];
-  const done = wanted.length > 0 && wanted.some((c) => dayActs.some((a) => a.cat === c));
+  const plan = { week, i, kind, label, km };
+  const dayMatch = matchPlanDay(plan, dayActs);
+  const wanted = plannedSportCats(kind);
+  const done = dayMatch.done;
   const busy = BUSY[ds];
   let status = "";
-  if (done) status = `<span class="status done" title="${esc(tt("day.done"))}">✓</span>`;
-  else if (isPast && wanted.length && !busy) status = `<span class="status missed" title="${esc(tt("day.notLogged"))}">–</span>`;
+  if (done) {
+    const conf = dayMatch.match?.confidence || "low";
+    const title = `${tt("day.done")} · ${matchConfidenceLabel(conf)}`;
+    status = `<span class="status done conf-${conf}" title="${esc(title)}">✓</span>`;
+  } else if (isPast && wanted.length && !busy) {
+    status = `<span class="status missed" title="${esc(tt("day.notLogged"))}">–</span>`;
+  }
   const hint = dayActs.length ? tt("day.viewActivity") : isPast ? tt("day.viewSession") : tt("day.howTo");
   const rec = isToday ? recoveryFor(ds) : null;
   const recoveryChip = rec
     ? `<span class="recovery-chip lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${rec.score}</span>`
     : "";
   return `
-    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""} ${busy ? "busy" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(hint)}">
+    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""} ${busy ? "busy" : ""} ${done ? "is-matched" : dayActs.length && wanted.length ? "has-unmatched" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(hint)}">
       <div class="day-date"><strong>${DAY_NAMES()[i]}</strong><span>${short(date)}</span></div>
       <div class="day-body">
         ${busy ? `<div class="busy-line"><span class="chip k-busy">${tt("common.busy")}</span>${busy.reason ? esc(busy.reason) : tt("day.noTraining")}</div>` : ""}
         <div class="session"><span class="chip k-${kind}">${KIND_LABEL(kind)}</span><span class="label">${label}</span>${recoveryChip}${status}</div>
         ${eventLines(week, i, ds)}
-        ${dayActs.map((a) => `<div class="actual k-${a.cat}">${activityLine(a)}</div>`).join("")}
+        ${dayActs.map((a) => dayActivityMatchLine(a, dayMatch, kind)).join("")}
       </div>
       <span class="day-open" aria-hidden="true">›</span>
     </li>`;
@@ -1335,16 +1507,26 @@ function recoveryBlock(ds, plan) {
 function renderDayDetail(ds) {
   const plan = planFor(ds);
   const date = parseDate(ds);
-  const dayActs = ACTS.filter((a) => a.date === ds && a.cat !== "walk");
-  const walks = ACTS.filter((a) => a.date === ds && a.cat === "walk");
+  const allDayActs = ACTS.filter((a) => a.date === ds);
+  const dayActs = allDayActs.filter((a) => a.cat !== "walk");
+  const walks = allDayActs.filter((a) => a.cat === "walk");
+  const dayMatch = matchPlanDay(plan, allDayActs);
   const evs = eventsOn(ds);
   const title = plan ? plan.label : hasPlan() ? "Outside the plan" : (dayActs[0]?.title || "Logged day");
 
-  const activityMeta = (a, label) => {
+  const activityMeta = (a, label, matchInfo) => {
     const time = a.datetime.slice(11, 16);
+    let matchChip = "";
+    if (dayMatch.trainable) {
+      if (matchInfo) {
+        matchChip = `<span class="match-tag matched conf-${matchInfo.confidence}" title="${esc(matchConfidenceLabel(matchInfo.confidence))}">${esc(tt("day.matched"))}</span>`;
+      } else if (a.cat !== "walk" || plannedSportCats(plan?.kind).includes("walk")) {
+        matchChip = `<span class="match-tag unmatched" title="${esc(tt("day.unmatchedHint"))}">${esc(tt("day.unmatched"))}</span>`;
+      }
+    }
     return `
       <div class="activity-head">
-        <h3>${esc(label)}</h3>
+        <h3>${esc(label)}${matchChip ? ` ${matchChip}` : ""}</h3>
         <div class="activity-meta">
           <span class="muted">${time}${isManualActivity(a) ? " · logged here" : ""}</span>
           ${stravaViewLink(a)}
@@ -1355,32 +1537,43 @@ function renderDayDetail(ds) {
 
   const activities = dayActs.map((a) => {
     const note = FEEDBACK.activities[a.datetime];
+    const matchInfo = dayMatch.byDatetime[a.datetime] || null;
+    const feedbackPlan = matchInfo ? plan : null;
     return `
-      <section class="activity k-${a.cat}">
-        ${activityMeta(a, a.title || activityLine(a))}
+      <section class="activity k-${a.cat} ${matchInfo ? `is-matched conf-${matchInfo.confidence}` : dayMatch.trainable ? "is-unmatched" : ""}">
+        ${activityMeta(a, a.title || activityLine(a), matchInfo)}
         <div class="feedback">
           ${note ? `<p class="coach-text">${esc(note)}</p>` : ""}
-          <p class="auto-text">${esc(activityFeedback(a, plan, ACTS))}</p>
+          <p class="auto-text">${esc(activityFeedback(a, feedbackPlan, ACTS))}</p>
         </div>
         ${gearPicker(a)}
         ${statGrid(a)}
       </section>`;
   }).join("");
 
-  const walkBlocks = walks.map((a) => `
-      <section class="activity k-walk">
-        ${activityMeta(a, `Walk · ${fmtDistWithUnit(a.dist)}`)}
+  const walkBlocks = walks.map((a) => {
+    const matchInfo = dayMatch.byDatetime[a.datetime] || null;
+    return `
+      <section class="activity k-walk ${matchInfo ? "is-matched" : ""}">
+        ${activityMeta(a, `Walk · ${fmtDistWithUnit(a.dist)}`, matchInfo)}
         ${gearPicker(a)}
-      </section>`).join("");
+      </section>`;
+  }).join("");
 
   const guides = plan ? guidesFor(plan.kind, plan.label) : [];
   const showGuidesOpen = !dayActs.length;
+  const matchSummary = dayMatch.trainable && dayMatch.done
+    ? `<p class="match-summary conf-${dayMatch.match?.confidence || "low"}"><span class="match-tag matched">${esc(tt("day.matched"))}</span> ${esc(matchConfidenceLabel(dayMatch.match?.confidence))}${dayMatch.unmatched.some((a) => a.cat !== "walk") ? ` · ${esc(tt("day.extraLogged"))}` : ""}</p>`
+    : dayMatch.trainable && allDayActs.some((a) => a.cat !== "walk")
+      ? `<p class="match-summary is-unmatched"><span class="match-tag unmatched">${esc(tt("day.unmatched"))}</span> ${esc(tt("day.noPlanMatch"))}</p>`
+      : "";
 
   return `
     <header class="dialog-head">
       <div>
         <div class="eyebrow">${fmt(date, { weekday: "long", day: "numeric", month: "long" })}${plan ? ` · Week ${plan.week.wk} · ${plan.week.phase}` : ""}</div>
         <h2>${plan ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span> ` : ""}${esc(title)}</h2>
+        ${matchSummary}
       </div>
       <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
     </header>
@@ -1390,7 +1583,7 @@ function renderDayDetail(ds) {
     ${plan ? paceGraph(plan) : ""}
     ${activities}
     ${walkBlocks}
-    ${currentRoute() === "activities" ? "" : logSessionForm(ds, plan, ACTS.filter((a) => a.date === ds))}
+    ${currentRoute() === "activities" ? "" : logSessionForm(ds, plan, allDayActs)}
     ${guides.length ? `
       <details class="guides" ${showGuidesOpen ? "open" : ""}>
         <summary>${dayActs.length ? "About the planned session" : "How to do this session"}</summary>
@@ -2124,14 +2317,15 @@ function planProgressStats(acts, now) {
     week.days.forEach((day, i) => {
       const date = addDays(weekStart(week.wk), i);
       const ds = ymd(date);
-      const [kind, , km] = day;
-      const wanted = KIND_MATCH[kind] || [];
+      const [kind, label, km] = day;
+      const wanted = plannedSportCats(kind);
       if (!wanted.length || BUSY[ds]) return;
       if (date > now) return;
       planned += 1;
       if (km) plannedKm += km;
       const dayActs = acts.filter((a) => a.date === ds);
-      if (wanted.some((c) => dayActs.some((a) => a.cat === c))) done += 1;
+      const plan = { week, i, kind, label: fmtPlanLabel(label), km };
+      if (planDayDone(plan, dayActs)) done += 1;
       loggedKm += dayActs.filter((a) => a.cat === "run").reduce((s, a) => s + (a.dist || 0), 0);
     });
   });
@@ -5518,7 +5712,14 @@ async function cloudRequest(method, url, body) {
       const pace = computeAvgPace(cat, dist, duration.sec);
       const started = uniqueStartedAt(ds);
       const plan = planFor(ds);
-      const title = plan && (KIND_MATCH[plan.kind] || []).includes(cat)
+      const provisional = {
+        datetime: started,
+        date: ds,
+        cat,
+        dist,
+        title: spec.title,
+      };
+      const title = plan && scoreActivityAgainstPlan(provisional, plan)
         ? plan.label
         : spec.title;
       const distText = cat === "swim" ? String(Math.round(dist)) : String(Math.round(dist * 100) / 100);

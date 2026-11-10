@@ -669,12 +669,17 @@ function weekFeedback(week, acts, now) {
   const weekActs = acts.filter((a) => a.date >= ymd(s) && a.date <= ymd(addDays(s, 6)));
 
   let planned = 0, done = 0;
-  week.days.slice(0, daysIn).forEach(([kind], i) => {
-    const wanted = KIND_MATCH[kind];
+  week.days.slice(0, daysIn).forEach(([kind, label, km], i) => {
+    const wanted = typeof plannedSportCats === "function" ? plannedSportCats(kind) : (KIND_MATCH[kind] || null);
     const ds = ymd(addDays(s, i));
-    if (!wanted || BUSY[ds]) return;
+    if (!wanted || !wanted.length || BUSY[ds]) return;
     planned++;
-    if (wanted.some((c) => weekActs.some((a) => a.date === ds && a.cat === c))) done++;
+    const dayActs = weekActs.filter((a) => a.date === ds);
+    if (typeof planDayDone === "function") {
+      if (planDayDone({ week, i, kind, label: typeof fmtPlanLabel === "function" ? fmtPlanLabel(label) : label, km }, dayActs)) done++;
+    } else if (wanted.some((c) => dayActs.some((a) => a.cat === c))) {
+      done++;
+    }
   });
 
   const pct = Math.round((km / target) * 100);
