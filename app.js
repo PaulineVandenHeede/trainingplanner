@@ -4251,6 +4251,28 @@ function longLabel(week) {
   return `${day ? day[1] : ""} ${week.focus || ""} ${week.note || ""}`;
 }
 
+function phaseBlocksForReview(weeks) {
+  const listed = Array.isArray(window.PHASES) ? window.PHASES : [];
+  if (listed.length) {
+    return listed
+      .map((p) => ({
+        name: String(p.name || "").trim(),
+        to: Number(p.to) || 0,
+      }))
+      .filter((p) => p.name && p.to > 0);
+  }
+  const ends = [];
+  const rows = weeks || [];
+  for (let i = 0; i < rows.length; i++) {
+    const name = String(rows[i]?.phase || "").trim();
+    const wk = Number(rows[i]?.wk) || 0;
+    if (!name || !wk) continue;
+    const next = String(rows[i + 1]?.phase || "").trim();
+    if (name !== next) ends.push({ name, to: wk });
+  }
+  return ends;
+}
+
 function reviewStages(weeks) {
   const longs = (weeks || []).map((w) => {
     const blob = longLabel(w);
@@ -4269,12 +4291,25 @@ function reviewStages(weeks) {
   if (first) stages.push({ id: "first-mp-20", wk: first.wk, title: "first 20 km+ with marathon pace" });
   if (main && main.wk !== first?.wk) stages.push({ id: "main-mp", wk: main.wk, title: "main marathon-pace long" });
   if (lock && lock.wk !== main?.wk && lock.wk !== first?.wk) stages.push({ id: "lock-mp", wk: lock.wk, title: "lock race pace" });
-  return stages;
+
+  // Also re-check paces/volume when a training block ends (skip taper — freshen, don't retarget).
+  for (const block of phaseBlocksForReview(weeks)) {
+    if (/taper/i.test(block.name)) continue;
+    const id = `end-${block.name.toLowerCase().replace(/\s+/g, "-")}`;
+    if (stages.some((s) => s.id === id)) continue;
+    stages.push({
+      id,
+      wk: block.to,
+      title: `end of ${block.name} block`,
+    });
+  }
+
+  return stages.sort((a, b) => a.wk - b.wk || String(a.id).localeCompare(String(b.id)));
 }
 
-function dueReviewStage(now) {
+function dueReviewStages(now) {
   const wk = weekOf(now);
-  return reviewStages(window.WEEKS).find((s) => wk === s.wk || wk === s.wk + 1) || null;
+  return reviewStages(window.WEEKS).filter((s) => wk === s.wk || wk === s.wk + 1);
 }
 
 function alreadyQueued(stage) {
@@ -4283,20 +4318,24 @@ function alreadyQueued(stage) {
 
 async function queueStageReviews(now) {
   if (!CURRENT_USER_ID || !hasPlan()) return false;
-  const due = dueReviewStage(now);
-  if (!due || alreadyQueued(due)) return false;
-  const row = {
-    user_id: CURRENT_USER_ID,
-    id: newId(),
-    type: "note",
-    summary: `Stage review · week ${due.wk}: ${due.title}. Re-evaluate volume and A-goal from logged runs.`,
-    details: { stage: due.id, week: due.wk },
-    status: "pending",
-  };
-  const { error } = await sb.from("changes").insert(row);
-  if (error) return false;
-  CHANGES = [{ ...row, createdAt: new Date().toISOString() }, ...CHANGES];
-  return true;
+  const due = dueReviewStages(now).filter((s) => !alreadyQueued(s));
+  if (!due.length) return false;
+  let queued = false;
+  for (const stage of due) {
+    const row = {
+      user_id: CURRENT_USER_ID,
+      id: newId(),
+      type: "note",
+      summary: `Stage review · week ${stage.wk}: ${stage.title}. Re-evaluate paces, volume and A-goal from logged sessions.`,
+      details: { stage: stage.id, week: stage.wk },
+      status: "pending",
+    };
+    const { error } = await sb.from("changes").insert(row);
+    if (error) continue;
+    CHANGES = [{ ...row, createdAt: new Date().toISOString() }, ...CHANGES];
+    queued = true;
+  }
+  return queued;
 }
 
 let COACH_POLL = null;
@@ -4324,9 +4363,10 @@ async function invokeCoach(body) {
 }
 
 async function sendCoachRequest(opts = {}) {
-  const due = dueReviewStage(today());
+  const due = dueReviewStages(today());
+  const stage = due.map((s) => s.id).join(", ") || null;
   try {
-    const data = await invokeCoach({ action: "start", stage: due?.id || null });
+    const data = await invokeCoach({ action: "start", stage });
     if (data.status === "applied") {
       COACH_STATUS = "idle";
       toast(data.summary || "Plan updated.");
