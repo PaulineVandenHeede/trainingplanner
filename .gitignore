@@ -18,9 +18,11 @@ secrets/
 .garmin-*
 .gchunk*
 .gp*.b64
+.b64part*
 .p[0-9].json
 .strava-*
-.mcp-deploy-rpc.json
+.deploy-*
+.mcp-*
 .content_escaped.txt
 .garmin-content.jsonstring
 d.json

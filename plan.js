@@ -28,12 +28,14 @@ function clearSkipped(userId) {
 }
 
 function applyPlanRow(row) {
+  const goalType = row?.goal_type
+    || (/^general fitness$/i.test(String(row?.event_name || "")) ? "fitness" : "race");
   const sources = Array.isArray(row?.sources) && row.sources.length
     ? row.sources
-    : (row?.sport === "triathlon" && Array.isArray(window.TRAINING_RESEARCH)
-      ? window.TRAINING_RESEARCH.slice()
+    : (typeof window.researchForSport === "function"
+      ? window.researchForSport(row?.sport || "run", goalType)
       : []);
-  window.CURRENT_PLAN = { ...row, sources };
+  window.CURRENT_PLAN = { ...row, goal_type: goalType, sources };
   window.PLAN_START = row.start_date;
   window.MARATHON_DATE = row.event_date;
   window.PHASES = row.phases || [];
@@ -2054,12 +2056,13 @@ window.finishSetupWithPlan = finishSetupWithPlan;
 async function saveGeneratedPlan(userId, input) {
   const generated = generateTrainingPlan(input);
   // Client-only / optional fields — strip before insert in case DB columns aren't there yet.
-  const { sources, long_weekday, ...persisted } = generated;
+  const { sources, long_weekday, goal_type, ...persisted } = generated;
   const row = { user_id: userId, ...persisted };
   const { data, error } = await sb.from("plans").insert(row).select("*").single();
   if (error) throw error;
   if (data) {
     data.sources = sources || [];
+    data.goal_type = goal_type || input.goalType || "race";
     if (long_weekday != null) data.long_weekday = long_weekday;
   }
   const raceKm = generated.run_km || generated.bike_km || (generated.swim_m ? generated.swim_m / 1000 : 0);

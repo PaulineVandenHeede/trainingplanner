@@ -121,61 +121,150 @@ window.FITNESS_WEEKS_BY_SPORT = {
   triathlon: { options: [8, 12, 16], default: 12, hint: "Triathlon fitness / base blocks are most often 8–16 weeks." },
 };
 
-// Research used for triathlon (and shared endurance) plan rules.
-// Links are returned on generated plans so athletes can review the sources.
+// Research links returned on generated plans. Each entry lists which sports it applies to;
+// race_only sources (tapers, race bricks) are omitted for general fitness blocks.
 window.TRAINING_RESEARCH = [
+  // —— Running ——
+  {
+    id: "run-periodization-review",
+    title: "Training Periodization in Distance Runners (systematic review)",
+    url: "https://pubmed.ncbi.nlm.nih.gov/35418513/",
+    sports: ["run"],
+    used_for: "Base → build → peak; mostly easy volume with hard/easy days; quality rises late in the block",
+  },
+  {
+    id: "run-recreational",
+    title: "Factors Affecting Training in Recreational Endurance Runners",
+    url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC7183043/",
+    sports: ["run"],
+    used_for: "Periodized progression for recreational runners; most volume easy; strength + intervals help",
+  },
+  {
+    id: "run-taper-marathon",
+    title: "Longer Disciplined Tapers Improve Marathon Performance",
+    url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC8506252/",
+    sports: ["run"],
+    race_only: true,
+    used_for: "2–3 week disciplined taper before a race; cut volume while keeping some sharpness",
+  },
+  {
+    id: "endurance-taper-meta",
+    title: "Effects of tapering on performance in endurance athletes (meta-analysis)",
+    url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC10171681/",
+    sports: ["run", "swim", "bike", "triathlon"],
+    race_only: true,
+    used_for: "~41–60% volume cut over ≤21 days; keep intensity and session frequency",
+  },
+  // —— Swim ——
+  {
+    id: "swim-periodization-review",
+    title: "Training Intensity Distribution and Periodization in Elite Swimmers",
+    url: "https://pubmed.ncbi.nlm.nih.gov/33952709/",
+    sports: ["swim"],
+    used_for: "Wave-like mesocycles; aerobic base then threshold/VO2 work matched to event",
+  },
+  {
+    id: "swim-overload-taper",
+    title: "Identifying Optimal Overload and Taper in Elite Swimmers",
+    url: "https://www.inigomujika.com/wp-content/uploads/2013/12/identifying_optimal_overload.pdf",
+    sports: ["swim"],
+    race_only: true,
+    used_for: "Pre-race overload then taper: cut volume sharply, keep intensity and most sessions",
+  },
+  {
+    id: "swim-usa-adm",
+    title: "USA Swimming American Development Model",
+    url: "https://www.usaswimming.org/coaches-leaders/coaches/american-development-model",
+    sports: ["swim"],
+    used_for: "Technique and consistency first; progressive load with energy-system awareness",
+  },
+  // —— Bike ——
+  {
+    id: "bike-trainingpeaks-annual",
+    title: "How to Create Your Annual Cycling Training Plan (TrainingPeaks)",
+    url: "https://www.trainingpeaks.com/blog/create-annual-cycling-training-plan/",
+    sports: ["bike"],
+    used_for: "Base → build → peak structure; raise load gradually; taper only before a goal race",
+  },
+  {
+    id: "bike-base-to-build",
+    title: "Further or Faster: When to Go from Base to Build",
+    url: "https://www.trainingpeaks.com/blog/further-or-faster-when-to-go-from-base-to-build/",
+    sports: ["bike"],
+    used_for: "Stay in base until endurance is solid, then add intensity in the build",
+  },
+  {
+    id: "bike-british-cycling-intensity",
+    title: "British Cycling: understanding training intensity",
+    url: "https://www.britishcycling.org.uk/knowledge/training/get-started/article/izn20140725-All-Cycling-Understanding-Intensity-1-0",
+    sports: ["bike"],
+    used_for: "Most rides easy; hard sessions deliberate — avoid junk middle intensity",
+  },
+  // —— Triathlon ——
   {
     id: "triathlete-20w",
     title: "A 20-Week Training Plan for Your First 70.3 Triathlon",
     url: "https://www.triathlete.com/training/20-week-training-plan-first-70-3-triathlon",
+    sports: ["triathlon"],
     used_for: "70.3 structure: ~8w base → build → peak, recovery every 4th week, brick pattern",
   },
   {
     id: "triathlete-periodization",
     title: "How to Use Periodization in Your Triathlon Training Plan",
     url: "https://www.triathlete.com/training/how-to-use-periodization-in-your-triathlon-training-plan",
+    sports: ["triathlon"],
     used_for: "Base/build/taper lengths; longer base for inexperienced long-course athletes; 3:1 overload/recovery",
   },
   {
     id: "osb-70.3",
     title: "Half-Ironman Specific Training (Marty Gaal / OSB Multisport)",
     url: "https://www.osbmultisport.com/articles/halfironmantraining.pdf",
+    sports: ["triathlon"],
     used_for: "Beginners emphasize aerobic base; advanced add race-specific intensity; brick/race-pace key sessions",
   },
   {
     id: "scientific-taper",
     title: "How to optimize your triathlon taper (Scientific Triathlon)",
     url: "https://scientifictriathlon.com/tapering-for-triathlon/",
+    sports: ["triathlon"],
+    race_only: true,
     used_for: "8–14 day taper for 70.3; ~40–60% volume cut; keep frequency and some race intensity",
   },
   {
     id: "garmin-periodisation",
     title: "Periodisation of Training (Garmin triathlon programme)",
     url: "https://static.garmincdn.com/shared/emea/custom/training/downloads/triathlon/Tri-Training-Programme-Periodisation-ENGLISH.pdf",
+    sports: ["triathlon"],
     used_for: "Long aerobic base (8–16w); progression then specific/race-pace work; volume down in specific phase",
   },
   {
     id: "corerise-split",
     title: "How to train for triathlon: structuring swim, bike and run",
     url: "https://corerise.ai/learn/how-to-train-for-triathlon-three-disciplines",
+    sports: ["triathlon"],
     used_for: "~15% swim / 55% bike / 30% run by time; protect the run; bike carries most volume",
   },
   {
     id: "usat-bricks",
     title: "How to Use Brick Workouts in Triathlon Training (USA Triathlon)",
     url: "https://www.usatriathlon.org/articles/training-tips/how-to-use-brick-workouts-in-triathlon-training",
+    sports: ["triathlon"],
+    race_only: true,
     used_for: "Bike→run bricks to practise T2 and race feel",
   },
   {
     id: "triathlete-bricks",
     title: "How Often Should You Run Off the Bike in Triathlon Training?",
     url: "https://www.triathlete.com/training/dear-coach-how-often-should-i-run-off-the-bike/",
+    sports: ["triathlon"],
+    race_only: true,
     used_for: "About one brick most build/peak weeks for long-course; short mid-week option + longer weekend brick",
   },
   {
     id: "tritanium-couch",
     title: "Couch to Half Ironman (70.3) Training Plan",
     url: "https://tri-tanium.com/resources/couch-to-70-3-training-plan/",
+    sports: ["triathlon"],
     used_for: "Frequency first, then volume, then intensity; 3–4 week blocks with recovery",
   },
 ];
@@ -247,10 +336,68 @@ function triDistanceBand(distances = {}) {
 function phaseBlocks(n, opts = {}) {
   const sport = opts.sport || "run";
   const experience = opts.experience || "intermediate";
+  const fitness = !!opts.fitness;
   const band = sport === "triathlon" ? triDistanceBand(opts.distances) : null;
   const longCourse = band === "half" || band === "full";
   const beginnerLong = sport === "triathlon" && longCourse && experience === "beginner";
   const advancedLong = sport === "triathlon" && longCourse && experience === "advanced";
+
+  // General fitness: no race → no taper. End on Build/Peak and keep the habit.
+  if (fitness) {
+    if (sport === "triathlon") {
+      if (n >= 18) {
+        const rebuild = beginnerLong ? Math.round(n * 0.12) : Math.round(n * 0.1);
+        const base = beginnerLong ? Math.round(n * 0.4) : advancedLong ? Math.round(n * 0.3) : Math.round(n * 0.36);
+        const build = beginnerLong ? Math.round(n * 0.22) : advancedLong ? Math.round(n * 0.3) : Math.round(n * 0.26);
+        const peak = Math.max(2, n - rebuild - base - build);
+        return [
+          { name: "Rebuild", weeks: Math.max(1, rebuild) },
+          { name: "Base", weeks: Math.max(4, base) },
+          { name: "Build", weeks: Math.max(3, build) },
+          { name: "Peak", weeks: Math.max(2, peak) },
+        ];
+      }
+      if (n >= 12) {
+        const base = beginnerLong ? Math.round(n * 0.48) : advancedLong ? Math.round(n * 0.34) : Math.round(n * 0.42);
+        const build = beginnerLong ? Math.round(n * 0.26) : advancedLong ? Math.round(n * 0.36) : Math.round(n * 0.32);
+        const peak = Math.max(2, n - base - build);
+        return [
+          { name: "Base", weeks: Math.max(4, base) },
+          { name: "Build", weeks: Math.max(3, build) },
+          { name: "Peak", weeks: Math.max(2, peak) },
+        ];
+      }
+      if (n >= 8) {
+        return [
+          { name: "Base", weeks: Math.max(3, Math.round(n * 0.45)) },
+          { name: "Build", weeks: Math.max(3, Math.round(n * 0.55)) },
+        ];
+      }
+      return [{ name: "Build", weeks: Math.max(4, n) }];
+    }
+    if (n >= 18) {
+      return [
+        { name: "Rebuild", weeks: Math.round(n * 0.16) },
+        { name: "Base", weeks: Math.round(n * 0.34) },
+        { name: "Build", weeks: Math.round(n * 0.28) },
+        { name: "Peak", weeks: Math.max(2, n) },
+      ];
+    }
+    if (n >= 12) {
+      return [
+        { name: "Base", weeks: Math.round(n * 0.42) },
+        { name: "Build", weeks: Math.round(n * 0.34) },
+        { name: "Peak", weeks: Math.max(2, n) },
+      ];
+    }
+    if (n >= 8) {
+      return [
+        { name: "Base", weeks: Math.max(3, Math.round(n * 0.45)) },
+        { name: "Build", weeks: Math.max(3, n) },
+      ];
+    }
+    return [{ name: "Build", weeks: Math.max(4, n) }];
+  }
 
   // Triathlon: Triathlete/Garmin-style base → build → peak → 8–14 day taper.
   // Inexperienced long-course athletes get a longer base and a shorter build.
@@ -312,7 +459,7 @@ function phaseBlocks(n, opts = {}) {
   ];
 }
 
-function phaseFocus(name, sport, band) {
+function phaseFocus(name, sport, band, fitness) {
   if (sport === "triathlon") {
     const long = band === "half" || band === "full";
     if (name === "Rebuild") return "Ease back in: frequency over duration, technique and strength";
@@ -321,12 +468,20 @@ function phaseFocus(name, sport, band) {
         ? "Aerobic base across swim/bike/run — mostly easy volume, form work, early short bricks"
         : "Build consistency and aerobic endurance across all three sports";
     }
-    if (name === "Build") return "Add race-specific intensity, longer key sessions, and weekly bike→run bricks";
-    if (name === "Peak") return "Highest race-specific load: long bricks, fueling practice, then protect recovery";
+    if (name === "Build") {
+      return fitness
+        ? "Add quality across swim/bike/run and keep weekly bricks for transition fitness"
+        : "Add race-specific intensity, longer key sessions, and weekly bike→run bricks";
+    }
+    if (name === "Peak") {
+      return fitness
+        ? "Hold a strong sustainable load; protect recovery weeks"
+        : "Highest race-specific load: long bricks, fueling practice, then protect recovery";
+    }
     if (name === "Taper") return "Cut volume ~40–60%, keep session frequency and short race-pace reminders";
   }
   if (name === "Taper") return "Freshen up for race week";
-  if (name === "Peak") return "Highest load, then recover";
+  if (name === "Peak") return fitness ? "Highest sustainable load — keep the habit" : "Highest load, then recover";
   if (name === "Build") return "Quality + longer key session";
   if (name === "Rebuild") return "Ease back into training";
   return "Consistency and aerobic base";
@@ -347,7 +502,7 @@ function assignPhases(n, opts = {}) {
       name: b.name,
       from,
       to,
-      focus: phaseFocus(b.name, opts.sport, band),
+      focus: phaseFocus(b.name, opts.sport, band, !!opts.fitness),
     });
     used = to;
   });
@@ -356,20 +511,23 @@ function assignPhases(n, opts = {}) {
 
 function weekTargets(n, startKm, peakKm, taperFrom, opts = {}) {
   const sport = opts.sport || "run";
+  const fitness = !!opts.fitness;
   // Scientific Triathlon: ~40–60% volume cut into race week for triathlon;
   // keep a steeper early taper drop than a linear cut.
+  // Fitness blocks have no race week / taper — volume builds (with cutbacks) to the end.
   const raceFloor = sport === "triathlon"
     ? Math.max(6, Math.round(peakKm * 0.42))
     : Math.max(6, Math.round(startKm * 0.45));
   const taperStartFrac = sport === "triathlon" ? 0.72 : 0.78;
   const taperEndFrac = sport === "triathlon" ? 0.48 : 0.5;
+  const buildN = fitness ? n : Math.max(1, taperFrom - 1);
   const out = [];
   for (let i = 1; i <= n; i++) {
-    if (i === n) {
+    if (!fitness && i === n) {
       out.push(raceFloor);
       continue;
     }
-    if (i >= taperFrom) {
+    if (!fitness && i >= taperFrom) {
       const t = (i - taperFrom + 1) / Math.max(1, n - taperFrom);
       // Fast early decay, then flatter — approximate exponential taper shape.
       const decay = 1 - Math.exp(-2.2 * t);
@@ -377,10 +535,9 @@ function weekTargets(n, startKm, peakKm, taperFrom, opts = {}) {
       out.push(Math.round(peakKm * frac));
       continue;
     }
-    const buildN = taperFrom - 1;
     const t = (i - 1) / Math.max(1, buildN - 1);
     let km = Math.round(startKm + (peakKm - startKm) * t);
-    if (i % 4 === 0 && i < taperFrom) km = Math.round(km * 0.82);
+    if (i % 4 === 0 && (fitness || i < taperFrom)) km = Math.round(km * 0.82);
     out.push(Math.max(startKm, km));
   }
   return out;
@@ -1045,12 +1202,18 @@ function defaultPaces(sport) {
   ];
 }
 
-function researchForSport(sport) {
+function researchForSport(sport, goalType = "race") {
   const all = window.TRAINING_RESEARCH || [];
-  if (sport === "triathlon") return all.slice();
-  // Shared endurance ideas still apply to single-sport plans.
-  return all.filter((s) => ["triathlete-periodization", "scientific-taper", "garmin-periodisation"].includes(s.id));
+  const key = ["run", "swim", "bike", "triathlon"].includes(sport) ? sport : "run";
+  const fitness = goalType === "fitness";
+  return all.filter((s) => {
+    const sports = Array.isArray(s.sports) && s.sports.length ? s.sports : ["triathlon"];
+    if (!sports.includes(key)) return false;
+    if (fitness && s.race_only) return false;
+    return true;
+  });
 }
+window.researchForSport = researchForSport;
 
 window.generateTrainingPlan = function generateTrainingPlan(input) {
   const goalType = input.goalType === "time" || input.goalType === "fitness" ? input.goalType : "race";
@@ -1144,13 +1307,13 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   }
 
   const peak = peakVolume(sport, weekly, distances.run || 0);
-  const phaseOpts = { sport, experience, distances };
+  const phaseOpts = { sport, experience, distances, fitness: isFitness };
   const phases = assignPhases(n, phaseOpts);
   const taper = phases.find((p) => p.name === "Taper");
-  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n - 1, { sport });
+  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n + 1, { sport, fitness: isFitness });
   const cap = longCap(sport, distances.run || 0, weekly);
   const raceDay = (race.getDay() + 6) % 7;
-  const sources = researchForSport(sport);
+  const sources = researchForSport(sport, goalType);
   const band = sport === "triathlon" ? triDistanceBand(distances) : null;
 
   const weeks = targets.map((km, i) => {
@@ -1183,12 +1346,18 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     const brick = sport === "triathlon" && !isRaceWeek ? brickLabel(phase.name, band, wk) : null;
     let note;
     if (wk === 1) {
-      note = sport === "triathlon"
-        ? `Built from ${weekly} km/week run volume toward ${eventName}${extras.length ? ` (${extras.join("; ")})` : ""}. Research-based triathlon periodization: frequency → volume → intensity, ~10% weekly load rise max, cutback every 4th week, and a sharper race taper.`
-        : `Built from ${weekly} km/week toward ${eventName}${extras.length ? `, ${extras.join(", ")}` : ""}. Weekly load rises about 10% max, with a cutback every 4th week.`;
+      if (isFitness) {
+        note = sport === "triathlon"
+          ? `General fitness block from ${weekly} km/week run volume${extras.length ? ` (${extras.join("; ")})` : ""}. Frequency → volume → intensity, ~10% weekly load rise max, cutback every 4th week — no race taper.`
+          : `General fitness block from ${weekly} km/week${extras.length ? `, ${extras.join(", ")}` : ""}. Weekly load rises about 10% max, with a cutback every 4th week — no race taper.`;
+      } else {
+        note = sport === "triathlon"
+          ? `Built from ${weekly} km/week run volume toward ${eventName}${extras.length ? ` (${extras.join("; ")})` : ""}. Research-based triathlon periodization: frequency → volume → intensity, ~10% weekly load rise max, cutback every 4th week, and a sharper race taper.`
+          : `Built from ${weekly} km/week toward ${eventName}${extras.length ? `, ${extras.join(", ")}` : ""}. Weekly load rises about 10% max, with a cutback every 4th week.`;
+      }
     } else if (brick && (phase.name === "Build" || phase.name === "Peak")) {
       note = `Key transition work this week: ${brick}. Practise fueling on the long ride.`;
-    } else if (phase.name === "Taper" && wk === (taper ? taper.from : n - 1)) {
+    } else if (!isFitness && phase.name === "Taper" && wk === (taper ? taper.from : n - 1)) {
       note = sport === "triathlon"
         ? "Taper starts: cut volume sharply, keep swim/bike/run frequency, and include short race-pace reminders."
         : "Taper starts: reduce volume, keep some sharpness.";
@@ -1229,9 +1398,12 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     bike_weekdays: bikeWeekdays,
     long_weekday: longWeekday,
     notes: sport === "triathlon"
-      ? "Triathlon plan uses researched periodization (base → build → peak → taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page."
+      ? (isFitness
+        ? "Triathlon fitness block uses researched periodization (base → build → peak, no taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page."
+        : "Triathlon plan uses researched periodization (base → build → peak → taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page.")
       : "",
     experience,
+    goal_type: goalType,
     phases,
     weeks,
     paces: defaultPaces(sport),
