@@ -307,6 +307,73 @@ function homeWeekCardTitle(viewWk, calendarWk, offset) {
   return offset === 0 ? tt("home.selectedWeek") : tt("home.followingWeek");
 }
 
+function todaySessionCard(acts, now) {
+  const ds = ymd(now);
+  const plan = planFor(ds);
+  const dayActs = (acts || []).filter((a) => a.date === ds);
+  const busy = BUSY[ds];
+  const dayMatch = plan ? matchPlanDay(plan, dayActs) : null;
+  const rec = typeof recoveryFor === "function" ? recoveryFor(ds) : null;
+  const weekday = fmt(now, { weekday: "long" });
+  const dateLine = fmt(now, { day: "numeric", month: "long" });
+
+  let statusLine = tt("home.todayOpen");
+  let statusClass = "pending";
+  if (busy) {
+    statusLine = busy.reason ? esc(busy.reason) : tt("day.noTraining");
+    statusClass = "busy";
+  } else if (dayMatch?.done) {
+    statusLine = matchConfidenceLabel(dayMatch.match?.confidence);
+    statusClass = "done";
+  } else if (plan && plannedSportCats(plan.kind).length) {
+    statusLine = tt("home.todayTodo");
+    statusClass = "todo";
+  } else if (dayActs.length) {
+    statusLine = tt("home.todayLogged");
+    statusClass = "done";
+  } else if (!plan) {
+    statusLine = tt("home.todayFree");
+    statusClass = "free";
+  }
+
+  const title = busy
+    ? tt("common.busy")
+    : plan
+      ? plan.label
+      : dayActs[0]?.title || tt("home.todayFree");
+  const chip = busy
+    ? `<span class="chip k-busy">${tt("common.busy")}</span>`
+    : plan
+      ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span>`
+      : dayActs[0]
+        ? `<span class="chip k-${dayActs[0].cat}">${KIND_LABEL(dayActs[0].cat) || dayActs[0].cat}</span>`
+        : `<span class="chip k-rest">${KIND_LABEL("rest")}</span>`;
+
+  const logged = dayActs.length
+    ? dayActs.slice(0, 2).map((a) => dayActivityMatchLine(a, dayMatch || { trainable: false }, plan?.kind)).join("")
+    : "";
+  const recovery = rec
+    ? `<span class="today-rec lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${tt("day.recovery")} ${rec.score}</span>`
+    : "";
+
+  return `
+    <div class="today-card status-${statusClass}" role="button" tabindex="0" data-action="open-day" data-date="${esc(ds)}" aria-label="${esc(tt("home.todayOpenAria", { title }))}">
+      <div class="today-card-top">
+        <div class="eyebrow">${esc(tt("home.todayFocus"))}</div>
+        ${recovery}
+      </div>
+      <div class="today-card-main">
+        <div>
+          <p class="today-date"><strong>${esc(weekday)}</strong> · ${esc(dateLine)}</p>
+          <h2>${chip} <span class="today-title">${esc(title)}</span></h2>
+          <p class="today-status">${statusLine}</p>
+        </div>
+        <span class="today-open" aria-hidden="true">›</span>
+      </div>
+      ${logged ? `<div class="today-logged">${logged}</div>` : ""}
+    </div>`;
+}
+
 function renderNoPlanHome(acts, now) {
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const upcoming = upcomingEventsList(now, acts);
@@ -314,7 +381,7 @@ function renderNoPlanHome(acts, now) {
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.logOrImport");
   return `
-    <section class="hero">
+    <section class="hero morning-hero">
       <div>
         <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}</div>
         <h1>${tt("home.noPlan")}</h1>
@@ -322,6 +389,8 @@ function renderNoPlanHome(acts, now) {
       </div>
       <button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button>
     </section>
+    ${todaySessionCard(acts, now)}
+    ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
     ${acts.length ? loggedWeekBlock(acts, now) : `
       <section class="card">
         <p class="muted" style="margin:0">${tt("home.emptyCard")}</p>
@@ -348,7 +417,7 @@ function renderHome(acts, now) {
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.openDayOrImport");
   return `
-    <section class="hero">
+    <section class="hero morning-hero">
       <div>
         <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}${viewingPast ? tt("home.viewingWeek", { week: wk }) : ""}</div>
         <h1>${tt("home.weekOf", { week: wk, total: WEEKS.length })} <span class="muted">· ${phase.name}</span></h1>
@@ -360,6 +429,9 @@ function renderHome(acts, now) {
       </button>
     </section>
 
+    ${!viewingPast ? todaySessionCard(acts, now) : ""}
+    ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
+
     <div class="timeline">
       ${PHASES.map((p) => `<div class="seg p-${p.name} ${p === phase ? "active" : ""}" style="flex:${p.to - p.from + 1}"><span>${p.name}</span></div>`).join("")}
       <div class="marker" style="left:${Math.max(0, Math.min(100, progress))}%"></div>
@@ -367,7 +439,7 @@ function renderHome(acts, now) {
 
     ${(() => {
       const block = recoveryBlock(ymd(now), planFor(ymd(now)));
-      return block ? `<section class="card">${block}</section>` : "";
+      return block ? `<section class="card recovery-home">${block}</section>` : "";
     })()}
 
     ${changesN ? `

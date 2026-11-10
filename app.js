@@ -1445,6 +1445,108 @@ function toggleAccountMenu() {
 }
 
 
+function isStandaloneDisplay() {
+  try {
+    if (window.matchMedia?.("(display-mode: standalone)").matches) return true;
+    if (window.matchMedia?.("(display-mode: fullscreen)").matches) return true;
+    if (typeof navigator !== "undefined" && navigator.standalone) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
+function isIosDevice() {
+  const ua = String(navigator.userAgent || "");
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function syncStandaloneClass() {
+  document.documentElement.classList.toggle("standalone", isStandaloneDisplay());
+  document.body.classList.toggle("is-standalone", isStandaloneDisplay());
+}
+
+let DEFERRED_INSTALL_PROMPT = null;
+
+function installHintDismissed() {
+  try { return localStorage.getItem("tp-install-hint") === "1"; } catch { return false; }
+}
+
+function dismissInstallHint() {
+  try { localStorage.setItem("tp-install-hint", "1"); } catch { /* ignore */ }
+}
+
+function installPromptBanner() {
+  if (isStandaloneDisplay() || installHintDismissed()) return "";
+  const canInstall = !!DEFERRED_INSTALL_PROMPT;
+  const ios = isIosDevice();
+  if (!canInstall && !ios) return "";
+  const lead = canInstall
+    ? tt("install.bannerLead")
+    : tt("install.bannerIos");
+  const action = canInstall
+    ? `<button class="button small" type="button" data-action="install-app">${tt("install.action")}</button>`
+    : "";
+  return `
+    <aside class="install-banner" role="note">
+      <div>
+        <strong>${tt("install.bannerTitle")}</strong>
+        <p class="muted small-text">${lead}</p>
+      </div>
+      <div class="install-banner-actions">
+        ${action}
+        <button class="button ghost small" type="button" data-action="dismiss-install">${tt("install.dismiss")}</button>
+      </div>
+    </aside>`;
+}
+
+function installSettingsCard() {
+  if (isStandaloneDisplay()) {
+    return `
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">${tt("install.eyebrow")}</div>
+            <h2>${tt("install.installedTitle")}</h2>
+            <p class="muted" style="margin:6px 0 0">${tt("install.installedHelp")}</p>
+          </div>
+        </div>
+      </section>`;
+  }
+  const canInstall = !!DEFERRED_INSTALL_PROMPT;
+  const body = canInstall
+    ? `<p class="muted" style="margin:0 0 12px">${tt("install.settingsLead")}</p>
+       <button class="button" type="button" data-action="install-app">${tt("install.action")}</button>`
+    : isIosDevice()
+      ? `<p class="muted" style="margin:0">${tt("install.settingsIos")}</p>`
+      : `<p class="muted" style="margin:0">${tt("install.settingsBrowser")}</p>`;
+  return `
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <div class="eyebrow">${tt("install.eyebrow")}</div>
+          <h2>${tt("install.settingsTitle")}</h2>
+        </div>
+      </div>
+      ${body}
+    </section>`;
+}
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  DEFERRED_INSTALL_PROMPT = e;
+  syncStandaloneClass();
+  if (APP_READY && (currentRoute() === "home" || currentRoute() === "settings")) render(true);
+});
+
+window.addEventListener("appinstalled", () => {
+  DEFERRED_INSTALL_PROMPT = null;
+  dismissInstallHint();
+  syncStandaloneClass();
+  toast(tt("install.done"));
+  if (APP_READY) render(true);
+});
+
+syncStandaloneClass();
+
 function renderSettings() {
   const username = window.CURRENT_PROFILE?.username || "";
   const email = window.CURRENT_USER_EMAIL || "";
@@ -1465,6 +1567,7 @@ function renderSettings() {
       </div>
     </section>
     <div class="settings-stack">
+      ${installSettingsCard()}
       <section class="card">
         <div class="card-head">
           <div>
@@ -2899,6 +3002,7 @@ function renderView(route, acts, now) {
 }
 
 function render(force = false) {
+  syncStandaloneClass();
   closeAccountMenu();
   captureEventFormDraft();
   captureActivityLogDraft();
@@ -3535,6 +3639,28 @@ document.addEventListener("click", async (e) => {
     else HOME_WEEK = Math.min(WEEKS.length, cur + 1);
     if (HOME_WEEK === calendarWk) HOME_WEEK = null;
     render(true);
+    return;
+  }
+  if (btn.dataset.action === "dismiss-install") {
+    dismissInstallHint();
+    render(true);
+    return;
+  }
+  if (btn.dataset.action === "install-app") {
+    if (!DEFERRED_INSTALL_PROMPT) {
+      toast(tt("install.unavailable"), true);
+      return;
+    }
+    try {
+      DEFERRED_INSTALL_PROMPT.prompt();
+      const choice = await DEFERRED_INSTALL_PROMPT.userChoice;
+      DEFERRED_INSTALL_PROMPT = null;
+      if (choice?.outcome === "accepted") dismissInstallHint();
+      syncStandaloneClass();
+      render(true);
+    } catch (err) {
+      toast(err.message || tt("install.unavailable"), true);
+    }
     return;
   }
   if (btn.dataset.action === "start-plan") {
@@ -4175,8 +4301,9 @@ document.addEventListener("input", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeAccountMenu();
-  const day = e.target.closest?.(".day.clickable");
-  if (day && (e.key === "Enter" || e.key === " ")) {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const day = e.target.closest?.(".day.clickable, .today-card");
+  if (day?.dataset?.date) {
     e.preventDefault();
     openDay(day.dataset.date);
   }
