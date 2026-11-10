@@ -470,7 +470,7 @@ function freeDaysInWeek(week, skip) {
     .filter((d) => d.i !== skip && FREE_KINDS.includes(d.kind) && !BUSY[d.ds] && parseDate(d.ds) >= today());
 }
 
-const dayName = (week, i) => `${DAY_NAMES[i]} ${short(addDays(weekStart(week.wk), i))}`;
+const dayName = (week, i) => `${(typeof DAY_NAMES === "function" ? DAY_NAMES() : DAY_NAMES)[i]} ${short(addDays(weekStart(week.wk), i))}`;
 
 function busySuggestion(week, i) {
   const [kind, label] = week.days[i];

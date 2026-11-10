@@ -69,11 +69,15 @@ function isBlocked(rel) {
 
 function lanAddresses() {
   const addrs = [];
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const info of list || []) {
-      const v4 = info.family === "IPv4" || info.family === 4;
-      if (v4 && !info.internal && !info.address.startsWith("169.254.")) addrs.push(info.address);
+  try {
+    for (const list of Object.values(os.networkInterfaces() || {})) {
+      for (const info of list || []) {
+        const v4 = info.family === "IPv4" || info.family === 4;
+        if (v4 && !info.internal && !info.address.startsWith("169.254.")) addrs.push(info.address);
+      }
     }
+  } catch {
+    /* sandbox / restricted hosts may block networkInterfaces */
   }
   return addrs;
 }
@@ -95,16 +99,21 @@ http
       res.writeHead(403, SECURITY_HEADERS);
       return res.end("Forbidden");
     }
-    fs.readFile(file, (err, data) => {
-      if (!err) return send(res, 200, data, file);
-      if (!path.extname(rel) && isAppPath(rel)) {
-        return fs.readFile(path.join(ROOT, "index.html"), (err2, html) => {
-          if (err2) {
-            res.writeHead(500, SECURITY_HEADERS);
-            return res.end("Missing index.html");
-          }
-          send(res, 200, html, "index.html");
+    fs.stat(file, (statErr, st) => {
+      const trySend = (target) => {
+        fs.readFile(target, (err, data) => {
+          if (!err) return send(res, 200, data, target);
+          res.writeHead(404, SECURITY_HEADERS);
+          res.end("Not found");
         });
+      };
+      if (!statErr && st.isFile()) return trySend(file);
+      // /create-plan → create-plan/index.html (GitHub Pages + local folders)
+      if (!statErr && st.isDirectory()) {
+        return trySend(path.join(file, "index.html"));
+      }
+      if (!path.extname(rel) && isAppPath(rel)) {
+        return trySend(path.join(ROOT, "index.html"));
       }
       res.writeHead(404, SECURITY_HEADERS);
       res.end("Not found");

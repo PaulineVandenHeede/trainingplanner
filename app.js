@@ -1,8 +1,19 @@
-const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const KIND_LABEL = {
-  run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
-  walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", rest: "Rest", travel: "Travel",
-};
+function DAY_NAMES() {
+  return typeof window.dayNames === "function"
+    ? window.dayNames()
+    : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+}
+function KIND_LABEL(kind) {
+  if (typeof window.kindLabel === "function") return window.kindLabel(kind);
+  const fallback = {
+    run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
+    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", rest: "Rest", travel: "Travel",
+  };
+  return fallback[kind] || kind || "";
+}
+function tt(key, vars) {
+  return typeof window.t === "function" ? window.t(key, vars) : key;
+}
 const KIND_MATCH = {
   run: ["run"], quality: ["run"], long: ["run"], event: ["run"], race: ["run"],
   walk: ["walk"], swim: ["swim"], walkswim: ["swim"], bike: ["bike"],
@@ -13,7 +24,10 @@ const parseDate = (s) => { const [y, m, d] = s.split("-").map(Number); return ne
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const daysBetween = (a, b) => Math.round((b - a) / 864e5);
-const fmt = (d, opts) => d.toLocaleDateString("en-GB", opts);
+const fmt = (d, opts) => d.toLocaleDateString(
+  typeof window.localeTag === "function" ? window.localeTag() : "en-GB",
+  opts
+);
 const short = (d) => fmt(d, { day: "numeric", month: "short" });
 const KM_PER_MILE = 1.609344;
 const LB_PER_KG = 2.2046226218;
@@ -318,7 +332,12 @@ window.typicalWeeklyKm = function typicalWeeklyKm(acts, sport) {
   return Math.max(1, Math.round(km * 10) / 10);
 };
 
-window.peekActivities = () => (typeof ACTS !== "undefined" && ACTS) || window._setupActs || [];
+window.peekActivities = () => {
+  if (typeof ACTS !== "undefined" && Array.isArray(ACTS) && ACTS.length) return ACTS;
+  if (Array.isArray(window._setupActs) && window._setupActs.length) return window._setupActs;
+  if (typeof ACTS !== "undefined" && Array.isArray(ACTS)) return ACTS;
+  return [];
+};
 
 window.searchPublicEvents = async function searchPublicEvents(q) {
   const safe = String(q || "").trim().replace(/[%_,]/g, "").slice(0, 80);
@@ -392,32 +411,35 @@ function activeStrengthGear(items = GEAR.items) {
 }
 
 function strengthAccessLevel(items = GEAR.items) {
+  const form = typeof document !== "undefined" ? document.querySelector(".setup-form") : null;
+  const mode = form?.dataset.strengthMode || "";
   const active = activeStrengthGear(items);
+  const home = active.filter((g) => g.type !== "gym");
+  // Explicit setup choice wins — even before gear inventory is updated.
+  if (mode === "bodyweight") return "bodyweight";
+  if (mode === "gym") return "gym";
+  if (mode === "home") return home.length ? "home" : "bodyweight";
   if (active.some((g) => g.type === "gym")) return "gym";
-  if (active.length) return "home";
+  if (home.length) return "home";
   return "bodyweight";
 }
 
 function strengthAccessLabel(level = strengthAccessLevel()) {
-  if (level === "gym") return "Full gym";
-  if (level === "home") return "Home kit";
+  if (level === "gym") return "Gym membership";
+  if (level === "home") return "Home gym";
   return "Bodyweight";
 }
 
 function strengthGearAdvice() {
   const level = strengthAccessLevel();
-  const active = activeStrengthGear();
-  if (level === "gym") {
-    return "Strength sessions will use full gym equipment from your inventory.";
-  }
+  const active = activeStrengthGear().filter((g) => g.type !== "gym");
+  if (level === "gym") return "Strength sessions use your gym membership.";
   if (level === "home") {
     const names = active.map((g) => g.name).slice(0, 3).join(", ");
     const more = active.length > 3 ? ` +${active.length - 3} more` : "";
-    return `Strength sessions will use your home kit (${names}${more}).`;
+    return names ? `Uses your gear: ${names}${more}.` : "Add home gym gear to load sessions.";
   }
-  const lo = fmtWeight(12) || "12";
-  const hi = fmtWeight(16) || "16";
-  return `Strength sessions stay bodyweight for now. Add a kettlebell or gym membership below to unlock loaded sessions — a ${lo}–${hi} ${weightUnit()} kettlebell covers most runner work at home.`;
+  return "";
 }
 
 function gearHasWeight(type) {
@@ -721,7 +743,7 @@ function eventConflict(week, dayIndex, ev) {
   const otherLong = week.days.findIndex((d, i) => i !== dayIndex && LONG_KINDS.includes(d[0]));
   if (otherLong === -1) return "";
   const [, label] = week.days[otherLong];
-  return `This week also has a long run on ${DAY_NAMES[otherLong]} (${esc(fmtPlanLabel(label))}). Consider letting the event replace it so you don't stack two longs.`;
+  return `This week also has a long run on ${DAY_NAMES()[otherLong]} (${esc(fmtPlanLabel(label))}). Consider letting the event replace it so you don't stack two longs.`;
 }
 
 function eventLines(week, dayIndex, ds) {
@@ -752,19 +774,19 @@ function dayRow(week, i, acts, now) {
   const done = wanted.length > 0 && wanted.some((c) => dayActs.some((a) => a.cat === c));
   const busy = BUSY[ds];
   let status = "";
-  if (done) status = `<span class="status done" title="Done">✓</span>`;
-  else if (isPast && wanted.length && !busy) status = `<span class="status missed" title="Not logged">–</span>`;
-  const hint = dayActs.length ? "View activity" : isPast ? "View session" : "How to do this session";
+  if (done) status = `<span class="status done" title="${esc(tt("day.done"))}">✓</span>`;
+  else if (isPast && wanted.length && !busy) status = `<span class="status missed" title="${esc(tt("day.notLogged"))}">–</span>`;
+  const hint = dayActs.length ? tt("day.viewActivity") : isPast ? tt("day.viewSession") : tt("day.howTo");
   const rec = isToday ? recoveryFor(ds) : null;
   const recoveryChip = rec
-    ? `<span class="recovery-chip lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="Recovery ${rec.score}">${rec.score}</span>`
+    ? `<span class="recovery-chip lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${rec.score}</span>`
     : "";
   return `
-    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""} ${busy ? "busy" : ""}" data-date="${ds}" tabindex="0" role="button" title="${hint}">
-      <div class="day-date"><strong>${DAY_NAMES[i]}</strong><span>${short(date)}</span></div>
+    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""} ${busy ? "busy" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(hint)}">
+      <div class="day-date"><strong>${DAY_NAMES()[i]}</strong><span>${short(date)}</span></div>
       <div class="day-body">
-        ${busy ? `<div class="busy-line"><span class="chip k-busy">Busy</span>${busy.reason ? esc(busy.reason) : "No training today"}</div>` : ""}
-        <div class="session"><span class="chip k-${kind}">${KIND_LABEL[kind]}</span><span class="label">${label}</span>${recoveryChip}${status}</div>
+        ${busy ? `<div class="busy-line"><span class="chip k-busy">${tt("common.busy")}</span>${busy.reason ? esc(busy.reason) : tt("day.noTraining")}</div>` : ""}
+        <div class="session"><span class="chip k-${kind}">${KIND_LABEL(kind)}</span><span class="label">${label}</span>${recoveryChip}${status}</div>
         ${eventLines(week, i, ds)}
         ${dayActs.map((a) => `<div class="actual k-${a.cat}">${activityLine(a)}</div>`).join("")}
       </div>
@@ -780,13 +802,13 @@ function loggedDayRow(i, start, acts, now) {
   const isPast = date < now;
   const sessions = dayActs.length
     ? dayActs.map((a) => `
-        <div class="session"><span class="chip k-${a.cat}">${KIND_LABEL[a.cat] || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
+        <div class="session"><span class="chip k-${a.cat}">${KIND_LABEL(a.cat) || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
         <div class="actual k-${a.cat}">${activityLine(a)}</div>
         <p class="auto-text">${esc(activityFeedback(a, null, acts))}</p>`).join("")
-    : `<div class="session"><span class="chip k-rest">Rest</span><span class="label">${isPast ? "Nothing logged" : "No session yet"}</span></div>`;
+    : `<div class="session"><span class="chip k-rest">${KIND_LABEL("rest")}</span><span class="label">${isPast ? tt("day.nothingLogged") : tt("day.noSessionYet")}</span></div>`;
   return `
-    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""}" data-date="${ds}" tabindex="0" role="button" title="${dayActs.length ? "View activity" : "View day"}">
-      <div class="day-date"><strong>${DAY_NAMES[i]}</strong><span>${short(date)}</span></div>
+    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(dayActs.length ? tt("day.viewActivity") : tt("day.viewDay"))}">
+      <div class="day-date"><strong>${DAY_NAMES()[i]}</strong><span>${short(date)}</span></div>
       <div class="day-body">${sessions}</div>
       <span class="day-open" aria-hidden="true">›</span>
     </li>`;
@@ -1358,7 +1380,7 @@ function renderDayDetail(ds) {
     <header class="dialog-head">
       <div>
         <div class="eyebrow">${fmt(date, { weekday: "long", day: "numeric", month: "long" })}${plan ? ` · Week ${plan.week.wk} · ${plan.week.phase}` : ""}</div>
-        <h2>${plan ? `<span class="chip k-${plan.kind}">${KIND_LABEL[plan.kind]}</span> ` : ""}${esc(title)}</h2>
+        <h2>${plan ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span> ` : ""}${esc(title)}</h2>
       </div>
       <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
     </header>
@@ -1399,7 +1421,7 @@ function gearUsageLabel(item) {
   const dist = gearDistance(item);
   const count = ACTS.filter((a) => GEAR.assignments[a.datetime] === item.id).length;
   const amount = kind?.unit === "m"
-    ? `${Math.round(dist).toLocaleString("en-GB")} m`
+    ? `${Math.round(dist).toLocaleString(typeof window.localeTag === "function" ? window.localeTag() : "en-GB")} m`
     : fmtDistWithUnit(dist, 1);
   const sessions = count ? ` · ${count} session${count === 1 ? "" : "s"}` : "";
   return `${amount} from assigned activities${sessions}`;
@@ -1521,21 +1543,40 @@ function gearRow(item) {
 
 function gearGroup(type) {
   const kind = GEAR_KINDS[type];
-  const items = GEAR.items.filter((g) => g.type === type);
-  if (!items.length) return "";
-  const active = items.filter((g) => !g.retired);
-  const retired = items.filter((g) => g.retired);
+  const active = GEAR.items.filter((g) => g.type === type && !g.retired);
+  if (!active.length) return "";
   return `
     <section class="card">
       <div class="card-head">
         <h2>${kind.title}</h2>
       </div>
       <ul class="gear-list">
-        ${active.map(gearRow).join("") || `<li class="muted">None active.</li>`}
+        ${active.map(gearRow).join("")}
       </ul>
-      ${retired.length ? `
-        <div class="eyebrow gear-retired-label">Retired</div>
-        <ul class="gear-list retired">${retired.map(gearRow).join("")}</ul>` : ""}
+    </section>`;
+}
+
+function retiredGearSection() {
+  const retired = GEAR.items.filter((g) => g.retired);
+  if (!retired.length) return "";
+  const byType = Object.keys(GEAR_KINDS)
+    .map((type) => {
+      const items = retired.filter((g) => g.type === type);
+      if (!items.length) return "";
+      return `
+        <div class="gear-retired-group">
+          <div class="eyebrow gear-retired-label">${GEAR_KINDS[type].title}</div>
+          <ul class="gear-list retired">${items.map(gearRow).join("")}</ul>
+        </div>`;
+    })
+    .join("");
+  return `
+    <section class="card gear-retired">
+      <div class="card-head">
+        <h2>${tt("gear.retired")}</h2>
+      </div>
+      <p class="muted setup-hint">${tt("gear.retiredHint")}</p>
+      ${byType}
     </section>`;
 }
 
@@ -1761,10 +1802,10 @@ function strengthGearQuickAdd() {
   }).join("");
   return `
     <section class="card gear-strength">
-      <div class="eyebrow">Strength</div>
-      <h2>What can you train with?</h2>
-      <p class="muted">Logged kit shapes strength sessions and plan recommendations. Bodyweight always works; a kettlebell or gym membership unlocks loaded work.</p>
-      <p class="gear-access-pill"><span class="eyebrow">Current</span> ${esc(strengthAccessLabel(level))}</p>
+      <div class="eyebrow">${tt("gear.strengthEyebrow")}</div>
+      <h2>${tt("gear.strengthTitle")}</h2>
+      <p class="muted">${tt("gear.strengthLead")}</p>
+      <p class="gear-access-pill"><span class="eyebrow">${tt("gear.current")}</span> ${esc(strengthAccessLabel(level))}</p>
       <p class="setup-hint">${esc(strengthGearAdvice())}</p>
       <div class="choice-row gear-quick">${chips}</div>
     </section>`;
@@ -1773,21 +1814,22 @@ function strengthGearQuickAdd() {
 function renderGear() {
   const endurance = ENDURANCE_GEAR_TYPES.map(gearGroup).join("");
   const strength = STRENGTH_GEAR_TYPES.map(gearGroup).join("");
-  const hasAny = GEAR.items.length > 0;
+  const hasActive = GEAR.items.some((g) => !g.retired);
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">Inventory</div>
-        <h1>Gear &amp; strength kit</h1>
-        <p class="muted">Track shoes, bikes and swim kit for activities, plus home or gym equipment so strength sessions match what you own. Strava sync can link shoes or bikes onto activities that don’t have gear yet.</p>
+        <div class="eyebrow">${tt("gear.inventory")}</div>
+        <h1>${tt("gear.title")}</h1>
+        <p class="muted">${tt("gear.lead")}</p>
       </div>
-      <button class="button" type="button" data-action="toggle-gear-form">+ Add gear</button>
+      <button class="button" type="button" data-action="toggle-gear-form">${tt("gear.add")}</button>
     </section>
     ${gearAddForm()}
     ${shoeWearBanner()}
     ${strengthGearQuickAdd()}
     ${strength}
-    ${endurance || (!hasAny ? `<section class="card"><p class="muted">No endurance gear yet.</p></section>` : "")}`;
+    ${endurance || (!hasActive ? `<section class="card"><p class="muted">${tt("gear.noEndurance")}</p></section>` : "")}
+    ${retiredGearSection()}`;
 }
 
 function normalizeUsername(raw) {
@@ -1796,15 +1838,31 @@ function normalizeUsername(raw) {
 window.normalizeUsername = normalizeUsername;
 
 function usernameError(name) {
-  if (!name) return "Enter your name.";
-  if (name.length < 2 || name.length > 40) return "2–40 characters.";
+  if (!name) return tt("username.enter");
+  if (name.length < 2 || name.length > 40) return tt("username.length");
   // Display name: letters, spaces, hyphens, apostrophes, periods.
   if (!/^[A-Za-zÀ-ÖØ-öø-ÿ](?:[A-Za-zÀ-ÖØ-öø-ÿ'’.\- ]*[A-Za-zÀ-ÖØ-öø-ÿ])?$/.test(name) || name.length < 2) {
-    return "Use letters, spaces, hyphens or apostrophes — e.g. Jane Doe.";
+    return tt("username.chars");
   }
   return "";
 }
 window.usernameError = usernameError;
+
+function profileLanguage() {
+  const normalize = window.I18N?.normalizeLang || ((v) => (v === "nl" ? "nl" : "en"));
+  return normalize(window.CURRENT_PROFILE?.language || window.I18N?.language || "en");
+}
+
+function profilePrefsPayload(extra = {}) {
+  return {
+    user_id: CURRENT_USER_ID,
+    username: window.CURRENT_PROFILE?.username || null,
+    units: normalizeUnits(window.CURRENT_PROFILE?.units || guessUnitsFromLocale()),
+    language: profileLanguage(),
+    updated_at: new Date().toISOString(),
+    ...extra,
+  };
+}
 
 async function saveUsernameQuiet(username) {
   const normalized = normalizeUsername(username);
@@ -1812,19 +1870,13 @@ async function saveUsernameQuiet(username) {
   if (normalized === current) return normalized;
   const invalid = usernameError(normalized);
   if (invalid) throw new Error(invalid);
-  const units = normalizeUnits(window.CURRENT_PROFILE?.units || guessUnitsFromLocale());
-  const { error } = await sb.from("profiles").upsert({
-    user_id: CURRENT_USER_ID,
-    username: normalized,
-    units,
-    updated_at: new Date().toISOString(),
-  });
+  const { error } = await sb.from("profiles").upsert(profilePrefsPayload({ username: normalized }));
   if (error) {
-    if (error.code === "23505") throw new Error("That name is already taken.");
-    if (error.code === "23514") throw new Error("Use letters, spaces, hyphens or apostrophes — e.g. Jane Doe.");
+    if (error.code === "23505") throw new Error(tt("username.taken"));
+    if (error.code === "23514") throw new Error(tt("username.chars"));
     throw error;
   }
-  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), username: normalized, units };
+  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), username: normalized };
   if (typeof window.showUser === "function") {
     const { data: { user } } = await sb.auth.getUser();
     window.showUser(user);
@@ -1840,26 +1892,42 @@ async function saveUnitsQuiet(unitsRaw) {
     window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), units };
     return units;
   }
-  const username = window.CURRENT_PROFILE?.username || "";
-  const { error } = await sb.from("profiles").upsert({
-    user_id: CURRENT_USER_ID,
-    username: username || null,
-    units,
-    updated_at: new Date().toISOString(),
-  });
+  const { error } = await sb.from("profiles").upsert(profilePrefsPayload({ units }));
   if (error) throw error;
-  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), username, units };
+  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), units };
   return units;
 }
 window.saveUnitsQuiet = saveUnitsQuiet;
+
+async function saveLanguageQuiet(langRaw) {
+  const normalize = window.I18N?.normalizeLang || ((v) => (v === "nl" ? "nl" : "en"));
+  const language = normalize(langRaw);
+  const current = profileLanguage();
+  if (typeof window.setLanguage === "function") {
+    window.setLanguage(language, { persist: true, silent: true });
+  }
+  if (language === current && window.CURRENT_PROFILE?.language) {
+    window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), language };
+    return language;
+  }
+  if (!CURRENT_USER_ID) {
+    window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), language };
+    return language;
+  }
+  const { error } = await sb.from("profiles").upsert(profilePrefsPayload({ language }));
+  if (error) throw error;
+  window.CURRENT_PROFILE = { ...(window.CURRENT_PROFILE || {}), language };
+  return language;
+}
+window.saveLanguageQuiet = saveLanguageQuiet;
 
 function unitsChoiceRow(selected = profileUnits()) {
   const metricOn = selected === "metric" ? " is-on" : "";
   const imperialOn = selected === "imperial" ? " is-on" : "";
   return `
     <div class="choice-row units-choice">
-      <button class="choice-btn${metricOn}" type="button" data-units="metric">Metric (km, kg)</button>
-      <button class="choice-btn${imperialOn}" type="button" data-units="imperial">Miles &amp; lb</button>
+      <button class="choice-btn${metricOn}" type="button" data-units="metric">${tt("settings.unitsMetric")}</button>
+      <button class="choice-btn${imperialOn}" type="button" data-units="imperial">${tt("settings.unitsImperial")}</button>
     </div>
     <input type="hidden" name="units" value="${esc(selected)}" />`;
 }
@@ -1890,7 +1958,11 @@ function yearSportStats(acts, year) {
 }
 
 const YEAR_SPORTS = ["run", "swim", "bike", "walk"];
-const YEAR_SPORT_LABEL = { run: "Run", swim: "Swim", bike: "Bike", walk: "Walk" };
+function YEAR_SPORT_LABEL(cat) {
+  const key = `sport.${cat}`;
+  const value = tt(key);
+  return value === key ? String(cat || "") : value;
+}
 
 function selectedYearSport() {
   const sport = routeExtra();
@@ -1988,15 +2060,15 @@ function renderYearMonthChart(acts, now, cat) {
   const to = names[curMonth];
   const summary = totalCount
     ? `${from}–${to} · ${fmtSportDist(cat, totalDist)} · ${totalCount} session${totalCount === 1 ? "" : "s"}`
-    : `No ${YEAR_SPORT_LABEL[cat].toLowerCase()} sessions yet this year`;
+    : `No ${YEAR_SPORT_LABEL(cat).toLowerCase()} sessions yet this year`;
   return `
     <div class="year-month" id="year-month-chart">
       <div class="year-month-head">
-        <h3>${YEAR_SPORT_LABEL[cat]} by month</h3>
+        <h3>${YEAR_SPORT_LABEL(cat)} by month</h3>
         <span class="muted">${summary}</span>
       </div>
       <div class="chart-scroll">
-        <svg class="month-chart k-${cat}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${YEAR_SPORT_LABEL[cat]} volume by month in ${year}`)}">${grid}${bars}</svg>
+        <svg class="month-chart k-${cat}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${YEAR_SPORT_LABEL(cat)} volume by month in ${year}`)}">${grid}${bars}</svg>
       </div>
     </div>`;
 }
@@ -2137,7 +2209,7 @@ function renderYearStats(acts, now) {
     const on = cat === selected;
     return `
       <a class="year-stat k-${cat}${on ? " active" : ""}" href="/profile/${cat}"${on ? ' aria-current="true"' : ""}>
-        <span>${YEAR_SPORT_LABEL[cat]}</span>
+        <span>${YEAR_SPORT_LABEL(cat)}</span>
         <strong>${row.count ? fmtSportDist(cat, row.dist) : "—"}</strong>
         <em>${row.count ? `${row.count} session${row.count === 1 ? "" : "s"}` : "No sessions yet"}</em>
       </a>`;
@@ -2174,7 +2246,7 @@ function renderStreak(acts, now) {
     const key = `${year}-${labelDate.getMonth()}`;
     let month = months.find((m) => m.key === key);
     if (!month) {
-      month = { key, name: labelDate.toLocaleDateString("en-GB", { month: "short" }), cells: [] };
+      month = { key, name: labelDate.toLocaleDateString(typeof window.localeTag === "function" ? window.localeTag() : "en-GB", { month: "short" }), cells: [] };
       months.push(month);
     }
     month.cells.push(`<span class="streak-cell lvl-${level}${cur ? " cur" : ""}${future ? " future" : ""}" title="${esc(title)}"></span>`);
@@ -2781,35 +2853,35 @@ function renderGarminConnectionCard() {
     <section class="card conn-card">
       <div class="card-head">
         <div>
-          <div class="eyebrow">Device</div>
+          <div class="eyebrow">${tt("conn.device")}</div>
           <h2>Garmin Connect</h2>
-          <p class="muted" style="margin:6px 0 0">Use your own Garmin Personal API key. Sync pulls activities, heart-rate zones, threshold, VO2 when Garmin shares it, plus sleep, Body Battery, stress and HRV for the recovery score on today's workout. Shoes, bikes or swim kit saved in Garmin are linked when an activity has no gear yet.</p>
+          <p class="muted" style="margin:6px 0 0">${tt("conn.garminLead")}</p>
         </div>
-        <span class="conn-label ${connected ? "on" : "off"}">${connected ? "Connected" : "Not connected"}</span>
+        <span class="conn-label ${connected ? "on" : "off"}">${connected ? tt("common.connected") : tt("common.notConnected")}</span>
       </div>
       <p class="conn-meta ${GARMIN.lastError ? "warn" : ""}">${esc(garminStatusLine())}</p>
       ${connected ? `
         <div class="conn-actions">
-          <button class="button" type="button" data-action="garmin-sync">${syncIconSvg()} Sync</button>
-          <button class="button ghost" type="button" data-action="garmin-disconnect">Disconnect</button>
+          <button class="button" type="button" data-action="garmin-sync">${syncIconSvg()} ${tt("common.sync")}</button>
+          <button class="button ghost" type="button" data-action="garmin-disconnect">${tt("common.disconnect")}</button>
         </div>
         <details class="garmin-key-replace">
-          <summary class="muted small-text">Replace API key</summary>
+          <summary class="muted small-text">${tt("conn.replaceKey")}</summary>
           <form class="garmin-form">
-            <label>New Personal API key
-              <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="Paste key from Garmin Connect" />
+            <label>${tt("conn.newKey")}
+              <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="${esc(tt("conn.keyPlaceholder"))}" />
             </label>
             <p class="form-error"></p>
-            <button class="button small" type="submit">Save key</button>
+            <button class="button small" type="submit">${tt("conn.saveKey")}</button>
           </form>
         </details>` : `
         <form class="garmin-form">
-          <label>Personal API key
-            <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="Paste key from Garmin Connect" />
+          <label>${tt("conn.apiKey")}
+            <input type="password" name="apiKey" required autocomplete="off" spellcheck="false" placeholder="${esc(tt("conn.keyPlaceholder"))}" />
           </label>
-          <p class="muted small-text">Create a key at <a href="https://connect.garmin.com/app/settings/personalApiToken" target="_blank" rel="noopener">Garmin Connect → Personal API</a> (shown once; treat it like a password).</p>
+          <p class="muted small-text">${tt("conn.garminKeyHelp").replace("Garmin Connect → Personal API", `<a href="https://connect.garmin.com/app/settings/personalApiToken" target="_blank" rel="noopener">Garmin Connect → Personal API</a>`)}</p>
           <p class="form-error"></p>
-          <button class="button" type="submit">Save &amp; connect</button>
+          <button class="button" type="submit">${tt("conn.saveConnect")}</button>
         </form>`}
     </section>`;
 }
@@ -2820,31 +2892,31 @@ function renderStravaConnectionCard() {
     <section class="card conn-card">
       <div class="card-head">
         <div>
-          <div class="eyebrow">Service</div>
+          <div class="eyebrow">${tt("conn.service")}</div>
           <h2>Strava</h2>
-          <p class="muted" style="margin:6px 0 0">Compatible with Strava. Activities already on your own account, including from a watch, are stored for your plan and shown only to you. Disconnecting removes them from this app.</p>
+          <p class="muted" style="margin:6px 0 0">${tt("conn.stravaLead")}</p>
         </div>
-        <span class="conn-label ${connected ? "on" : "off"}">${connected ? "Connected" : "Not connected"}</span>
+        <span class="conn-label ${connected ? "on" : "off"}">${connected ? tt("common.connected") : tt("common.notConnected")}</span>
       </div>
       <p class="conn-meta ${STRAVA.lastError ? "warn" : ""}">${esc(stravaStatusLine())}</p>
       ${connected ? `
         <label class="own-risk-field">
           <input type="checkbox" data-action="strava-share" ${STRAVA.shareWithCoach ? "checked" : ""} />
-          <span>Send Strava session summaries (date, sport, distance, pace, heart rate) to the AI coach. Leave this off and those sessions stay in your log only.</span>
+          <span>${tt("conn.stravaShare")}</span>
         </label>
         <div class="conn-actions">
-          <button class="button" type="button" data-action="strava-sync">${syncIconSvg()} Sync</button>
-          <button class="button ghost" type="button" data-action="strava-disconnect">Disconnect</button>
+          <button class="button" type="button" data-action="strava-sync">${syncIconSvg()} ${tt("common.sync")}</button>
+          <button class="button ghost" type="button" data-action="strava-disconnect">${tt("common.disconnect")}</button>
         </div>` : `
         <form class="strava-form">
-          <label>Connect passcode
-            <input type="password" name="passcode" required autocomplete="off" spellcheck="false" placeholder="Passcode from the app owner" />
+          <label>${tt("conn.passcode")}
+            <input type="password" name="passcode" required autocomplete="off" spellcheck="false" placeholder="${esc(tt("conn.passcodePlaceholder"))}" />
           </label>
           <label class="own-risk-field">
             <input type="checkbox" name="shareWithCoach" />
-            <span>Also send Strava session summaries (date, sport, distance, pace, heart rate) to the AI coach. Leave this off and those sessions stay in your log only.</span>
+            <span>${tt("conn.stravaShareAlso")}</span>
           </label>
-          <p class="muted small-text">Your Strava login happens on Strava. A new Strava API app can connect one athlete until the app owner raises that limit in Strava’s API settings.</p>
+          <p class="muted small-text">${tt("conn.stravaHelp")}</p>
           <p class="form-error"></p>
           <button class="strava-connect" type="submit">
             <img src="/assets/btn_strava_connect_with_orange.svg" width="237" height="48" alt="Connect with Strava" />
@@ -2857,87 +2929,106 @@ function renderConnections() {
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">Your profile</div>
-        <h1>Connections</h1>
-        <p class="muted">Link devices and services so activities can sync into your plan.</p>
+        <div class="eyebrow">${tt("conn.eyebrow")}</div>
+        <h1>${tt("conn.title")}</h1>
+        <p class="muted">${tt("conn.lead")}</p>
       </div>
     </section>
     ${renderGarminConnectionCard()}
     ${renderStravaConnectionCard()}
-    <p class="footnote">CSV import stays available from the upload button in the top bar.</p>`;
+    <p class="footnote">${tt("conn.csvFootnote")}</p>`;
 }
 
 function renderSettings() {
   const username = window.CURRENT_PROFILE?.username || "";
   const email = window.CURRENT_USER_EMAIL || "";
   const units = profileUnits();
+  const language = profileLanguage();
+  const langRow = typeof window.languageChoiceRow === "function"
+    ? window.languageChoiceRow(language)
+    : "";
   const rules = typeof window.passwordRulesHtml === "function"
     ? window.passwordRulesHtml({ hidden: false, id: "settings-password-rules" })
     : "";
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">Your account</div>
-        <h1>Settings</h1>
-        <p class="muted">Change your name, units and password.</p>
+        <div class="eyebrow">${tt("settings.eyebrow")}</div>
+        <h1>${tt("settings.title")}</h1>
+        <p class="muted">${tt("settings.lead")}</p>
       </div>
     </section>
     <div class="settings-stack">
       <section class="card">
         <div class="card-head">
           <div>
-            <div class="eyebrow">Profile</div>
-            <h2>Name</h2>
-            <p class="muted" style="margin:6px 0 0">This is how you appear in the app.</p>
+            <div class="eyebrow">${tt("settings.profileEyebrow")}</div>
+            <h2>${tt("settings.nameTitle")}</h2>
+            <p class="muted" style="margin:6px 0 0">${tt("settings.nameHelp")}</p>
           </div>
         </div>
         <form class="settings-form" data-settings="username" novalidate>
-          <label>Name
-            <input type="text" name="username" maxlength="40" autocomplete="name" spellcheck="false" value="${esc(username)}" placeholder="Your name" required />
+          <label>${tt("settings.nameLabel")}
+            <input type="text" name="username" maxlength="40" autocomplete="name" spellcheck="false" value="${esc(username)}" placeholder="${esc(tt("settings.namePlaceholder"))}" required />
           </label>
           ${email ? `<p class="muted small-text">${esc(email)}</p>` : ""}
           <p class="form-error" role="alert"></p>
           <p class="form-note" role="status"></p>
-          <button class="button" type="submit">Save name</button>
+          <button class="button" type="submit">${tt("settings.saveName")}</button>
         </form>
       </section>
       <section class="card">
         <div class="card-head">
           <div>
-            <div class="eyebrow">Preferences</div>
-            <h2>Units</h2>
-            <p class="muted" style="margin:6px 0 0">Distances and strength weights across the app.</p>
+            <div class="eyebrow">${tt("settings.prefsEyebrow")}</div>
+            <h2>${tt("settings.languageTitle")}</h2>
+            <p class="muted" style="margin:6px 0 0">${tt("settings.languageHelp")}</p>
+          </div>
+        </div>
+        <form class="settings-form" data-settings="language" novalidate>
+          ${langRow}
+          <p class="form-error" role="alert"></p>
+          <p class="form-note" role="status"></p>
+          <button class="button" type="submit">${tt("settings.saveLanguage")}</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">${tt("settings.prefsEyebrow")}</div>
+            <h2>${tt("settings.unitsTitle")}</h2>
+            <p class="muted" style="margin:6px 0 0">${tt("settings.unitsHelp")}</p>
           </div>
         </div>
         <form class="settings-form" data-settings="units" novalidate>
           ${unitsChoiceRow(units)}
           <p class="form-error" role="alert"></p>
           <p class="form-note" role="status"></p>
-          <button class="button" type="submit">Save units</button>
+          <button class="button" type="submit">${tt("settings.saveUnits")}</button>
         </form>
       </section>
       <section class="card">
         <div class="card-head">
           <div>
-            <div class="eyebrow">Security</div>
-            <h2>Password</h2>
-            <p class="muted" style="margin:6px 0 0">Choose a new password for this account.</p>
+            <div class="eyebrow">${tt("settings.securityEyebrow")}</div>
+            <h2>${tt("settings.passwordTitle")}</h2>
+            <p class="muted" style="margin:6px 0 0">${tt("settings.passwordHelp")}</p>
           </div>
         </div>
         <form class="settings-form" data-settings="password" novalidate>
-          <label>Current password
+          <label>${tt("settings.currentPassword")}
             <input type="password" name="current" required autocomplete="current-password" />
           </label>
-          <label>New password
+          <label>${tt("settings.newPassword")}
             <input type="password" name="password" required autocomplete="new-password" aria-describedby="settings-password-rules" />
           </label>
-          <label>Confirm new password
+          <label>${tt("settings.confirmNewPassword")}
             <input type="password" name="confirm" required autocomplete="new-password" />
           </label>
           ${rules}
           <p class="form-error" role="alert"></p>
           <p class="form-note" role="status"></p>
-          <button class="button" type="submit">Change password</button>
+          <button class="button" type="submit">${tt("settings.changePassword")}</button>
         </form>
       </section>
     </div>`;
@@ -2948,32 +3039,32 @@ function renderProfile(acts, now) {
   const userEmail = window.CURRENT_USER_EMAIL || "";
   const username = window.CURRENT_PROFILE?.username || "";
   const units = profileUnits();
-  const unitsLabel = units === "imperial" ? "Miles & lb" : "Metric (km, kg)";
+  const unitsLabel = units === "imperial" ? tt("settings.unitsImperial") : tt("settings.unitsMetric");
   const letter = (username || userEmail || "?").slice(0, 1).toUpperCase();
   return `
     <section class="hero compact profile-hero">
       <div class="profile-ident">
         <span class="profile-avatar" aria-hidden="true">${esc(letter)}</span>
         <div>
-          <div class="eyebrow">Your profile</div>
-          <h1>${esc(username || "Your profile")}</h1>
-          <p class="muted">${userEmail ? esc(userEmail) : "This is how you appear in the app."}</p>
+          <div class="eyebrow">${tt("profile.eyebrow")}</div>
+          <h1>${esc(username || tt("profile.title"))}</h1>
+          <p class="muted">${userEmail ? esc(userEmail) : tt("settings.nameHelp")}</p>
         </div>
       </div>
     </section>
     <section class="card">
       <div class="card-head">
         <div>
-          <div class="eyebrow">Preferences</div>
-          <h2>Units</h2>
-          <p class="muted" style="margin:6px 0 0">Currently ${esc(unitsLabel)}. Change below or in <a href="/settings">Settings</a>.</p>
+          <div class="eyebrow">${tt("settings.prefsEyebrow")}</div>
+          <h2>${tt("settings.unitsTitle")}</h2>
+          <p class="muted" style="margin:6px 0 0">${tt("profile.unitsBefore", { units: unitsLabel })} <a href="/settings">${tt("profile.settingsLink")}</a>.</p>
         </div>
       </div>
       <form class="settings-form" data-settings="units" novalidate>
         ${unitsChoiceRow(units)}
         <p class="form-error" role="alert"></p>
         <p class="form-note" role="status"></p>
-        <button class="button" type="submit">Save units</button>
+        <button class="button" type="submit">${tt("settings.saveUnits")}</button>
       </form>
     </section>
     ${renderPlanProgress(acts, now)}
@@ -3057,18 +3148,18 @@ function weekCard(week, acts, now, title) {
       <div class="card-head">
         <div>
           <div class="eyebrow">${title}</div>
-          <h2>Week ${week.wk} · ${short(s)} – ${short(e)}</h2>
+          <h2>${tt("home.weekTitle", { week: week.wk, range: `${short(s)} – ${short(e)}` })}</h2>
         </div>
         <span class="pill p-${week.phase}">${week.phase}</span>
       </div>
       <div class="targets">
-        <div><span>Run</span><strong>${fmtDistWithUnit(week.km, 0)}</strong></div>
-        <div><span>Long</span><strong>${fmtDistWithUnit(week.long, 0)}</strong></div>
+        <div><span>${tt("home.targetRun")}</span><strong>${fmtDistWithUnit(week.km, 0)}</strong></div>
+        <div><span>${tt("home.targetLong")}</span><strong>${fmtDistWithUnit(week.long, 0)}</strong></div>
         ${extraSportTargets(week)}
       </div>
       ${showActual ? `
         <div class="progress">
-          <div class="progress-label">Logged run ${distUnit()}: <strong>${fmtDist(actual, 1)}</strong> / ${fmtDist(week.km, 0)}</div>
+          <div class="progress-label">${tt("home.loggedRun", { unit: distUnit() })} <strong>${fmtDist(actual, 1)}</strong> / ${fmtDist(week.km, 0)}</div>
           <div class="bar"><div style="width:${pct}%"></div></div>
         </div>` : ""}
       ${week.note ? `<p class="note">${week.note}</p>` : ""}
@@ -3089,7 +3180,7 @@ function loggedWeekBlock(acts, now) {
     <section class="card review">
       <div class="card-head">
         <div>
-          <div class="eyebrow">This week · review</div>
+          <div class="eyebrow">${tt("home.thisWeekReview")}</div>
           <h2>${short(start)} – ${short(end)}</h2>
         </div>
       </div>
@@ -3186,8 +3277,8 @@ function eventsCard(now, upcoming, opts = {}) {
   return `
     <section class="card" id="events">
       <div class="card-head">
-        <h2>Upcoming events</h2>
-        <button class="button small" type="button" data-action="toggle-form">+ Add event</button>
+        <h2>${tt("home.upcomingEvents")}</h2>
+        <button class="button small" type="button" data-action="toggle-form">${tt("home.addEvent")}</button>
       </div>
       <form class="event-form${locked ? " from-public" : ""}"${open ? "" : " hidden"}>
         <label class="full">Search public events
@@ -3200,10 +3291,10 @@ function eventsCard(now, upcoming, opts = {}) {
           <input type="text" name="location" maxlength="80" placeholder="e.g. Gent, Belgium" value="${field("location")}" />
         </label>
         <fieldset class="full event-sport-field">
-          <legend>Event type</legend>
+          <legend>${tt("setup.eventType")}</legend>
           <div class="choice-row" id="event-sport-choices">
             ${["run", "swim", "bike", "triathlon"].map((s) => `
-              <button class="choice-btn${sport === s ? " active" : ""}" type="button" data-event-sport="${s}">${esc((window.SPORT_LABEL && window.SPORT_LABEL[s]) || s)}</button>`).join("")}
+              <button class="choice-btn${sport === s ? " active" : ""}" type="button" data-event-sport="${s}">${esc((typeof window.sportLabel === "function" ? window.sportLabel(s) : (window.SPORT_LABEL && window.SPORT_LABEL[s]) || s))}</button>`).join("")}
           </div>
           <input type="hidden" name="sport" value="${esc(sport)}" />
         </fieldset>
@@ -3471,30 +3562,33 @@ function homeViewWeek(now) {
 
 function homeWeekCardTitle(viewWk, calendarWk, offset) {
   const wk = viewWk + offset;
-  if (wk === calendarWk) return "This week";
-  if (wk === calendarWk + 1) return "Next week";
-  if (wk === calendarWk - 1) return "Last week";
-  return offset === 0 ? "Selected week" : "Following week";
+  if (wk === calendarWk) return tt("home.thisWeek");
+  if (wk === calendarWk + 1) return tt("home.nextWeekLabel");
+  if (wk === calendarWk - 1) return tt("home.lastWeek");
+  return offset === 0 ? tt("home.selectedWeek") : tt("home.followingWeek");
 }
 
 function renderNoPlanHome(acts, now) {
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const upcoming = upcomingEventsList(now, acts);
+  const footnote = lastSync
+    ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
+    : tt("home.logOrImport");
   return `
     <section class="hero">
       <div>
-        <div class="eyebrow">Today · ${fmt(now, { weekday: "long", day: "numeric", month: "long" })}</div>
-        <h1>No plan yet</h1>
-        <p class="muted">Start a plan when you are ready. Import a CSV for this week, or add a public event to your agenda.</p>
+        <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}</div>
+        <h1>${tt("home.noPlan")}</h1>
+        <p class="muted">${tt("home.noPlanLead")}</p>
       </div>
-      <button class="button" type="button" data-action="start-plan">Start plan</button>
+      <button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button>
     </section>
     ${acts.length ? loggedWeekBlock(acts, now) : `
       <section class="card">
-        <p class="muted" style="margin:0">Nothing to show yet. Open a day to log a session, import a Garmin CSV, or start a plan.</p>
+        <p class="muted" style="margin:0">${tt("home.emptyCard")}</p>
       </section>`}
     ${eventsCard(now, upcoming, { acts })}
-    <p class="footnote">${lastSync ? `Activities up to ${short(parseDate(lastSync))}. <a href="/activities">See all</a>` : "Log a session from a day, or import a Garmin CSV."}</p>`;
+    <p class="footnote">${footnote}</p>`;
 }
 
 function renderHome(acts, now) {
@@ -3510,16 +3604,20 @@ function renderHome(acts, now) {
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const viewingPast = wk !== calendarWk;
 
+  const changesN = pendingChanges().length;
+  const footnote = lastSync
+    ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
+    : tt("home.openDayOrImport");
   return `
     <section class="hero">
       <div>
-        <div class="eyebrow">Today · ${fmt(now, { weekday: "long", day: "numeric", month: "long" })}${viewingPast ? ` · viewing week ${wk}` : ""}</div>
-        <h1>Week ${wk} of ${WEEKS.length} <span class="muted">· ${phase.name}</span></h1>
+        <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}${viewingPast ? tt("home.viewingWeek", { week: wk }) : ""}</div>
+        <h1>${tt("home.weekOf", { week: wk, total: WEEKS.length })} <span class="muted">· ${phase.name}</span></h1>
         <p class="muted">${phase.focus}</p>
         ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
       </div>
-      <button type="button" class="countdown" data-action="open-day" data-date="${ymd(RACE)}" title="View ${esc(eventLabel())}">
-        <strong>${daysToRace}</strong><span>days to ${esc(eventLabel())}</span>
+      <button type="button" class="countdown" data-action="open-day" data-date="${ymd(RACE)}" title="${esc(tt("home.viewEvent", { event: eventLabel() }))}">
+        <strong>${daysToRace}</strong><span>${tt("home.daysTo", { event: eventLabel() })}</span>
       </button>
     </section>
 
@@ -3533,18 +3631,18 @@ function renderHome(acts, now) {
       return block ? `<section class="card">${block}</section>` : "";
     })()}
 
-    ${pendingChanges().length ? `
+    ${changesN ? `
       <a class="changes-banner" href="/plan">
-        <strong>${pendingChanges().length} plan change${pendingChanges().length > 1 ? "s" : ""} waiting for the AI coach</strong>
-        <span>Review and send them from the Full plan page →</span>
+        <strong>${changesN === 1 ? tt("home.changesOne") : tt("home.changesMany", { count: changesN })}</strong>
+        <span>${tt("home.changesReview")}</span>
       </a>` : ""}
 
     ${reviewCard(acts, now)}
 
     <div class="week-nav">
-      <button class="button ghost small" type="button" data-action="home-week-prev"${wk <= 1 ? " disabled" : ""} aria-label="Previous week">← Previous week</button>
-      ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">This week</button>` : ""}
-      <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="Next week">Next week →</button>
+      <button class="button ghost small" type="button" data-action="home-week-prev"${wk <= 1 ? " disabled" : ""} aria-label="${esc(tt("common.previous"))}">${tt("home.prevWeek")}</button>
+      ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">${tt("home.thisWeek")}</button>` : ""}
+      <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="${esc(tt("common.next"))}">${tt("home.nextWeek")}</button>
     </div>
 
     <div class="grid">
@@ -3554,8 +3652,8 @@ function renderHome(acts, now) {
 
     ${eventsCard(now, upcoming, { acts })}
 
-    <div class="cta"><a class="button" href="/plan">See the full plan to race day →</a></div>
-    <p class="footnote">${lastSync ? `Activities up to ${short(parseDate(lastSync))}. <a href="/activities">See all</a>` : "Open a day to mark it done, or import a Garmin Connect Activities.csv."}</p>
+    <div class="cta"><a class="button" href="/plan">${tt("home.seeFullPlan")}</a></div>
+    <p class="footnote">${footnote}</p>
   `;
 }
 
@@ -3586,11 +3684,11 @@ function renderChart(acts, now) {
     hovers.push(`
       <a class="chart-hover${tipSide}${w.wk === curWk ? " cur" : ""}" href="/plan/${w.wk}" style="left:${(x / W) * 100}%;width:${(bw / W) * 100}%" aria-label="${esc(aria)}">
         <span class="chart-tip">
-          <em>Week ${w.wk}</em>
+          <em>${tt("plan.weekN", { week: w.wk })}</em>
           <em class="chart-tip-dates">${esc(dates)}</em>
-          <span>Weekly <strong>${fmtDistWithUnit(w.km, 0)}</strong></span>
-          <span>Long <strong>${fmtDistWithUnit(w.long, 0)}</strong></span>
-          <span>Progress <strong>${esc(progress)}</strong></span>
+          <span>${tt("plan.weekly")} <strong>${fmtDistWithUnit(w.km, 0)}</strong></span>
+          <span>${tt("plan.long")} <strong>${fmtDistWithUnit(w.long, 0)}</strong></span>
+          <span>${tt("plan.progress")} <strong>${esc(progress)}</strong></span>
         </span>
       </a>`);
   });
@@ -3728,31 +3826,31 @@ function renderProgress(acts, now) {
   const when = PROGRESS_REPORT?.at ? fmt(new Date(PROGRESS_REPORT.at), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
   const stale = hasAi && PROGRESS_REPORT.week && stats?.wk !== PROGRESS_REPORT.week;
   const status = !stats
-    ? "No plan yet"
+    ? tt("progress.noPlan")
     : stats.finished
-      ? `${esc(eventLabel())} is done`
+      ? tt("progress.eventDone", { event: eventLabel() })
       : stats.started
-        ? `Week ${stats.wk} of ${stats.totalWeeks} · ${esc(stats.phase.name || "")}`
-        : `Starts in ${daysBetween(now, START)} days`;
+        ? tt("progress.weekOf", { week: stats.wk, total: stats.totalWeeks, phase: stats.phase.name || "" })
+        : tt("progress.startsIn", { days: daysBetween(now, START) });
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">${status}</div>
-        <h1>Progress report</h1>
-        <p class="muted">${esc(eventLabel())}${stats && !stats.finished ? ` · ${Math.max(0, stats.daysToRace)} days to race` : ""}</p>
+        <div class="eyebrow">${esc(status)}</div>
+        <h1>${tt("progress.title")}</h1>
+        <p class="muted">${esc(eventLabel())}${stats && !stats.finished ? tt("progress.daysToRace", { days: Math.max(0, stats.daysToRace) }) : ""}</p>
       </div>
       <div class="hero-actions">
-        <a class="button ghost small" href="/plan">Back to plan</a>
+        <a class="button ghost small" href="/plan">${tt("progress.back")}</a>
         <button type="button" class="button ghost small" data-action="refresh-progress" ${running ? "disabled" : ""}>
-          ${running ? "Writing…" : "Ask the coach again"}
+          ${running ? tt("progress.writing") : tt("progress.askAgain")}
         </button>
       </div>
     </section>
     <section class="card" id="progress-report">
-      ${running ? `<p class="muted small-text">${hasAi ? "Updating the report…" : "The coach is writing a progress report from your plan and sessions."}</p>` : ""}
-      ${stale ? `<p class="muted small-text">This was written in week ${PROGRESS_REPORT.week}. Ask again for an update.</p>` : ""}
+      ${running ? `<p class="muted small-text">${hasAi ? tt("progress.updating") : tt("progress.writingFresh")}</p>` : ""}
+      ${stale ? `<p class="muted small-text">${tt("progress.stale", { week: PROGRESS_REPORT.week })}</p>` : ""}
       <div class="progress-copy">${paragraphs}</div>
-      ${when && hasAi ? `<p class="muted small-text">Coach note · ${esc(when)}</p>` : ""}
+      ${when && hasAi ? `<p class="muted small-text">${tt("progress.coachNote", { when })}</p>` : ""}
     </section>
     ${renderRacePrediction(acts, now)}`;
 }
@@ -3762,10 +3860,10 @@ function renderVolumeCard(acts, now) {
     <section class="card volume-card">
       <div class="card-head">
         <div>
-          <div class="eyebrow">Load</div>
-          <h2>Weekly run ${distUnit()}</h2>
+          <div class="eyebrow">${tt("plan.load")}</div>
+          <h2>${tt("plan.weeklyRun", { unit: distUnit() })}</h2>
         </div>
-        <a class="button ghost small" href="/progress">Progress report</a>
+        <a class="button ghost small" href="/progress">${tt("plan.progressReport")}</a>
       </div>
       ${renderChart(acts, now)}
     </section>`;
@@ -4081,33 +4179,34 @@ function renderPlan(acts, now) {
           ${weekKmSummary(w, acts, now)}
           <span class="focus">${w.focus}</span>
           ${evs.map((ev) => `<span class="ev-badge ${ev.race ? "race" : ""}">★ ${ev.name}</span>`).join("")}
-          ${w.wk === curWk ? `<span class="you">You are here</span>` : ""}
+          ${w.wk === curWk ? `<span class="you">${tt("plan.youAreHere")}</span>` : ""}
         </summary>
         <div class="week-body">
           ${hasSportTarget(w, "swim") || hasSportTarget(w, "bike") ? `
           <div class="targets small">
             ${extraSportTargets(w)}
           </div>` : ""}
-          ${s <= now ? `<div class="review inline"><div class="eyebrow">Week feedback</div>${reviewBlock(w, acts, now)}</div>` : ""}
+          ${s <= now ? `<div class="review inline"><div class="eyebrow">${tt("plan.weekFeedback")}</div>${reviewBlock(w, acts, now)}</div>` : ""}
           ${w.note ? `<p class="note">${w.note}</p>` : ""}
           <ul class="days">${w.days.map((_, i) => dayRow(w, i, acts, now)).join("")}</ul>
         </div>
       </details>`;
   }).join("");
 
+  const planLead = window.CURRENT_PLAN?.sport === "run"
+    ? tt("plan.leadRun")
+    : window.CURRENT_PLAN?.sport === "triathlon"
+      ? tt("plan.leadTri")
+      : tt("plan.leadOther");
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">${WEEKS.length} weeks · ${short(START)} → ${fmt(RACE, { day: "numeric", month: "short", year: "numeric" })}</div>
-        <h1>Full ${esc(eventLabel())} plan</h1>
-        <p class="muted">${window.CURRENT_PLAN?.sport === "run"
-          ? "The long run is the key session. If tired: keep that and cut an easy run. Weekly load rises about 10%, with a cutback every fourth week."
-          : window.CURRENT_PLAN?.sport === "triathlon"
-            ? "Triathlon structure: longer aerobic base, then build with race-specific work and bike→run bricks, then a sharper taper. If tired: cut extras first, protect the long ride and key brick. About 10% load increase week to week, cutback every fourth week."
-          : "Key session wins every conflict. If tired: cut the extra sport first, then easy km. About 10% load increase week to week, with a cutback every fourth week."}</p>
+        <div class="eyebrow">${tt("plan.weeksRange", { weeks: WEEKS.length, start: short(START), end: fmt(RACE, { day: "numeric", month: "short", year: "numeric" }) })}</div>
+        <h1>${tt("plan.fullTitle", { event: esc(eventLabel()) })}</h1>
+        <p class="muted">${planLead}</p>
         ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
       </div>
-      <button class="button ghost small" type="button" data-action="remove-plan">Remove plan</button>
+      <button class="button ghost small" type="button" data-action="remove-plan">${tt("plan.remove")}</button>
     </section>
 
     ${changesCard()}
@@ -4118,15 +4217,15 @@ function renderPlan(acts, now) {
 
     <div class="grid">
       <section class="card">
-        <div class="card-head"><h2>Pace guide</h2></div>
+        <div class="card-head"><h2>${tt("plan.paceGuide")}</h2></div>
         <table class="table">
-          <thead><tr><th>Effort</th><th>Pace / ${distUnit() === "mi" ? "mi" : "km"}</th><th>Use</th></tr></thead>
+          <thead><tr><th>${tt("plan.effort")}</th><th>${tt("plan.pace", { unit: distUnit() === "mi" ? "mi" : "km" })}</th><th>${tt("plan.use")}</th></tr></thead>
           <tbody>${PACES.map((p) => {
             const pace = typeof displayPaceRange === "function" ? displayPaceRange(p[1]) : p[1];
             return `<tr><td>${p[0]}</td><td><strong>${pace}</strong></td><td class="muted">${p[2]}</td></tr>`;
           }).join("")}</tbody>
         </table>
-        <p class="muted small-text">Keep easy days easy. Save race effort for the event and short quality sessions. <a href="/gear">Track shoes, bikes, swim kit and strength equipment on the Gear page</a>.</p>
+        <p class="muted small-text">${tt("plan.paceNote").replace(tt("plan.paceNoteLink"), `<a href="/gear">${tt("plan.paceNoteLink")}</a>`)}</p>
       </section>
       ${ROADMAP_703.length ? `
       <section class="card">
@@ -4135,7 +4234,7 @@ function renderPlan(acts, now) {
       </section>` : ""}
       ${(window.CURRENT_PLAN?.sources || []).length ? `
       <section class="card">
-        <div class="card-head"><h2>Research behind this plan</h2></div>
+        <div class="card-head"><h2>${tt("plan.research")}</h2></div>
         <ul class="roadmap">${(window.CURRENT_PLAN.sources || []).map((s) => `
           <li><strong><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></strong><span>${esc(s.used_for || "")}</span></li>`).join("")}</ul>
       </section>` : ""}
@@ -4593,14 +4692,19 @@ function changesCard() {
   const items = pendingChanges();
   const applied = CHANGES.filter((c) => c.status === "applied").length;
   const reviewing = COACH_STATUS === "reviewing";
+  const appliedNote = !applied
+    ? ""
+    : applied === 1
+      ? tt("coach.appliedOne")
+      : tt("coach.appliedMany", { count: applied });
   return `
     <section class="card changes" id="changes">
       <div class="card-head">
         <div>
-          <div class="eyebrow">AI coach</div>
-          <h2>Plan changes ${items.length ? `<span class="count">${items.length}</span>` : ""}</h2>
+          <div class="eyebrow">${tt("coach.eyebrow")}</div>
+          <h2>${tt("coach.planChanges")} ${items.length ? `<span class="count">${items.length}</span>` : ""}</h2>
         </div>
-        ${(items.length || reviewing) ? `<button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>${reviewing ? "Reviewing" : "Send to AI coach"}</button>` : ""}
+        ${(items.length || reviewing) ? `<button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>${reviewing ? tt("coach.reviewing") : tt("coach.send")}</button>` : ""}
       </div>
       ${items.length ? `
         <ul class="change-list">
@@ -4608,17 +4712,15 @@ function changesCard() {
             <li>
               <span class="change-icon t-${c.type}">${CHANGE_ICON[c.type] || "•"}</span>
               <span class="change-text">${esc(c.summary)}<span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></span>
-              <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="Remove from list">✕</button>
+              <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="${esc(tt("coach.removeFromList"))}">✕</button>
             </li>`).join("")}
         </ul>
-        <p class="muted small-text">${reviewing
-          ? "Sent to the AI coach. Reviewing these changes now. The plan updates when it finishes."
-          : "Click <strong>Send to AI coach</strong> and the review goes out as a request. The plan updates when it finishes. Stage weeks do this automatically."}</p>` : reviewing ? `
-        <p class="muted small-text">Sent to the AI coach. Reviewing now. The plan updates when it finishes.</p>` : `
-        <p class="muted small-text">No pending changes. Busy days, new events and CSV imports show up here automatically.${applied ? ` ${applied} earlier change${applied > 1 ? "s were" : " was"} applied.` : ""}</p>`}
+        <p class="muted small-text">${reviewing ? tt("coach.sentReviewing") : tt("coach.sendHint")}</p>` : reviewing ? `
+        <p class="muted small-text">${tt("coach.sentNow")}</p>` : `
+        <p class="muted small-text">${tt("coach.nonePending")}${appliedNote}</p>`}
       <form class="note-form">
-        <input type="text" name="text" maxlength="2000" placeholder="Anything else for the coach? e.g. sore calf, holiday 20–27 Dec, want to try a 10K race in January" />
-        <button class="button ghost small" type="submit">Add note</button>
+        <input type="text" name="text" maxlength="2000" placeholder="${esc(tt("coach.notePlaceholder"))}" />
+        <button class="button ghost small" type="submit">${tt("coach.addNote")}</button>
       </form>
     </section>`;
 }
@@ -4807,12 +4909,12 @@ function renderActivityWeekChart(acts, year, filter, now) {
     const timeLabel = formatHours(timeSec);
     const stats = count ? [
       `<span>Sessions <strong>${count}</strong></span>`,
-      ...active.map((cat) => `<span>${YEAR_SPORT_LABEL[cat]} <strong>${fmtDistWithUnit(row.byCat[cat], 1)}</strong></span>`),
+      ...active.map((cat) => `<span>${YEAR_SPORT_LABEL(cat)} <strong>${fmtDistWithUnit(row.byCat[cat], 1)}</strong></span>`),
       ...(active.length > 1 ? [`<span>Total <strong>${fmtDistWithUnit(total, 1)}</strong></span>`] : []),
       ...(timeLabel ? [`<span>Time <strong>${esc(timeLabel)}</strong></span>`] : []),
     ] : [`<span>No sessions</span>`];
     const summary = count
-      ? `${count} session${count === 1 ? "" : "s"}, ${active.map((cat) => `${YEAR_SPORT_LABEL[cat]} ${fmtDistWithUnit(row.byCat[cat], 1)}`).join(", ")}${timeLabel ? `, ${timeLabel}` : ""}`
+      ? `${count} session${count === 1 ? "" : "s"}, ${active.map((cat) => `${YEAR_SPORT_LABEL(cat)} ${fmtDistWithUnit(row.byCat[cat], 1)}`).join(", ")}${timeLabel ? `, ${timeLabel}` : ""}`
       : "no sessions";
     const tipSide = i < 5 ? " tip-start" : i >= rows.length - 5 ? " tip-end" : "";
     const x = padL + i * bw;
@@ -4833,16 +4935,16 @@ function renderActivityWeekChart(acts, year, filter, now) {
 
   const totals = Object.fromEntries(cats.map((cat) => [cat, rows.reduce((s, r) => s + r.byCat[cat], 0)]));
   const sessions = rows.reduce((s, r) => s + r.count, 0);
-  const legend = cats.map((cat) => `<span><i class="lg-${cat}"></i>${YEAR_SPORT_LABEL[cat]}${totals[cat] ? ` ${fmtDistWithUnit(totals[cat], 1)}` : ""}</span>`).join("");
+  const legend = cats.map((cat) => `<span><i class="lg-${cat}"></i>${YEAR_SPORT_LABEL(cat)}${totals[cat] ? ` ${fmtDistWithUnit(totals[cat], 1)}` : ""}</span>`).join("");
   return `
     <div class="year-month">
       <div class="year-month-head">
-        <h3>${filter ? `${YEAR_SPORT_LABEL[filter]} ${distUnit()} by week` : "Weekly volume"}</h3>
+        <h3>${filter ? tt("act.sportByWeek", { sport: YEAR_SPORT_LABEL(filter), unit: distUnit() }) : tt("act.weeklyVolume")}</h3>
         <span class="muted">${sessions ? `${sessions} session${sessions === 1 ? "" : "s"} in ${year}` : `No sessions in ${year}`}</span>
       </div>
       <div class="chart-scroll">
         <div class="chart-inner week-vol-inner">
-          <svg class="week-vol-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`Weekly ${filter ? YEAR_SPORT_LABEL[filter].toLowerCase() : "training"} volume in ${year}`)}">${grid}${bars.join("")}</svg>
+          <svg class="week-vol-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`Weekly ${filter ? YEAR_SPORT_LABEL(filter).toLowerCase() : "training"} volume in ${year}`)}">${grid}${bars.join("")}</svg>
           <div class="chart-hovers">${hovers.join("")}</div>
         </div>
       </div>
@@ -4852,12 +4954,12 @@ function renderActivityWeekChart(acts, year, filter, now) {
 
 function activityListRow(a) {
   const d = parseDate(a.date);
-  const dayName = DAY_NAMES[(d.getDay() + 6) % 7];
+  const dayName = DAY_NAMES()[(d.getDay() + 6) % 7];
   return `
-    <li class="day clickable" data-date="${esc(a.date)}" tabindex="0" role="button" title="View activity">
+    <li class="day clickable" data-date="${esc(a.date)}" tabindex="0" role="button" title="${esc(tt("day.viewActivity"))}">
       <div class="day-date"><strong>${d.getDate()}</strong><span>${dayName}</span></div>
       <div class="day-body">
-        <div class="session"><span class="chip k-${a.cat}">${YEAR_SPORT_LABEL[a.cat] || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
+        <div class="session"><span class="chip k-${a.cat}">${YEAR_SPORT_LABEL(a.cat) || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
         <div class="actual k-${a.cat}">${activityLine(a)}</div>
       </div>
       <span class="day-open" aria-hidden="true">›</span>
@@ -4885,30 +4987,30 @@ function renderActivities(acts, now) {
     groups[groups.length - 1].items.push(a);
   });
   const chips = [
-    ["", "All", yearPool.length],
-    ...YEAR_SPORTS.map((cat) => [cat, YEAR_SPORT_LABEL[cat], totals[cat]]),
+    ["", tt("common.all"), yearPool.length],
+    ...YEAR_SPORTS.map((cat) => [cat, YEAR_SPORT_LABEL(cat), totals[cat]]),
   ];
   const volume = activityVolume(rows, filter);
   const summary = rows.length
-    ? `${rows.length} session${rows.length === 1 ? "" : "s"} in ${year}`
+    ? tt(rows.length === 1 ? "act.sessionsIn" : "act.sessionsInPlural", { count: rows.length, year })
     : yearPool.length
-      ? `No ${YEAR_SPORT_LABEL[filter].toLowerCase()} sessions in ${year}.`
+      ? tt("act.noSportInYear", { sport: YEAR_SPORT_LABEL(filter).toLowerCase(), year })
       : pool.length
-        ? `Nothing logged in ${year}. Pick another year, or log a session.`
-        : "Nothing logged yet. Log a session, or import a Garmin CSV.";
+        ? tt("act.nothingInYear", { year })
+        : tt("act.nothingYet");
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow">Log</div>
-        <h1>${filter ? `${YEAR_SPORT_LABEL[filter]} activities` : "All activities"}</h1>
+        <div class="eyebrow">${tt("act.log")}</div>
+        <h1>${filter ? tt("act.sportTitle", { sport: YEAR_SPORT_LABEL(filter) }) : tt("act.allTitle")}</h1>
         <p class="muted">${summary}</p>
       </div>
       <div class="hero-side">
-        <button class="button" type="button" data-action="toggle-activity-log">Log a session</button>
+        <button class="button" type="button" data-action="toggle-activity-log">${tt("act.logSession")}</button>
         ${rows.length ? `
           <div class="countdown act-km">
             <strong>${esc(volume.value)}</strong>
-            <span>${volume.unit} logged</span>
+            <span>${tt("act.logged", { unit: volume.unit })}</span>
           </div>` : ""}
       </div>
     </section>
@@ -4932,8 +5034,8 @@ function renderActivities(acts, now) {
           <ul class="days">${g.items.map(activityListRow).join("")}</ul>
         </div>`).join("") : `
         <p class="muted" style="margin:14px 0 0">${yearPool.length
-          ? `No ${YEAR_SPORT_LABEL[filter].toLowerCase()} sessions in ${year}.`
-          : `No sessions in ${year}.`}</p>`}
+          ? tt("act.noSportInYear", { sport: YEAR_SPORT_LABEL(filter).toLowerCase(), year })
+          : tt("act.noSessionsInYear", { year })}</p>`}
     </section>`;
 }
 
@@ -4975,7 +5077,7 @@ function migrateLegacyHash() {
   history.replaceState(null, "", path + location.search);
 }
 
-function go(path, { replace = false } = {}) {
+function go(path, { replace = false, force = false } = {}) {
   const next = (path.startsWith("/") ? path : `/${path}`) + location.search;
   const [nextBase] = path.replace(/^\/+|\/+$/g, "").split("/");
   const sameSection = pathParts()[0] === nextBase;
@@ -4983,7 +5085,7 @@ function go(path, { replace = false } = {}) {
     if (!APP_READY && nextBase !== "setup" && nextBase !== "create-plan" && window.CURRENT_USER_ID) {
       return window.bootApp?.();
     }
-    render();
+    render(force);
     return;
   }
   if (replace || sameSection) history.replaceState(null, "", next);
@@ -4991,7 +5093,7 @@ function go(path, { replace = false } = {}) {
   if (!APP_READY && nextBase !== "setup" && nextBase !== "create-plan" && window.CURRENT_USER_ID) {
     return window.bootApp?.();
   }
-  render();
+  render(force);
 }
 
 window.go = go;
@@ -5030,7 +5132,10 @@ function render(force = false) {
   }
   document.body.classList.remove("onboarding");
   if (!APP_READY) {
-    if (window.CURRENT_USER_ID && typeof window.bootApp === "function") window.bootApp();
+    if (window.CURRENT_USER_ID && typeof window.bootApp === "function") {
+      showAppLoading();
+      window.bootApp();
+    }
     return;
   }
   const now = today();
@@ -5430,6 +5535,29 @@ document.addEventListener("click", async (e) => {
     }
     return;
   }
+  const langBtn = e.target.closest("button[data-lang]");
+  if (langBtn) {
+    const value = langBtn.dataset.lang;
+    if (value === "en" || value === "nl") {
+      const scope = langBtn.closest("form") || langBtn.closest(".auth-lang") || document;
+      const hidden = scope.querySelector?.("[name=language]");
+      if (hidden) hidden.value = value;
+      scope.querySelectorAll?.("[data-lang]")?.forEach?.((b) => {
+        b.classList.toggle("is-on", b.dataset.lang === value);
+      });
+      if (!langBtn.closest(".settings-form") && typeof window.setLanguage === "function") {
+        window.setLanguage(value, { persist: true });
+        const authForm = document.querySelector(".auth-form");
+        if (authForm) {
+          const mode = authForm.dataset.mode || "signin";
+          const email = authForm.email?.value || "";
+          if (mode === "recovery") renderPasswordReset(email);
+          else renderLogin("", { mode: mode === "forgot" || mode === "signup" ? mode : "signin", email });
+        }
+      }
+    }
+    return;
+  }
   const accountTrigger = e.target.closest("[data-action=account-menu]");
   if (accountTrigger) {
     e.preventDefault();
@@ -5446,7 +5574,10 @@ document.addEventListener("click", async (e) => {
       e.preventDefault();
       closeAccountMenu();
       const dest = url.pathname.replace(/\/+$/, "") || "/home";
-      if (document.body.classList.contains("onboarding") && dest !== "/setup" && dest !== "/create-plan") {
+      const onSetupFlow = document.body.classList.contains("onboarding")
+        || currentRoute() === "setup"
+        || currentRoute() === "create-plan";
+      if (onSetupFlow && dest !== "/setup" && dest !== "/create-plan") {
         if (dest === "/home" && typeof window.leaveSetupToHome === "function") {
           await window.leaveSetupToHome();
         } else if (typeof window.saveSetupDraftNow === "function") {
@@ -5455,7 +5586,7 @@ document.addEventListener("click", async (e) => {
         return;
       }
       if (url.pathname === "/gear" || url.pathname.startsWith("/gear/")) dialog?.close();
-      go(url.pathname);
+      go(url.pathname, { force: dest === "/home" });
       return;
     }
   }
@@ -5501,6 +5632,8 @@ document.addEventListener("click", async (e) => {
     if (day && !dialog.contains(day)) openDay(day.dataset.date);
     return;
   }
+  // Setup-form strength mode / gear actions are handled in plan.js.
+  if (btn.closest(".setup-form") && String(btn.dataset.action || "").startsWith("setup-")) return;
   if (btn.dataset.action === "close-dialog") dialog.close();
   if (btn.dataset.action === "open-day") {
     e.preventDefault();
@@ -5838,14 +5971,22 @@ document.addEventListener("submit", async (e) => {
         if (invalid) throw new Error(invalid);
         await saveUsernameQuiet(username);
         render(true);
-        toast("Name saved.");
+        toast(tt("settings.toastName"));
+        return;
+      }
+      if (settingsForm.dataset.settings === "language") {
+        const language = settingsForm.language?.value || profileLanguage();
+        await saveLanguageQuiet(language);
+        if (typeof window.applyDomI18n === "function") window.applyDomI18n();
+        render(true);
+        toast(tt("settings.toastLanguage"));
         return;
       }
       if (settingsForm.dataset.settings === "units") {
         const units = normalizeUnits(settingsForm.units?.value || profileUnits());
         await saveUnitsQuiet(units);
         render(true);
-        toast(units === "imperial" ? "Using miles and lb." : "Using km and kg.");
+        toast(units === "imperial" ? tt("settings.toastUnitsImperial") : tt("settings.toastUnitsMetric"));
         return;
       }
       if (settingsForm.dataset.settings === "password") {
@@ -5853,22 +5994,22 @@ document.addEventListener("submit", async (e) => {
         const current = settingsForm.current.value;
         const password = settingsForm.password.value;
         const confirm = settingsForm.confirm.value;
-        if (!current) throw new Error("Enter your current password.");
+        if (!current) throw new Error(tt("settings.enterCurrentPassword"));
         const message = typeof window.passwordError === "function"
           ? window.passwordError(password, confirm, email)
-          : (!password || password !== confirm ? "Check your new password." : "");
+          : (!password || password !== confirm ? tt("settings.checkNewPassword") : "");
         if (message) {
           if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(settingsForm, true);
           throw new Error(message);
         }
-        if (!email) throw new Error("Sign in again, then change your password.");
+        if (!email) throw new Error(tt("settings.signInAgain"));
         const { error: verifyError } = await sb.auth.signInWithPassword({ email, password: current });
-        if (verifyError) throw new Error("Current password is incorrect.");
+        if (verifyError) throw new Error(tt("settings.currentIncorrect"));
         const { error } = await sb.auth.updateUser({ password });
         if (error) throw error;
         settingsForm.reset();
         if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(settingsForm);
-        if (noteEl) noteEl.textContent = "Password updated.";
+        if (noteEl) noteEl.textContent = tt("settings.passwordUpdated");
         toast("Password updated.");
         return;
       }
@@ -6257,7 +6398,14 @@ document.addEventListener("toggle", (e) => {
   if (currentRoute() === "plan") syncPlanWeekPath(el.open ? wk : PLAN_FOCUS_WEEK);
 }, true);
 
-window.addEventListener("popstate", () => render());
+window.addEventListener("popstate", () => {
+  if (!APP_READY && window.CURRENT_USER_ID && typeof window.bootApp === "function") {
+    showAppLoading();
+    window.bootApp();
+    return;
+  }
+  render();
+});
 document.getElementById("csv-input").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) importCSV(file);
@@ -6266,12 +6414,30 @@ document.getElementById("csv-input").addEventListener("change", (e) => {
 
 let APP_READY = false;
 let APP_BOOTING = null;
+let APP_BOOT_GEN = 0;
+
+function showAppLoading() {
+  const app = document.getElementById("app");
+  if (!app) return;
+  if (!app.querySelector(":scope > .auth-loading")) {
+    app.innerHTML = `<p class="muted auth-loading">Loading…</p>`;
+  }
+  app.dataset.route = "";
+  app.dataset.sport = "";
+}
 
 window.bootApp = function bootApp() {
   if (currentRoute() === "setup") {
-    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
+    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
     if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
       window.renderOnboarding();
+    }
+    return Promise.resolve();
+  }
+  if (currentRoute() === "create-plan") {
+    const hasForm = document.querySelector(".setup-form[data-create-only='1']");
+    if (typeof window.renderCreatePlan === "function" && !hasForm) {
+      window.renderCreatePlan();
     }
     return Promise.resolve();
   }
@@ -6285,9 +6451,12 @@ window.bootApp = function bootApp() {
     return Promise.resolve();
   }
   if (APP_BOOTING) return APP_BOOTING;
+  const bootUserId = window.CURRENT_USER_ID;
+  const gen = APP_BOOT_GEN;
+  showAppLoading();
   APP_BOOTING = (async () => {
     if (hasPlan() && typeof window.syncPlanDates === "function") window.syncPlanDates();
-    [ACTS, EVENTS, FEEDBACK, BUSY, CHANGES, GEAR] = await Promise.all([
+    const [acts, events, feedback, busy, changes, gear] = await Promise.all([
       loadActivities(),
       loadEvents(),
       loadFeedback(),
@@ -6295,24 +6464,40 @@ window.bootApp = function bootApp() {
       hasPlan() ? loadChanges() : Promise.resolve([]),
       loadGear(),
     ]);
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
+    ACTS = acts;
+    EVENTS = events;
+    FEEDBACK = feedback;
+    BUSY = busy;
+    CHANGES = changes;
+    GEAR = gear;
     await loadWellness();
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     await Promise.all([loadGarminStatus(), loadStravaStatus()]);
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     await maybeHandleStravaCallback();
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     if (hasPlan()) await Promise.all([loadProgressReport(), loadWeekFeedbackStamp()]);
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     APP_READY = true;
     if (hasPlan()) {
       const queued = await queueStageReviews(today());
+      if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
       if (queued) await sendCoachRequest({ silent: true });
       else await resumeCoachJob();
       await resumeFeedbackJob();
     }
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     render(true);
     maybeToastShoeWear();
-  })();
+  })().finally(() => {
+    if (gen === APP_BOOT_GEN) APP_BOOTING = null;
+  });
   return APP_BOOTING;
 };
 
 window.resetApp = function resetApp() {
+  APP_BOOT_GEN += 1;
   APP_READY = false;
   APP_BOOTING = null;
   ACTS = [];
@@ -6341,6 +6526,20 @@ window.resetApp = function resetApp() {
   clearTimeout(PROGRESS_POLL);
   clearTimeout(COACH_POLL);
   clearTimeout(FEEDBACK_POLL);
+  if (typeof window.resetPlanLoad === "function") window.resetPlanLoad();
+  else if (typeof window.clearPlanRow === "function") window.clearPlanRow();
+  else window.CURRENT_PLAN = null;
+  window.CURRENT_USER_ID = null;
   window.CURRENT_PROFILE = null;
   window.CURRENT_USER_EMAIL = "";
+  const app = document.getElementById("app");
+  if (app) {
+    app.dataset.route = "";
+    app.dataset.sport = "";
+  }
 };
+
+window.addEventListener("tp:languagechange", () => {
+  if (typeof window.applyDomI18n === "function") window.applyDomI18n();
+  if (APP_READY) render(true);
+});

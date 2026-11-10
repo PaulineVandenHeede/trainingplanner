@@ -28,7 +28,20 @@ window.EVENT_PRESETS = {
   ],
 };
 
-window.SPORT_LABEL = { run: "Running", swim: "Swimming", bike: "Cycling", triathlon: "Triathlon" };
+window.sportLabel = function sportLabel(s) {
+  const key = `sport.${s}Full`;
+  if (typeof window.t === "function") {
+    const value = window.t(key);
+    if (value !== key) return value;
+  }
+  return ({ run: "Running", swim: "Swimming", bike: "Cycling", triathlon: "Triathlon" })[s] || s;
+};
+window.SPORT_LABEL = new Proxy({}, {
+  get(_target, prop) {
+    if (prop === Symbol.toStringTag) return "Object";
+    return window.sportLabel(prop);
+  },
+});
 
 window.TIME_PRESETS = {
   run: ["5k", "10k", "half", "marathon", "custom"],

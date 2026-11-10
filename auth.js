@@ -45,12 +45,20 @@ const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANO
 window.sb = sb;
 
 const PASSWORD_RULES = [
-  { id: "length", label: "12 to 72 characters", test: (password) => password.length >= 12 && password.length <= 72 },
-  { id: "lower", label: "One lowercase letter", test: (password) => /[a-z]/.test(password) },
-  { id: "upper", label: "One uppercase letter", test: (password) => /[A-Z]/.test(password) },
-  { id: "digit", label: "One number", test: (password) => /[0-9]/.test(password) },
-  { id: "symbol", label: "One symbol", test: (password) => /[^A-Za-z0-9\s]/.test(password) },
+  { id: "length", test: (password) => password.length >= 12 && password.length <= 72 },
+  { id: "lower", test: (password) => /[a-z]/.test(password) },
+  { id: "upper", test: (password) => /[A-Z]/.test(password) },
+  { id: "digit", test: (password) => /[0-9]/.test(password) },
+  { id: "symbol", test: (password) => /[^A-Za-z0-9\s]/.test(password) },
 ];
+
+function tt(key, vars) {
+  return typeof window.t === "function" ? window.t(key, vars) : key;
+}
+
+function passwordRuleLabel(ruleId) {
+  return tt(`pw.${ruleId}`);
+}
 
 function authRedirectTo(path = "/") {
   const configured = String(window.AUTH_SITE_URL || "https://health.paulinevandenheede.com").trim();
@@ -83,27 +91,27 @@ function clearAuthParams() {
 }
 
 function passwordProblems(password, email) {
-  const problems = PASSWORD_RULES.filter((rule) => !rule.test(password)).map((rule) => rule.label);
-  if (password !== password.trim()) problems.push("No space at the start or end");
+  const unmet = PASSWORD_RULES.filter((rule) => !rule.test(password)).map((rule) => passwordRuleLabel(rule.id));
+  const extras = [];
+  if (password !== password.trim()) extras.push(tt("pw.noEdgeSpace"));
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const local = normalizedEmail.split("@")[0];
   if (normalizedEmail && password.trim().toLowerCase() === normalizedEmail) {
-    problems.push("Can't be your email address");
+    extras.push(tt("pw.notEmail"));
   } else if (local.length >= 4 && password.toLowerCase().includes(local)) {
-    problems.push("Can't include your email name");
+    extras.push(tt("pw.notEmailLocal"));
   }
-  return problems;
+  return { unmet, extras };
 }
 
 function passwordError(password, confirm, email) {
-  if (!password) return "Enter a password.";
-  if (password !== confirm) return "Passwords don't match.";
-  const problems = passwordProblems(password, email);
-  if (!problems.length) return "";
-  const extras = problems.filter((problem) => !PASSWORD_RULES.some((rule) => rule.label === problem));
-  if (extras.length === problems.length) return `${extras[0]}.`;
-  if (extras.length) return `${extras[0]}. Also meet every requirement below.`;
-  return "Meet every requirement below.";
+  if (!password) return tt("pw.enter");
+  if (password !== confirm) return tt("pw.mismatch");
+  const { unmet, extras } = passwordProblems(password, email);
+  if (!unmet.length && !extras.length) return "";
+  if (!unmet.length) return `${extras[0]}.`;
+  if (extras.length) return `${extras[0]}. ${tt("pw.alsoMeet")}`;
+  return tt("pw.meetAll");
 }
 
 function paintPasswordRules(form, checked) {
@@ -137,11 +145,29 @@ window.authHeaders = authHeaders;
 
 function passwordRulesHtml({ hidden = true, id = "password-rules" } = {}) {
   return `<ul class="password-rules"${id ? ` id="${id}"` : ""}${hidden ? " hidden" : ""}>${PASSWORD_RULES.map((rule) =>
-    `<li data-rule="${rule.id}">${rule.label}</li>`).join("")}</ul>`;
+    `<li data-rule="${rule.id}">${passwordRuleLabel(rule.id)}</li>`).join("")}</ul>`;
+}
+
+function authLanguagePicker() {
+  const row = typeof window.languageChoiceRow === "function"
+    ? window.languageChoiceRow(window.I18N?.language || "en")
+    : "";
+  if (!row) return "";
+  return `<div class="auth-lang"><span>${tt("auth.language")}</span>${row}</div>`;
 }
 window.passwordError = passwordError;
 window.paintPasswordRules = paintPasswordRules;
 window.passwordRulesHtml = passwordRulesHtml;
+
+function renderAuthLoading() {
+  document.body.classList.add("logged-out");
+  document.body.classList.remove("onboarding");
+  const header = document.getElementById("app-header");
+  if (header) header.hidden = true;
+  document.getElementById("day-dialog")?.close();
+  const app = document.getElementById("app");
+  if (app) app.innerHTML = `<p class="muted auth-loading">${tt("common.loading")}</p>`;
+}
 
 function renderLogin(message = "", options = {}) {
   document.body.classList.add("logged-out");
@@ -156,26 +182,27 @@ function renderLogin(message = "", options = {}) {
           <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
         </picture>
         <div>
-          <div class="eyebrow">Your training</div>
-          <h1>Training Pal</h1>
+          <div class="eyebrow">${tt("brand.eyebrow")}</div>
+          <h1>${tt("brand.name")}</h1>
         </div>
       </div>
-      <p class="muted auth-lead">Sign in to open your plan.</p>
+      ${authLanguagePicker()}
+      <p class="muted auth-lead">${tt("auth.leadSignIn")}</p>
       <div class="auth-tabs">
-        <button class="auth-tab active" type="button" data-auth-mode="signin">Sign in</button>
-        <button class="auth-tab" type="button" data-auth-mode="signup">Create account</button>
+        <button class="auth-tab active" type="button" data-auth-mode="signin">${tt("auth.signIn")}</button>
+        <button class="auth-tab" type="button" data-auth-mode="signup">${tt("auth.signUp")}</button>
       </div>
       <form class="auth-form" data-mode="signin" novalidate>
-        <label class="email-row">Email<input type="email" name="email" required autocomplete="email" /></label>
-        <label class="password-row">Password<input type="password" name="password" required autocomplete="current-password" aria-describedby="password-rules" /></label>
-        <label class="confirm-row" hidden>Confirm password<input type="password" name="confirm" autocomplete="new-password" /></label>
+        <label class="email-row">${tt("auth.email")}<input type="email" name="email" required autocomplete="email" /></label>
+        <label class="password-row">${tt("auth.password")}<input type="password" name="password" required autocomplete="current-password" aria-describedby="password-rules" /></label>
+        <label class="confirm-row" hidden>${tt("auth.confirmPassword")}<input type="password" name="confirm" autocomplete="new-password" /></label>
         ${passwordRulesHtml()}
         <p class="form-error" role="alert"></p>
         <p class="form-note" role="status"></p>
-        <button class="button" type="submit">Sign in</button>
+        <button class="button" type="submit">${tt("auth.signIn")}</button>
         <p class="auth-links">
-          <button class="text-button forgot-row" type="button" data-auth-mode="forgot">Forgot password?</button>
-          <button class="text-button back-row" type="button" data-auth-mode="signin" hidden>Back to sign in</button>
+          <button class="text-button forgot-row" type="button" data-auth-mode="forgot">${tt("auth.forgot")}</button>
+          <button class="text-button back-row" type="button" data-auth-mode="signin" hidden>${tt("auth.backSignIn")}</button>
         </p>
       </form>
     </section>`;
@@ -201,26 +228,31 @@ function renderPasswordReset(email = "", message = "") {
           <img class="brand-mark" src="/assets/app-icon.png" width="36" height="36" alt="" />
         </picture>
         <div>
-          <div class="eyebrow">Your training</div>
-          <h1>New password</h1>
+          <div class="eyebrow">${tt("brand.eyebrow")}</div>
+          <h1>${tt("auth.newPasswordTitle")}</h1>
         </div>
       </div>
+      ${authLanguagePicker()}
       <p class="muted auth-lead"></p>
       <form class="auth-form" data-mode="recovery" novalidate>
         <input type="hidden" name="email" value="" />
-        <label class="password-row">New password<input type="password" name="password" required autocomplete="new-password" aria-describedby="password-rules" /></label>
-        <label class="confirm-row">Confirm password<input type="password" name="confirm" autocomplete="new-password" /></label>
+        <label class="password-row">${tt("auth.newPassword")}<input type="password" name="password" required autocomplete="new-password" aria-describedby="password-rules" /></label>
+        <label class="confirm-row">${tt("auth.confirmPassword")}<input type="password" name="confirm" autocomplete="new-password" /></label>
         ${passwordRulesHtml().replace(" hidden", "")}
         <p class="form-error" role="alert"></p>
         <p class="form-note" role="status"></p>
-        <button class="button" type="submit">Save password</button>
+        <button class="button" type="submit">${tt("auth.savePassword")}</button>
         <p class="auth-links">
-          <button class="text-button" type="button" data-action="cancel-recovery">Cancel</button>
+          <button class="text-button" type="button" data-action="cancel-recovery">${tt("common.cancel")}</button>
         </p>
       </form>
     </section>`;
   const lead = document.querySelector(".auth-lead");
-  if (lead) lead.textContent = email ? `Choose a new password for ${email}.` : "Choose a new password for your account.";
+  if (lead) {
+    lead.textContent = email
+      ? tt("auth.resetLeadFor", { email })
+      : tt("auth.resetLead");
+  }
   const form = document.querySelector(".auth-form");
   if (form) {
     form.email.value = email || "";
@@ -245,17 +277,24 @@ function setAuthMode(mode) {
   const lead = document.querySelector(".auth-lead");
   if (lead) {
     lead.textContent = forgot
-      ? "Enter your email and we'll send a link to choose a new password."
-      : "Sign in to open your plan.";
+      ? tt("auth.leadForgot")
+      : tt("auth.leadSignIn");
   }
   form.password.required = !forgot;
   form.password.autocomplete = signup ? "new-password" : "current-password";
-  form.querySelector("button[type=submit]").textContent = signup ? "Create account" : forgot ? "Send reset link" : "Sign in";
+  form.querySelector("button[type=submit]").textContent = signup
+    ? tt("auth.signUp")
+    : forgot
+      ? tt("auth.sendReset")
+      : tt("auth.signIn");
   document.querySelectorAll(".auth-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.authMode === mode));
   form.querySelector(".form-error").textContent = "";
   form.querySelector(".form-note").textContent = "";
   if (signup) paintPasswordRules(form);
 }
+window.renderLogin = renderLogin;
+window.renderPasswordReset = renderPasswordReset;
+window.setAuthMode = setAuthMode;
 
 window.CURRENT_PROFILE = null;
 
@@ -286,67 +325,114 @@ async function loadProfile(userId) {
   const fallbackUnits = typeof window.guessUnitsFromLocale === "function"
     ? window.guessUnitsFromLocale()
     : "metric";
+  const fallbackLang = typeof window.I18N?.normalizeLang === "function"
+    ? window.I18N.normalizeLang(window.I18N.language || "en")
+    : "en";
   if (!userId) {
-    window.CURRENT_PROFILE = { username: "", units: fallbackUnits };
+    window.CURRENT_PROFILE = { username: "", units: fallbackUnits, language: fallbackLang };
     return window.CURRENT_PROFILE;
   }
-  const { data, error } = await sb.from("profiles").select("username,units").eq("user_id", userId).maybeSingle();
+  const { data, error } = await sb.from("profiles").select("username,units,language").eq("user_id", userId).maybeSingle();
   if (error) {
-    window.CURRENT_PROFILE = { username: "", units: fallbackUnits };
+    window.CURRENT_PROFILE = { username: "", units: fallbackUnits, language: fallbackLang };
   } else {
     const units = data?.units === "imperial" || data?.units === "metric"
       ? data.units
       : fallbackUnits;
-    window.CURRENT_PROFILE = { username: data?.username || "", units };
+    const language = typeof window.I18N?.normalizeLang === "function"
+      ? window.I18N.normalizeLang(data?.language || fallbackLang)
+      : fallbackLang;
+    window.CURRENT_PROFILE = { username: data?.username || "", units, language };
+    if (typeof window.setLanguage === "function") {
+      window.setLanguage(language, { persist: true, silent: true });
+      if (typeof window.applyDomI18n === "function") window.applyDomI18n();
+    }
   }
   return window.CURRENT_PROFILE;
 }
 window.loadProfile = loadProfile;
 
+function revealAppChrome() {
+  document.body.classList.remove("logged-out");
+  const header = document.getElementById("app-header");
+  if (header) header.hidden = false;
+  if (typeof window.applyDomI18n === "function") window.applyDomI18n();
+}
+
 let enterAppInFlight = null;
+let enterAppUserId = null;
+let enterAppGen = 0;
+
 async function enterApp(session) {
-  if (enterAppInFlight) return enterAppInFlight;
+  const uid = session?.user?.id;
+  if (!uid) return;
+  if (enterAppInFlight && enterAppUserId === uid) return enterAppInFlight;
+  const gen = ++enterAppGen;
+  enterAppUserId = uid;
   enterAppInFlight = (async () => {
-    document.body.classList.remove("logged-out");
-    const header = document.getElementById("app-header");
-    if (header) header.hidden = false;
-    window.CURRENT_USER_ID = session.user.id;
-    await loadProfile(session.user.id);
+    const stillCurrent = () => gen === enterAppGen && window.CURRENT_USER_ID === uid;
+    const hasSetupUi = !!document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+    // Keep a centered loading screen instead of leaving the sign-in card
+    // uncentered after logged-out layout is cleared.
+    if (!hasSetupUi) renderAuthLoading();
+    window.CURRENT_USER_ID = uid;
+    await loadProfile(uid);
+    if (!stillCurrent()) return;
     showUser(session.user);
     try {
       // Finish Strava OAuth before setup routing can rewrite the URL.
       if (typeof window.maybeHandleStravaCallback === "function") {
         const handled = await window.maybeHandleStravaCallback();
-        if (handled) return;
+        if (handled || !stillCurrent()) return;
       }
+      const routeBase = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
       const stayingOnSetup = document.body.classList.contains("onboarding")
-        || location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] === "setup"
-        || !!document.querySelector(".setup-form, .setup-connect-step");
+        || routeBase === "setup"
+        || routeBase === "create-plan"
+        || !!document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
       if (stayingOnSetup) {
-        // Full reload of /setup used to return here with only "Loading…" — paint setup.
-        const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
-        if (!hasSetupUi && typeof window.renderOnboarding === "function") {
+        // Full reload of /setup or /create-plan used to return here with only "Loading…".
+        const setupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+        if (!setupUi && routeBase === "create-plan" && typeof window.renderCreatePlan === "function") {
+          window.renderCreatePlan();
+        } else if (!setupUi && typeof window.renderOnboarding === "function") {
           window.renderOnboarding();
-        } else if (!hasSetupUi && typeof window.bootApp === "function") {
+        } else if (!setupUi && typeof window.bootApp === "function") {
+          revealAppChrome();
           await window.bootApp();
         }
         return;
       }
       const ready = typeof window.ensurePlan === "function" ? await window.ensurePlan(session.user) : true;
-      if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step")) {
+      if (!stillCurrent()) return;
+      if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step, .setup-creating")) {
         return;
       }
-      if (ready && typeof window.bootApp === "function") await window.bootApp();
+      if (ready && typeof window.bootApp === "function") {
+        revealAppChrome();
+        await window.bootApp();
+      }
     } catch (err) {
+      if (!stillCurrent()) return;
       renderLogin(err.message || "Could not load your plan.");
     }
   })();
   try {
     await enterAppInFlight;
   } finally {
-    enterAppInFlight = null;
+    if (enterAppUserId === uid) {
+      enterAppInFlight = null;
+      enterAppUserId = null;
+    }
   }
 }
+
+function resetAuthEntry() {
+  enterAppGen += 1;
+  enterAppInFlight = null;
+  enterAppUserId = null;
+}
+window.resetAuthEntry = resetAuthEntry;
 
 document.addEventListener("click", (e) => {
   const tab = e.target.closest("[data-auth-mode]");
@@ -360,11 +446,15 @@ document.addEventListener("click", (e) => {
   }
   if (e.target.closest("[data-action=logout]")) {
     e.preventDefault();
+    resetAuthEntry();
     if (typeof window.resetApp === "function") window.resetApp();
-    window.CURRENT_PLAN = null;
-    window.CURRENT_USER_ID = null;
-    window.CURRENT_PROFILE = null;
-    window.CURRENT_USER_EMAIL = "";
+    else {
+      window.CURRENT_USER_ID = null;
+      window.CURRENT_PROFILE = null;
+      window.CURRENT_USER_EMAIL = "";
+      if (typeof window.clearPlanRow === "function") window.clearPlanRow();
+      else window.CURRENT_PLAN = null;
+    }
     pendingRecovery = false;
     sb.auth.signOut();
   }
@@ -441,6 +531,7 @@ document.addEventListener("submit", async (e) => {
         renderLogin("Account created. Check your email to confirm, then sign in.", { mode: "signin", tone: "ok", email });
         return;
       }
+      renderAuthLoading();
     } else {
       const { error } = await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
@@ -449,6 +540,7 @@ document.addEventListener("submit", async (e) => {
         if (pending) sessionStorage.setItem("setup-pending-connect", "1");
         else sessionStorage.removeItem("setup-pending-connect");
       } catch { /* ignore */ }
+      renderAuthLoading();
     }
   } catch (err) {
     errorEl.textContent = err.message || "Could not sign in.";
@@ -465,10 +557,26 @@ sb.auth.onAuthStateChange((event, session) => {
     renderPasswordReset(session?.user?.email || "");
     return;
   }
-  if (session) enterApp(session);
-  else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") {
-    renderLogin(authLink.error && !session ? authLink.error : "", authLink.error ? { mode: authLink.type === "recovery" ? "forgot" : "signin" } : {});
+  if (session) {
+    enterApp(session);
+    return;
   }
+  if (event !== "SIGNED_OUT" && event !== "INITIAL_SESSION") return;
+  // SIGNED_OUT can arrive after a fast re-login; don't wipe the new session.
+  if (event === "SIGNED_OUT") {
+    sb.auth.getSession().then(({ data: { session: current } }) => {
+      if (current) {
+        enterApp(current);
+        return;
+      }
+      resetAuthEntry();
+      if (typeof window.resetApp === "function") window.resetApp();
+      else if (typeof window.clearPlanRow === "function") window.clearPlanRow();
+      renderLogin(authLink.error || "", authLink.error ? { mode: authLink.type === "recovery" ? "forgot" : "signin" } : {});
+    });
+    return;
+  }
+  renderLogin(authLink.error || "", authLink.error ? { mode: authLink.type === "recovery" ? "forgot" : "signin" } : {});
 });
 
 sb.auth.getSession().then(({ data: { session } }) => {
