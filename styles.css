@@ -532,7 +532,25 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 .change-icon.t-busy { color: var(--peak); }
 .change-icon.t-event { color: var(--event); }
 .change-icon.t-import { color: var(--swim); }
-.change-text { flex: 1; }
+.change-icon.t-adapt { color: var(--run, #e4572e); }
+.change-text { flex: 1; min-width: 0; }
+.change-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.card.changes .card-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.adapt-item .adapt-mode {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.adapt-rationale, .adapt-actions {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.35;
+}
 
 #toast {
   position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;

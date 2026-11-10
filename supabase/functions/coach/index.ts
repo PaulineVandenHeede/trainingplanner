@@ -255,6 +255,59 @@ function recoveryRules() {
   ];
 }
 
+function adaptationRules() {
+  return [
+    "Week adaptation rules (life happens):",
+    "- NEVER silently rewrite week day structures. If the week needs restructuring, propose via adaptations[] so the athlete can Accept.",
+    "- Missed-week rebuild: after 2+ missed key sessions (long / quality / race / key bike or swim), propose a rebuilt remaining week — no catch-up stacking; protect the long; drop or ease quality first.",
+    "- Mid-week rescue: if early-week sessions were missed and days remain, propose drop vs keep. Priority keep: long/race > one quality if recovery allows > easy aerobic. Drop fillers (extra easy, optional swim/bike) first.",
+    "- Niggle / injury ease: if notes mention niggle, sore, pain, calf, knee, etc., propose easing intensity (quality→easy, trim long ~10–15%) without deleting the week so race day stays reachable.",
+    "- Each adaptations[] item: { mode: \"rebuild\"|\"rescue\"|\"niggle\", week: number, summary, rationale, days: 7-day array like plan days [kind,label,km?], km, note, actions: string[] }.",
+    "- Only include adaptations when structure should change. Prefer one adaptation for the current week. Do not invent past days that already happened.",
+  ];
+}
+
+function actDateKey(value: unknown) {
+  return String(value || "").slice(0, 10);
+}
+
+function weekExecutionSnapshot(plan: Record<string, unknown>, acts: Record<string, unknown>[], weekNum: number) {
+  const start = new Date(`${plan.start_date}T00:00:00`);
+  const weeks = Array.isArray(plan.weeks) ? plan.weeks as Record<string, unknown>[] : [];
+  const week = weeks.find((w) => Number(w.wk) === weekNum);
+  if (!week) return null;
+  const weekStart = new Date(start);
+  weekStart.setDate(weekStart.getDate() + (weekNum - 1) * 7);
+  const today = new Date();
+  const todayKey = today.toISOString().slice(0, 10);
+  const days = Array.isArray(week.days) ? week.days as unknown[] : [];
+  const keyKinds = new Set(["long", "quality", "race", "event"]);
+  return {
+    week: weekNum,
+    sessions: days.map((day, i) => {
+      const row = Array.isArray(day) ? day : ["rest", "Rest"];
+      const kind = String(row[0] || "rest");
+      const label = row[1] == null ? null : String(row[1]);
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + i);
+      const ds = d.toISOString().slice(0, 10);
+      const logged = acts.some((a) => actDateKey(a.date || a.started_at) === ds);
+      const key = keyKinds.has(kind) || (kind === "bike" && /long|brick|key/i.test(label || ""));
+      return {
+        i,
+        date: ds,
+        kind,
+        label,
+        key,
+        past: ds < todayKey,
+        remaining: ds >= todayKey,
+        logged,
+        missedKey: key && ds < todayKey && !logged,
+      };
+    }),
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -398,6 +451,8 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
   const today = new Date();
   const week = Math.floor((today.getTime() - start.getTime()) / 86400000 / 7) + 1;
   const header = planHeader(plan, week);
+  const execution = weekExecutionSnapshot(plan, visibleActs as Record<string, unknown>[], week);
+  const pendingForCoach = (changes || []).filter((c) => c.type !== "adapt");
 
   const prompt = [
     "You are the training-plan coach for this athlete. Do not write code or files.",
@@ -414,8 +469,11 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
     "Weeks:",
     JSON.stringify(compactWeeks(plan.weeks || [])),
     "",
-    "Pending changes:",
-    JSON.stringify(changes || []),
+    "Current week execution:",
+    JSON.stringify(execution),
+    "",
+    "Pending changes (athlete notes/events/busy — not adaptations):",
+    JSON.stringify(pendingForCoach),
     "",
     "Recent activities:",
     JSON.stringify(compactActs(visibleActs)),
@@ -431,14 +489,16 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
     ...sportRules(header.sport, plan.distance_preset),
     "- If things look poor (missed key sessions, niggles, easy days too hard), hold or ease intensity. Do not tighten pace.",
     ...recoveryRules(),
+    ...adaptationRules(),
     "",
     "JSON shape:",
-    '{"summary":"one sentence","alert":null,"hold":false,"paces":null,"weekNotes":{},"weekFeedback":{},"activityFeedback":{},"applyChangeIds":[]}',
+    '{"summary":"one sentence","alert":null,"hold":false,"paces":null,"weekNotes":{},"weekFeedback":{},"activityFeedback":{},"adaptations":[],"applyChangeIds":[]}',
     '- paces: array of [name, pace, use] like the current paces, or null to leave them.',
     '- weekNotes: { "11": "note" } keys are week numbers. Only weeks you change.',
     '- weekFeedback: { "11": "feedback" } for completed weeks you reviewed.',
     '- activityFeedback: { "<started_at>": "feedback" } using the activity started_at values.',
-    "- applyChangeIds: pending change ids you accounted for.",
+    "- adaptations: optional array of week rebuild/rescue/niggle proposals (see rules). Stored as pending for the athlete to Accept — not applied automatically.",
+    "- applyChangeIds: pending change ids you accounted for (never adapt ids).",
     "- hold: true if you did not change paces or weekly km.",
     "- alert: null, or one short athlete-facing warning when the plan looks too heavy / paces should ease. Not a second summary.",
   ].filter(Boolean).join("\n");
@@ -974,6 +1034,77 @@ async function saveFeedback(
   }
 }
 
+function normalizeAdaptationDays(days: unknown) {
+  if (!Array.isArray(days) || days.length !== 7) return null;
+  return days.map((day) => {
+    if (!Array.isArray(day) || !day.length) return ["rest", "Rest"];
+    const kind = String(day[0] || "rest");
+    const label = day[1] == null ? (kind === "rest" ? "Rest" : kind) : String(day[1]);
+    const km = typeof day[2] === "number" && Number.isFinite(day[2]) ? day[2] : undefined;
+    return km == null ? [kind, label] : [kind, label, km];
+  });
+}
+
+async function queueCoachAdaptations(
+  userClient: ReturnType<typeof createClient>,
+  userId: string,
+  patch: Record<string, unknown>,
+) {
+  const rows = Array.isArray(patch.adaptations) ? patch.adaptations : [];
+  if (!rows.length) return 0;
+  const { data: existing } = await userClient
+    .from("changes")
+    .select("id, details, status")
+    .eq("user_id", userId)
+    .eq("type", "adapt");
+  const known = new Set(
+    (existing || [])
+      .map((row) => {
+        const details = row.details && typeof row.details === "object" ? row.details as Record<string, unknown> : {};
+        return String(details.fingerprint || "");
+      })
+      .filter(Boolean),
+  );
+
+  let inserted = 0;
+  for (const raw of rows) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const mode = String(item.mode || "adapt");
+    if (!["rebuild", "rescue", "niggle", "adapt"].includes(mode)) continue;
+    const week = Number(item.week);
+    const days = normalizeAdaptationDays(item.days);
+    if (!Number.isInteger(week) || week < 1 || !days) continue;
+    const fingerprint = String(item.fingerprint || `adapt:${mode}:w${week}:coach`);
+    if (known.has(fingerprint)) continue;
+    const summary = String(item.summary || `Week ${week} ${mode} proposal`).slice(0, 500);
+    const details = {
+      mode,
+      week,
+      rationale: String(item.rationale || "").slice(0, 2000),
+      days,
+      km: typeof item.km === "number" ? item.km : null,
+      note: String(item.note || "").slice(0, 1000),
+      actions: Array.isArray(item.actions) ? item.actions.map((a) => String(a)).slice(0, 12) : [],
+      fingerprint,
+      source: "coach",
+    };
+    const id = crypto.randomUUID();
+    const { error } = await userClient.from("changes").insert({
+      user_id: userId,
+      id,
+      type: "adapt",
+      summary,
+      details,
+      status: "pending",
+    });
+    if (error) continue;
+    known.add(fingerprint);
+    inserted += 1;
+  }
+  return inserted;
+}
+
 async function applyPatch(userClient: ReturnType<typeof createClient>, userId: string, patch: Record<string, unknown>) {
   const { data: plan, error: planErr } = await userClient.from("plans").select("weeks, paces").eq("user_id", userId).maybeSingle();
   if (planErr) throw planErr;
@@ -995,10 +1126,22 @@ async function applyPatch(userClient: ReturnType<typeof createClient>, userId: s
   }
 
   await saveFeedback(userClient, userId, patch);
+  await queueCoachAdaptations(userClient, userId, patch);
 
-  const ids = Array.isArray(patch.applyChangeIds) ? patch.applyChangeIds.filter((id) => typeof id === "string") : [];
+  const ids = Array.isArray(patch.applyChangeIds)
+    ? patch.applyChangeIds.filter((id) => typeof id === "string")
+    : [];
   if (ids.length) {
-    const { error } = await userClient.from("changes").update({ status: "applied" }).eq("user_id", userId).in("id", ids);
-    if (error) throw error;
+    // Never auto-apply adaptation proposals via applyChangeIds.
+    const { data: rows } = await userClient
+      .from("changes")
+      .select("id, type")
+      .eq("user_id", userId)
+      .in("id", ids);
+    const safeIds = (rows || []).filter((r) => r.type !== "adapt").map((r) => r.id);
+    if (safeIds.length) {
+      const { error } = await userClient.from("changes").update({ status: "applied" }).eq("user_id", userId).in("id", safeIds);
+      if (error) throw error;
+    }
   }
 }

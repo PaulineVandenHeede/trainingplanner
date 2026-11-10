@@ -182,7 +182,7 @@ function shoeWearBar(item) {
       </div>
     </div>`;
 }
-const pendingChanges = () => CHANGES.filter((c) => c.status !== "applied");
+const pendingChanges = () => CHANGES.filter((c) => c.status === "pending" || (!c.status));
 
 function gearMatchesActivity(item, a) {
   return gearTypesFor(a.cat).includes(item.type);

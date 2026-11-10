@@ -1209,3 +1209,343 @@ window.racePrediction = function racePrediction(acts, now) {
 };
 
 window.fmtRaceClock = fmtRaceClock;
+
+// ---------- Week adaptation (missed-week / rescue / niggle) ----------
+
+const ADAPT_KEY_KINDS = new Set(["long", "quality", "race", "event"]);
+
+function isKeySession(kind, label = "") {
+  if (ADAPT_KEY_KINDS.has(kind)) return true;
+  const blob = String(label || "");
+  if (kind === "bike" && /long|brick|key|endurance/i.test(blob)) return true;
+  if (kind === "swim" && /key|main|css|threshold|quality/i.test(blob)) return true;
+  return false;
+}
+
+function cloneDay(day) {
+  return Array.isArray(day) ? day.slice() : ["rest", "Rest"];
+}
+
+function cloneWeekDays(week) {
+  return (week.days || []).map(cloneDay);
+}
+
+function dayKm(day) {
+  const n = Number(day?.[2]);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function weekRunVolume(days) {
+  return days.reduce((sum, d) => {
+    const kind = d?.[0];
+    if (!["run", "quality", "long", "event", "race"].includes(kind)) return sum;
+    return sum + dayKm(d);
+  }, 0);
+}
+
+function softenLabel(label, mode) {
+  const text = String(label || "").trim();
+  if (!text) return mode === "niggle" ? "Easy" : text;
+  if (mode === "niggle" && !/easy|recovery|easy effort/i.test(text)) {
+    return `${text} · keep easy`;
+  }
+  return text;
+}
+
+function trimLongDay(day, factor = 0.88) {
+  const next = cloneDay(day);
+  const km = dayKm(next);
+  if (km > 0) {
+    const trimmed = Math.max(1, Math.round(km * factor * 10) / 10);
+    next[2] = trimmed;
+    next[1] = String(next[1] || "")
+      .replace(/(\d+(?:\.\d+)?)\s*km/i, `${trimmed} km`)
+      .replace(/(\d+(?:\.\d+)?)\s*[–-]\s*(\d+(?:\.\d+)?)/, String(trimmed));
+    if (!/\d/.test(String(next[1]))) next[1] = `${trimmed} km easy`;
+  }
+  next[1] = softenLabel(next[1], "niggle");
+  return next;
+}
+
+function asEasyDay(day) {
+  const next = cloneDay(day);
+  const km = dayKm(next);
+  next[0] = "run";
+  if (km > 0) next[1] = `${km} km easy`;
+  else next[1] = softenLabel(next[1] || "Easy run", "niggle");
+  return next;
+}
+
+function restDay(reason) {
+  return ["rest", reason || "Rest"];
+}
+
+function assessWeekSessions(week, acts, now) {
+  const start = weekStart(week.wk);
+  const todayYmd = ymd(now);
+  const days = (week.days || []).map((day, i) => {
+    const [kind, label, km] = day || ["rest", "Rest"];
+    const ds = ymd(addDays(start, i));
+    const busy = !!(typeof BUSY !== "undefined" && BUSY[ds]);
+    const trainable = (typeof plannedSportCats === "function" ? plannedSportCats(kind) : []).length > 0;
+    const plan = {
+      week,
+      i,
+      kind,
+      label: typeof fmtPlanLabel === "function" ? fmtPlanLabel(label) : label,
+      km,
+    };
+    const dayActs = (acts || []).filter((a) => a.date === ds);
+    const done = trainable && !busy && typeof planDayDone === "function" && planDayDone(plan, dayActs);
+    return {
+      i,
+      ds,
+      kind,
+      label,
+      km,
+      busy,
+      trainable,
+      done,
+      key: isKeySession(kind, label),
+      past: ds < todayYmd,
+      today: ds === todayYmd,
+      future: ds > todayYmd,
+      remaining: ds >= todayYmd && !done && !busy,
+    };
+  });
+  const missedKeys = days.filter((d) => d.key && d.past && !d.done && !d.busy);
+  const missedSessions = days.filter((d) => d.trainable && d.past && !d.done && !d.busy);
+  const remainingKeys = days.filter((d) => d.key && d.remaining);
+  const remainingTrainable = days.filter((d) => d.trainable && d.remaining);
+  return {
+    week,
+    days,
+    missedKeys,
+    missedSessions,
+    remainingKeys,
+    remainingTrainable,
+    dow: ((now.getDay() + 6) % 7),
+  };
+}
+
+function daysChanged(before, after) {
+  return JSON.stringify(before) !== JSON.stringify(after);
+}
+
+function adaptFingerprint(mode, weekNum, token) {
+  return `adapt:${mode}:w${weekNum}:${token}`;
+}
+
+function buildRescueProposal(assess) {
+  const { week, days, missedKeys, missedSessions, remainingTrainable, dow } = assess;
+  if (dow < 2) return null; // Mon–Tue: too early for mid-week rescue
+  if (!missedSessions.length && !missedKeys.length) return null;
+  if (!remainingTrainable.length) return null;
+  // Need a real mess: 1+ missed key, or 2+ missed sessions with remaining work.
+  if (!missedKeys.length && missedSessions.length < 2) return null;
+
+  const nextDays = cloneWeekDays(week);
+  const actions = [];
+  let longPending = days.find((d) => d.kind === "long" && d.remaining)
+    || days.find((d) => ["event", "race"].includes(d.kind) && d.remaining);
+  const missedLong = missedKeys.find((d) => ["long", "event", "race"].includes(d.kind));
+  const protectLong = !!(longPending || missedLong);
+
+  // If the long was missed earlier, try to park a shortened long on the best free remaining day.
+  if (missedLong && !longPending) {
+    const free = days.filter((d) => d.remaining && ["rest", "walk", "run"].includes(d.kind));
+    const prefer = [5, 6, 4, 3, 2, 1, 0].map((i) => free.find((d) => d.i === i)).filter(Boolean);
+    const slot = prefer[0];
+    if (slot) {
+      const shortened = trimLongDay(week.days[missedLong.i] || ["long", missedLong.label, missedLong.km], 0.75);
+      shortened[0] = "long";
+      nextDays[slot.i] = shortened;
+      actions.push(`Move a shortened long to ${DAY_NAMES()[slot.i]}`);
+      longPending = { i: slot.i };
+    }
+  } else if (longPending && missedKeys.length) {
+    nextDays[longPending.i] = trimLongDay(week.days[longPending.i], missedKeys.length >= 2 ? 0.85 : 0.92);
+    actions.push(`Keep ${DAY_NAMES()[longPending.i]} long as the priority (slightly eased)`);
+  }
+
+  // Drop remaining quality when protecting the long or the week is already messy.
+  days.forEach((d) => {
+    if (!d.remaining) return;
+    if (d.kind === "quality") {
+      nextDays[d.i] = restDay("Rest — rescue week");
+      actions.push(`Drop quality on ${DAY_NAMES()[d.i]} (protect the long)`);
+      return;
+    }
+    if ((d.kind === "bike" || d.kind === "swim" || d.kind === "walkswim") && (missedKeys.length || protectLong)) {
+      nextDays[d.i] = restDay("Rest — rescue week");
+      actions.push(`Drop ${d.kind} on ${DAY_NAMES()[d.i]}`);
+    }
+  });
+
+  // Drop surplus easy runs: keep at most one easy day besides the long when keys were missed.
+  const remainingEasy = days.filter((d) => d.remaining && d.kind === "run" && nextDays[d.i][0] === "run");
+  const easyBudget = protectLong || missedKeys.length ? 1 : 2;
+  remainingEasy.forEach((d, idx) => {
+    if (idx < easyBudget) return;
+    nextDays[d.i] = restDay("Rest — rescue week");
+    actions.push(`Drop easy run on ${DAY_NAMES()[d.i]}`);
+  });
+
+  if (!actions.length || !daysChanged(week.days, nextDays)) return null;
+  const km = weekRunVolume(nextDays);
+  const token = [...missedKeys.map((d) => d.i), "r", ...remainingTrainable.map((d) => d.i)].join("-");
+  return {
+    mode: "rescue",
+    week: week.wk,
+    summary: `Week ${week.wk} rescue: keep what matters, drop the rest`,
+    rationale: [
+      missedKeys.length
+        ? `Missed key session${missedKeys.length === 1 ? "" : "s"} earlier this week.`
+        : `${missedSessions.length} planned sessions already missed.`,
+      "Protect the long / race session; quality and fillers go first.",
+      ...actions,
+    ].join(" "),
+    days: nextDays,
+    km,
+    note: `Rescue plan: ${actions.join("; ")}.`,
+    actions,
+    fingerprint: adaptFingerprint("rescue", week.wk, token),
+  };
+}
+
+function buildRebuildProposal(assess, prevAssess) {
+  const { week, days, missedKeys, remainingTrainable, dow } = assess;
+  const prevMissedKeys = prevAssess?.missedKeys || [];
+  const prevDone = (prevAssess?.days || []).filter((d) => d.done).length;
+  const lateWeekMess = dow >= 4 && missedKeys.length >= 2 && remainingTrainable.length;
+  // Require some logging last week so empty sync gaps don't look like a collapse.
+  const afterBadWeek = prevMissedKeys.length >= 2 && prevDone >= 1 && dow <= 3;
+  if (!lateWeekMess && !afterBadWeek) return null;
+
+  const nextDays = cloneWeekDays(week);
+  const actions = [];
+
+  if (afterBadWeek) {
+    actions.push(`Last week missed ${prevMissedKeys.length} key sessions — no catch-up stacking.`);
+    days.forEach((d) => {
+      if (!d.remaining && !d.today) return;
+      if (d.kind === "quality") {
+        nextDays[d.i] = asEasyDay(week.days[d.i]);
+        actions.push(`Turn ${DAY_NAMES()[d.i]} quality into easy`);
+      } else if (d.kind === "long") {
+        nextDays[d.i] = trimLongDay(week.days[d.i], 0.9);
+        actions.push(`Keep the long on ${DAY_NAMES()[d.i]}, slightly shorter`);
+      } else if (d.kind === "run" && missedKeys.length + prevMissedKeys.length >= 3) {
+        // Leave easy runs; volume stays race-reachable.
+      }
+    });
+  }
+
+  if (lateWeekMess) {
+    actions.push(`${missedKeys.length} key sessions already missed this week.`);
+    days.forEach((d) => {
+      if (!d.remaining) return;
+      if (d.kind === "quality") {
+        nextDays[d.i] = restDay("Rest — rebuild");
+        actions.push(`Drop remaining quality on ${DAY_NAMES()[d.i]}`);
+      } else if (d.kind === "long" || d.kind === "event" || d.kind === "race") {
+        nextDays[d.i] = trimLongDay(week.days[d.i], 0.85);
+        actions.push(`Keep ${DAY_NAMES()[d.i]} as the priority session (eased)`);
+      } else if (d.kind === "run") {
+        nextDays[d.i] = restDay("Rest — rebuild");
+        actions.push(`Drop easy run on ${DAY_NAMES()[d.i]}`);
+      } else if (["bike", "swim", "walkswim", "walk"].includes(d.kind) && !isKeySession(d.kind, d.label)) {
+        nextDays[d.i] = restDay("Rest — rebuild");
+        actions.push(`Drop ${d.kind} on ${DAY_NAMES()[d.i]}`);
+      }
+    });
+  }
+
+  if (!actions.length || !daysChanged(week.days, nextDays)) return null;
+  const token = [
+    afterBadWeek ? `p${prevMissedKeys.map((d) => d.i).join("")}` : "",
+    missedKeys.map((d) => d.i).join(""),
+    remainingTrainable.map((d) => d.i).join(""),
+  ].filter(Boolean).join(":");
+  return {
+    mode: "rebuild",
+    week: week.wk,
+    summary: afterBadWeek
+      ? `Week ${week.wk} rebuild after a messy week`
+      : `Week ${week.wk} rebuild: salvage the key session`,
+    rationale: actions.join(" "),
+    days: nextDays,
+    km: weekRunVolume(nextDays),
+    note: `Rebuild: ${actions.join("; ")}.`,
+    actions,
+    fingerprint: adaptFingerprint("rebuild", week.wk, token),
+  };
+}
+
+function buildNiggleProposal(week, now) {
+  week = week || findPlanWeek(weekOf(now));
+  if (!week) return null;
+  const start = weekStart(week.wk);
+  const todayYmd = ymd(now);
+  const nextDays = cloneWeekDays(week);
+  const actions = [];
+  (week.days || []).forEach((day, i) => {
+    const ds = ymd(addDays(start, i));
+    if (ds < todayYmd) return;
+    const [kind] = day || [];
+    if (kind === "quality") {
+      nextDays[i] = asEasyDay(day);
+      actions.push(`${DAY_NAMES()[i]} quality → easy`);
+    } else if (kind === "long" || kind === "event") {
+      nextDays[i] = trimLongDay(day, 0.88);
+      actions.push(`${DAY_NAMES()[i]} long eased ~12%`);
+    } else if (kind === "run") {
+      nextDays[i] = asEasyDay(day);
+      nextDays[i][1] = softenLabel(nextDays[i][1], "niggle");
+    } else if (kind === "bike" && isKeySession(kind, day[1])) {
+      const eased = cloneDay(day);
+      eased[1] = softenLabel(eased[1], "niggle");
+      nextDays[i] = eased;
+      actions.push(`${DAY_NAMES()[i]} key bike — keep easy`);
+    }
+  });
+  if (!actions.length || !daysChanged(week.days, nextDays)) return null;
+  return {
+    mode: "niggle",
+    week: week.wk,
+    summary: `Week ${week.wk} niggle mode: ease without gutting the week`,
+    rationale: "Ease intensity and trim the long slightly. Keep sessions on the calendar so race day stays reachable.",
+    days: nextDays,
+    km: weekRunVolume(nextDays),
+    note: `Niggle mode: ${actions.join("; ")}.`,
+    actions,
+    fingerprint: adaptFingerprint("niggle", week.wk, ymd(now)),
+  };
+}
+
+function findPlanWeek(weekNum) {
+  const weeks = Array.isArray(window.WEEKS) ? window.WEEKS : [];
+  return weeks.find((w) => Number(w.wk) === Number(weekNum)) || weeks[weekNum - 1] || null;
+}
+
+function proposeWeekAdaptations(acts, now = today()) {
+  if (typeof hasPlan === "function" && !hasPlan()) return [];
+  const wk = weekOf(now);
+  const current = findPlanWeek(wk);
+  if (!current) return [];
+  const prev = findPlanWeek(wk - 1);
+  const curAssess = assessWeekSessions(current, acts, now);
+  const prevAssess = prev ? assessWeekSessions(prev, acts, addDays(weekStart(prev.wk), 6)) : null;
+
+  // One structural proposal per week: rebuild wins over mid-week rescue.
+  const rebuild = buildRebuildProposal(curAssess, prevAssess);
+  if (rebuild) return [rebuild];
+  const rescue = buildRescueProposal(curAssess);
+  return rescue ? [rescue] : [];
+}
+
+window.isKeySession = isKeySession;
+window.assessWeekSessions = assessWeekSessions;
+window.proposeWeekAdaptations = proposeWeekAdaptations;
+window.buildNiggleProposal = buildNiggleProposal;
+window.adaptFingerprint = adaptFingerprint;

@@ -2198,7 +2198,115 @@ function renderPlan(acts, now) {
 
 // ---------- Plan changes for the AI coach ----------
 
-const CHANGE_ICON = { busy: "⛔", event: "★", import: "⇪", note: "✎" };
+const CHANGE_ICON = { busy: "⛔", event: "★", import: "⇪", note: "✎", adapt: "↻" };
+
+function adaptAlreadyKnown(fingerprint) {
+  if (!fingerprint) return false;
+  return CHANGES.some((c) => c?.details?.fingerprint === fingerprint);
+}
+
+function coachSendableChanges() {
+  return pendingChanges().filter((c) => c.type !== "adapt");
+}
+
+async function queueWeekAdaptations(now = today()) {
+  if (!CURRENT_USER_ID || !hasPlan()) return false;
+  if (typeof proposeWeekAdaptations !== "function") return false;
+  const proposals = proposeWeekAdaptations(ACTS, now);
+  let queued = false;
+  for (const proposal of proposals) {
+    if (adaptAlreadyKnown(proposal.fingerprint)) continue;
+    const row = {
+      user_id: CURRENT_USER_ID,
+      id: newId(),
+      type: "adapt",
+      summary: proposal.summary,
+      details: {
+        mode: proposal.mode,
+        week: proposal.week,
+        rationale: proposal.rationale,
+        days: proposal.days,
+        km: proposal.km,
+        note: proposal.note,
+        actions: proposal.actions || [],
+        fingerprint: proposal.fingerprint,
+      },
+      status: "pending",
+    };
+    const { error } = await sb.from("changes").insert(row);
+    if (error) continue;
+    CHANGES = [{ ...row, createdAt: new Date().toISOString() }, ...CHANGES];
+    queued = true;
+  }
+  return queued;
+}
+
+async function queueNiggleAdaptation(now = today()) {
+  if (!CURRENT_USER_ID || !hasPlan()) throw new Error("Sign in with a plan first");
+  const wk = weekOf(now);
+  const week = WEEKS[wk - 1];
+  const proposal = typeof buildNiggleProposal === "function" ? buildNiggleProposal(week, now) : null;
+  if (!proposal) throw new Error("Nothing left this week to ease.");
+  if (adaptAlreadyKnown(proposal.fingerprint)) throw new Error("Niggle mode is already proposed for this week.");
+  const row = {
+    user_id: CURRENT_USER_ID,
+    id: newId(),
+    type: "adapt",
+    summary: proposal.summary,
+    details: {
+      mode: proposal.mode,
+      week: proposal.week,
+      rationale: proposal.rationale,
+      days: proposal.days,
+      km: proposal.km,
+      note: proposal.note,
+      actions: proposal.actions || [],
+      fingerprint: proposal.fingerprint,
+    },
+    status: "pending",
+  };
+  const { error } = await sb.from("changes").insert(row);
+  if (error) throw error;
+  CHANGES = [{ ...row, createdAt: new Date().toISOString() }, ...CHANGES];
+  return row;
+}
+
+async function applyAdaptationChange(changeId) {
+  if (!CURRENT_USER_ID || !hasPlan()) throw new Error("Sign in with a plan first");
+  const change = CHANGES.find((c) => c.id === changeId && c.type === "adapt");
+  if (!change) throw new Error("Adaptation not found");
+  const details = change.details || {};
+  const weekNum = Number(details.week);
+  const days = details.days;
+  if (!Number.isInteger(weekNum) || weekNum < 1 || !Array.isArray(days) || days.length !== 7) {
+    throw new Error("Adaptation is incomplete");
+  }
+  const weeks = WEEKS.map((w) => ({ ...w, days: (w.days || []).map((d) => (Array.isArray(d) ? d.slice() : d)) }));
+  const idx = weeks.findIndex((w) => Number(w.wk) === weekNum);
+  if (idx < 0) throw new Error("Week not found in plan");
+  const nextNote = [weeks[idx].note, details.note].filter(Boolean).join(" ");
+  weeks[idx] = {
+    ...weeks[idx],
+    days,
+    km: details.km != null ? details.km : weeks[idx].km,
+    note: nextNote,
+  };
+  const { error } = await sb.from("plans").update({ weeks }).eq("user_id", CURRENT_USER_ID);
+  if (error) throw error;
+  const { error: chErr } = await sb.from("changes").update({ status: "applied" }).eq("user_id", CURRENT_USER_ID).eq("id", changeId);
+  if (chErr) throw chErr;
+  window.WEEKS = weeks;
+  if (window.CURRENT_PLAN) window.CURRENT_PLAN.weeks = weeks;
+  CHANGES = CHANGES.map((c) => (c.id === changeId ? { ...c, status: "applied" } : c));
+  return weeks[idx];
+}
+
+async function dismissAdaptationChange(changeId) {
+  if (!CURRENT_USER_ID) throw new Error("Sign in required");
+  const { error } = await sb.from("changes").update({ status: "dismissed" }).eq("user_id", CURRENT_USER_ID).eq("id", changeId);
+  if (error) throw error;
+  CHANGES = CHANGES.map((c) => (c.id === changeId ? { ...c, status: "dismissed" } : c));
+}
 
 function longLabel(week) {
   const day = (week.days || []).find((d) => d && d[0] === "long");
@@ -2577,8 +2685,25 @@ async function resumeFeedbackJob() {
   }
 }
 
+function adaptChangeBody(c) {
+  const details = c.details || {};
+  const rationale = String(details.rationale || "").trim();
+  const actions = Array.isArray(details.actions) ? details.actions.filter(Boolean) : [];
+  const mode = String(details.mode || "adapt");
+  const modeLabel = tt(`coach.adapt.${mode}`) || mode;
+  return `
+    <span class="change-text">
+      <strong class="adapt-mode">${esc(modeLabel)}</strong>
+      ${esc(c.summary)}
+      ${rationale ? `<span class="adapt-rationale">${esc(rationale)}</span>` : ""}
+      ${actions.length ? `<span class="adapt-actions">${actions.map((a) => esc(a)).join(" · ")}</span>` : ""}
+      <span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+    </span>`;
+}
+
 function changesCard() {
   const items = pendingChanges();
+  const sendable = coachSendableChanges();
   const applied = CHANGES.filter((c) => c.status === "applied").length;
   const reviewing = COACH_STATUS === "reviewing";
   const appliedNote = !applied
@@ -2593,18 +2718,29 @@ function changesCard() {
           <div class="eyebrow">${tt("coach.eyebrow")}</div>
           <h2>${tt("coach.planChanges")} ${items.length ? `<span class="count">${items.length}</span>` : ""}</h2>
         </div>
-        ${(items.length || reviewing) ? `<button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>${reviewing ? tt("coach.reviewing") : tt("coach.send")}</button>` : ""}
+        <div class="card-actions">
+          <button class="button ghost small" type="button" data-action="niggle-mode">${tt("coach.niggle")}</button>
+          ${(sendable.length || reviewing) ? `<button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>${reviewing ? tt("coach.reviewing") : tt("coach.send")}</button>` : ""}
+        </div>
       </div>
       ${items.length ? `
         <ul class="change-list">
           ${items.map((c) => `
-            <li>
+            <li class="${c.type === "adapt" ? "adapt-item" : ""}">
               <span class="change-icon t-${c.type}">${CHANGE_ICON[c.type] || "•"}</span>
-              <span class="change-text">${esc(c.summary)}<span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></span>
-              <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="${esc(tt("coach.removeFromList"))}">✕</button>
+              ${c.type === "adapt" ? adaptChangeBody(c) : `<span class="change-text">${esc(c.summary)}<span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></span>`}
+              <span class="change-actions">
+                ${c.type === "adapt" ? `<button class="button small" type="button" data-action="accept-adapt" data-id="${esc(c.id)}">${tt("coach.accept")}</button>` : ""}
+                <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="${esc(c.type === "adapt" ? tt("coach.dismiss") : tt("coach.removeFromList"))}">✕</button>
+              </span>
             </li>`).join("")}
         </ul>
-        <p class="muted small-text">${reviewing ? tt("coach.sentReviewing") : tt("coach.sendHint")}</p>` : reviewing ? `
+        <p class="muted small-text">${reviewing
+          ? tt("coach.sentReviewing")
+          : [
+              items.some((c) => c.type === "adapt") ? tt("coach.adaptHint") : "",
+              sendable.length ? tt("coach.sendHint") : "",
+            ].filter(Boolean).join(" ")}</p>` : reviewing ? `
         <p class="muted small-text">${tt("coach.sentNow")}</p>` : `
         <p class="muted small-text">${tt("coach.nonePending")}${appliedNote}</p>`}
       <form class="note-form">
@@ -2642,6 +2778,7 @@ async function importCSV(file) {
     ACTS = await loadActivities();
     window._setupActs = ACTS;
     try { CHANGES = await loadChanges(); } catch {}
+    try { if (hasPlan()) await queueWeekAdaptations(today()); } catch {}
     if (onSetup) {
       const setupForm = document.querySelector(".setup-form");
       if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
@@ -3691,14 +3828,50 @@ document.addEventListener("click", async (e) => {
   }
   if (btn.dataset.action === "delete-change") {
     try {
-      await apiRequest("DELETE", `/api/changes/${encodeURIComponent(btn.dataset.id)}`);
-      await refreshState();
+      const row = CHANGES.find((c) => c.id === btn.dataset.id);
+      if (row?.type === "adapt") {
+        await dismissAdaptationChange(btn.dataset.id);
+        render(true);
+        toast(tt("coach.adaptDismissed"));
+      } else {
+        await apiRequest("DELETE", `/api/changes/${encodeURIComponent(btn.dataset.id)}`);
+        await refreshState();
+      }
     } catch (err) {
       toast(err.message, true);
     }
   }
+  if (btn.dataset.action === "accept-adapt") {
+    btn.disabled = true;
+    try {
+      await applyAdaptationChange(btn.dataset.id);
+      render(true);
+      toast(tt("coach.adaptApplied"));
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message, true);
+    }
+    return;
+  }
+  if (btn.dataset.action === "niggle-mode") {
+    btn.disabled = true;
+    try {
+      await queueNiggleAdaptation(today());
+      render(true);
+      toast(tt("coach.niggleQueued"));
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
   if (btn.dataset.action === "send-coach") {
     if (COACH_STATUS === "reviewing") return;
+    if (!coachSendableChanges().length) {
+      toast(tt("coach.nothingToSend"), true);
+      return;
+    }
     COACH_STATUS = "reviewing";
     render(true);
     await sendCoachRequest();
@@ -4402,11 +4575,14 @@ window.bootApp = function bootApp() {
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     APP_READY = true;
     if (hasPlan()) {
+      const adapted = await queueWeekAdaptations(today());
+      if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
       const queued = await queueStageReviews(today());
       if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
       if (queued) await sendCoachRequest({ silent: true });
       else await resumeCoachJob();
       await resumeFeedbackJob();
+      if (adapted) render(true);
     }
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     render(true);
