@@ -307,6 +307,160 @@ function homeWeekCardTitle(viewWk, calendarWk, offset) {
   return offset === 0 ? tt("home.selectedWeek") : tt("home.followingWeek");
 }
 
+function todayGuideTargets(plan) {
+  if (!plan || typeof guidesFor !== "function") return [];
+  const guides = guidesFor(plan.kind, plan.label) || [];
+  const primary = guides[0];
+  return primary?.targets || [];
+}
+
+function todayEffortText(plan, targets) {
+  const rows = targets || todayGuideTargets(plan);
+  const effort = rows.find(([k]) => /effort|rpe/i.test(k));
+  if (effort) return effort[1];
+  if (!plan) return "";
+  if (plan.kind === "quality" || plan.kind === "race") return tt("home.todayEffortQuality");
+  if (plan.kind === "long" || plan.kind === "event") return tt("home.todayEffortLong");
+  if (["rest", "travel", "walk"].includes(plan.kind)) return tt("home.todayEffortRest");
+  return tt("home.todayEffortEasy");
+}
+
+function todayTargetText(plan, targets) {
+  if (!plan) return "";
+  const rows = targets || todayGuideTargets(plan);
+  const paceLike = rows.find(([k]) => /pace|mp|cruise|steady|reps|cadence|goal|solid/i.test(k));
+  const dist = plan.km > 0 ? fmtDistWithUnit(plan.km, plan.km % 1 ? 1 : 0) : "";
+  if (dist && paceLike) return `${dist} · ${paceLike[1]}`;
+  if (paceLike) return paceLike[1];
+  if (dist) return dist;
+  return plan.label || "";
+}
+
+function todayPreferredShoeKind(targets) {
+  const shoes = (targets || []).find(([k]) => /shoe|kit|equipment/i.test(k));
+  const hint = String(shoes?.[1] || "").toLowerCase();
+  if (/race|super/.test(hint)) return "race";
+  if (/faster|tempo|performance|quality|mp/.test(hint)) return "tempo";
+  if (/trail/.test(hint)) return "trail";
+  if (/daily|trainer|easy/.test(hint)) return "daily";
+  if (/kettle|dumbbell|band|gym|bodyweight|stair|wall|pillow|equipment/.test(hint)) return "strength";
+  return shoes ? "daily" : null;
+}
+
+function todayGearText(plan, targets) {
+  if (!plan) return "";
+  const rows = targets || todayGuideTargets(plan);
+  const preferred = todayPreferredShoeKind(rows);
+  const items = (typeof GEAR !== "undefined" && Array.isArray(GEAR.items)) ? GEAR.items.filter((g) => !g.retired) : [];
+
+  if (plan.kind === "strength" || preferred === "strength") {
+    if (typeof strengthGearAdvice === "function") {
+      const advice = strengthGearAdvice();
+      if (advice) return advice.replace(/^Uses your gear:\s*/i, "").replace(/\.$/, "") || advice;
+    }
+    const guideGear = rows.find(([k]) => /equipment|kit/i.test(k));
+    return guideGear?.[1] || tt("home.todayGearBodyweight");
+  }
+
+  const wantTypes = plannedSportCats(plan.kind);
+  let type = "shoes";
+  if (wantTypes.includes("bike") && !wantTypes.includes("run")) type = "bike";
+  else if (wantTypes.includes("swim")) type = /wet/i.test(plan.label) ? "wetsuit" : "swimsuit";
+  else if (!wantTypes.includes("run") && !wantTypes.includes("walk")) {
+    const guideGear = rows.find(([k]) => /shoe|kit|equipment/i.test(k));
+    return guideGear?.[1] || "";
+  }
+
+  const pool = items.filter((g) => g.type === type);
+  if (!pool.length) {
+    const guideGear = rows.find(([k]) => /shoe|kit|equipment/i.test(k));
+    return guideGear?.[1] || tt("home.todayGearNone");
+  }
+
+  if (type === "shoes" && preferred && preferred !== "strength") {
+    const match = pool.find((g) => g.shoeKind === preferred)
+      || (preferred === "tempo" ? pool.find((g) => g.shoeKind === "race") : null)
+      || (preferred === "race" ? pool.find((g) => g.shoeKind === "tempo") : null);
+    if (match) return match.name;
+  }
+  return pool[0].name;
+}
+
+function todayMoveCandidates(plan) {
+  if (!plan || typeof freeDaysInWeek !== "function") return [];
+  const free = freeDaysInWeek(plan.week, plan.i);
+  if (!free.length) return [];
+  const longIdx = plan.week.days.findIndex(([k], j) => j !== plan.i && ["long", "event", "race"].includes(k));
+  const notNextToLong = free.filter((d) => longIdx === -1 || Math.abs(d.i - longIdx) > 1);
+  let order = free;
+  if (plan.kind === "long" || plan.kind === "event") {
+    order = [6, 4, 5, 3, 0, 2, 1].map((j) => free.find((d) => d.i === j)).filter(Boolean);
+  } else if (plan.kind === "quality") {
+    order = (notNextToLong.length ? notNextToLong : free).slice();
+  }
+  return order.slice(0, 4);
+}
+
+function todaySessionMeta(plan) {
+  if (!plan) return null;
+  const targets = todayGuideTargets(plan);
+  const effort = todayEffortText(plan, targets);
+  const target = todayTargetText(plan, targets);
+  const gear = todayGearText(plan, targets);
+  if (!effort && !target && !gear) return null;
+  return { effort, target, gear };
+}
+
+function todayActionsHtml(plan, ds, statusClass) {
+  if (statusClass === "busy") {
+    return `
+      <div class="today-actions">
+        <button class="button ghost small" type="button" data-action="unbusy" data-date="${esc(ds)}">${esc(tt("home.todayUnbusy"))}</button>
+        <button class="button ghost small" type="button" data-action="today-ask-toggle" aria-expanded="false">${esc(tt("home.todayAsk"))}</button>
+      </div>
+      <div class="today-panel" data-today-panel="ask" hidden>
+        <form class="today-ask-form" data-date="${esc(ds)}">
+          <input type="text" name="text" maxlength="280" required placeholder="${esc(tt("home.todayAskPlaceholder"))}" />
+          <button class="button small" type="submit">${esc(tt("home.todayAskSend"))}</button>
+        </form>
+      </div>`;
+  }
+
+  const trainable = !!(plan && plannedSportCats(plan.kind).length && statusClass !== "done");
+  const canMove = trainable && todayMoveCandidates(plan).length > 0;
+  const canBusy = trainable;
+  const canIcs = !!(plan && plan.kind !== "rest");
+
+  if (!canBusy && !canMove && !canIcs && statusClass === "free") return "";
+
+  const movePanel = canMove
+    ? `<div class="today-panel" data-today-panel="move" hidden>
+        <p class="muted small-text">${esc(tt("home.todayMoveHint"))}</p>
+        <div class="today-move-days">
+          ${todayMoveCandidates(plan).map((d) => `
+            <button class="button ghost small" type="button" data-action="today-move" data-from="${esc(ds)}" data-to="${esc(d.ds)}">
+              ${esc(DAY_NAMES()[d.i])} ${esc(short(parseDate(d.ds)))}
+            </button>`).join("")}
+        </div>
+      </div>`
+    : "";
+
+  return `
+    <div class="today-actions">
+      ${canBusy ? `<button class="button ghost small" type="button" data-action="today-busy" data-date="${esc(ds)}">${esc(tt("common.busy"))}</button>` : ""}
+      ${canMove ? `<button class="button ghost small" type="button" data-action="today-move-toggle" aria-expanded="false">${esc(tt("home.todayMove"))}</button>` : ""}
+      <button class="button ghost small" type="button" data-action="today-ask-toggle" aria-expanded="false">${esc(tt("home.todayAsk"))}</button>
+      ${canIcs ? `<button class="button ghost small" type="button" data-action="today-ics" data-date="${esc(ds)}">${esc(tt("home.todayCalendar"))}</button>` : ""}
+    </div>
+    ${movePanel}
+    <div class="today-panel" data-today-panel="ask" hidden>
+      <form class="today-ask-form" data-date="${esc(ds)}">
+        <input type="text" name="text" maxlength="280" required placeholder="${esc(tt("home.todayAskPlaceholder"))}" />
+        <button class="button small" type="submit">${esc(tt("home.todayAskSend"))}</button>
+      </form>
+    </div>`;
+}
+
 function todaySessionCard(acts, now) {
   const ds = ymd(now);
   const plan = planFor(ds);
@@ -316,6 +470,7 @@ function todaySessionCard(acts, now) {
   const rec = typeof recoveryFor === "function" ? recoveryFor(ds) : null;
   const weekday = fmt(now, { weekday: "long" });
   const dateLine = fmt(now, { day: "numeric", month: "long" });
+  const meta = !busy ? todaySessionMeta(plan) : null;
 
   let statusLine = tt("home.todayOpen");
   let statusClass = "pending";
@@ -356,22 +511,129 @@ function todaySessionCard(acts, now) {
     ? `<span class="today-rec lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${tt("day.recovery")} ${rec.score}</span>`
     : "";
 
+  const metaHtml = meta
+    ? `<div class="today-meta">
+        ${meta.effort ? `<div><span>${esc(tt("plan.effort"))}</span><strong>${esc(meta.effort)}</strong></div>` : ""}
+        ${meta.target ? `<div><span>${esc(tt("home.todayTarget"))}</span><strong>${esc(meta.target)}</strong></div>` : ""}
+        ${meta.gear ? `<div><span>${esc(tt("home.todayGear"))}</span><strong>${esc(meta.gear)}</strong></div>` : ""}
+      </div>`
+    : "";
+
   return `
-    <div class="today-card status-${statusClass}" role="button" tabindex="0" data-action="open-day" data-date="${esc(ds)}" aria-label="${esc(tt("home.todayOpenAria", { title }))}">
-      <div class="today-card-top">
-        <div class="eyebrow">${esc(tt("home.todayFocus"))}</div>
-        ${recovery}
-      </div>
-      <div class="today-card-main">
-        <div>
-          <p class="today-date"><strong>${esc(weekday)}</strong> · ${esc(dateLine)}</p>
-          <h2>${chip} <span class="today-title">${esc(title)}</span></h2>
-          <p class="today-status">${statusLine}</p>
+    <section class="today-card status-${statusClass}">
+      <button class="today-card-hit" type="button" data-action="open-day" data-date="${esc(ds)}" aria-label="${esc(tt("home.todayOpenAria", { title }))}">
+        <div class="today-card-top">
+          <div class="eyebrow">${esc(tt("home.todayFocus"))}</div>
+          ${recovery}
         </div>
-        <span class="today-open" aria-hidden="true">›</span>
-      </div>
+        <div class="today-card-main">
+          <div>
+            <p class="today-date"><strong>${esc(weekday)}</strong> · ${esc(dateLine)}</p>
+            <h2>${chip} <span class="today-title">${esc(title)}</span></h2>
+            <p class="today-status">${statusLine}</p>
+          </div>
+          <span class="today-open" aria-hidden="true">›</span>
+        </div>
+      </button>
+      ${metaHtml}
       ${logged ? `<div class="today-logged">${logged}</div>` : ""}
-    </div>`;
+      ${todayActionsHtml(plan, ds, statusClass)}
+    </section>`;
+}
+
+function toggleTodayPanel(name) {
+  const card = document.querySelector(".today-card");
+  if (!card) return;
+  card.querySelectorAll("[data-today-panel]").forEach((panel) => {
+    const on = panel.dataset.todayPanel === name && panel.hasAttribute("hidden");
+    panel.toggleAttribute("hidden", !on);
+  });
+  card.querySelectorAll("[data-action=today-move-toggle], [data-action=today-ask-toggle]").forEach((btn) => {
+    const panelName = btn.dataset.action === "today-move-toggle" ? "move" : "ask";
+    const panel = card.querySelector(`[data-today-panel="${panelName}"]`);
+    btn.setAttribute("aria-expanded", panel && !panel.hidden ? "true" : "false");
+  });
+  if (name === "ask") {
+    const input = card.querySelector('.today-ask-form input[name="text"]');
+    if (input && !card.querySelector('[data-today-panel="ask"]')?.hidden) input.focus();
+  }
+}
+
+async function moveTodaySession(fromDs, toDs) {
+  if (!CURRENT_USER_ID || !hasPlan()) throw new Error(tt("home.todayMoveNeedPlan"));
+  const from = planFor(fromDs);
+  const to = planFor(toDs);
+  if (!from || !to) throw new Error(tt("home.todayMoveMissing"));
+  if (from.week.wk !== to.week.wk) throw new Error(tt("home.todayMoveSameWeek"));
+  if (from.i === to.i) return;
+
+  const weeks = WEEKS.map((w) => ({ ...w, days: (w.days || []).map((d) => (Array.isArray(d) ? d.slice() : d)) }));
+  const idx = weeks.findIndex((w) => Number(w.wk) === Number(from.week.wk));
+  if (idx < 0) throw new Error(tt("home.todayMoveMissing"));
+  const days = weeks[idx].days;
+  const tmp = days[from.i];
+  days[from.i] = days[to.i];
+  days[to.i] = tmp;
+  weeks[idx] = { ...weeks[idx], days };
+
+  const { error } = await sb.from("plans").update({ weeks }).eq("user_id", CURRENT_USER_ID);
+  if (error) throw error;
+  window.WEEKS = weeks;
+  if (window.CURRENT_PLAN) window.CURRENT_PLAN.weeks = weeks;
+
+  const summary = `Moved “${from.label}” from ${fromDs} to ${toDs}`;
+  try {
+    await apiRequest("POST", "/api/changes", { text: summary });
+  } catch {
+    // Plan already moved; history note is best-effort.
+  }
+}
+
+function downloadTodayIcs(ds) {
+  const day = String(ds || ymd(today())).slice(0, 10);
+  const plan = planFor(day);
+  const busy = BUSY[day];
+  const meta = !busy ? todaySessionMeta(plan) : null;
+  const title = busy
+    ? tt("common.busy")
+    : plan
+      ? plan.label
+      : tt("home.todayFree");
+  const lines = [
+    plan ? `${KIND_LABEL(plan.kind)} · ${plan.label}` : title,
+    meta?.effort ? `${tt("plan.effort")}: ${meta.effort}` : "",
+    meta?.target ? `${tt("home.todayTarget")}: ${meta.target}` : "",
+    meta?.gear ? `${tt("home.todayGear")}: ${meta.gear}` : "",
+    "Training Pal",
+  ].filter(Boolean);
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const endDay = ymd(addDays(parseDate(day), 1)).replace(/-/g, "");
+  const startDay = day.replace(/-/g, "");
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Training Pal//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:today-${startDay}@training-pal`,
+    `DTSTAMP:${stamp}`,
+    `DTSTART;VALUE=DATE:${startDay}`,
+    `DTEND;VALUE=DATE:${endDay}`,
+    `SUMMARY:${String(title).replace(/\n/g, " ")}`,
+    `DESCRIPTION:${lines.join("\\n").replace(/,/g, "\\,").replace(/;/g, "\\;")}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `training-pal-${day}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderNoPlanHome(acts, now) {

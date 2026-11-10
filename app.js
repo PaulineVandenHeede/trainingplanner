@@ -3821,10 +3821,60 @@ document.addEventListener("click", async (e) => {
   if (btn.dataset.action === "unbusy") {
     try {
       await apiRequest("DELETE", `/api/busy/${btn.dataset.date}`);
-      await refreshState(btn.dataset.date);
+      await refreshState();
     } catch (err) {
       toast(err.message, true);
     }
+    return;
+  }
+  if (btn.dataset.action === "today-busy") {
+    const ds = btn.dataset.date || ymd(today());
+    const plan = planFor(ds);
+    btn.disabled = true;
+    try {
+      await apiRequest("POST", "/api/busy", {
+        date: ds,
+        reason: "",
+        session: plan ? plan.label : "",
+      });
+      await refreshState();
+      toast(tt("home.todayBusyDone"));
+    } catch (err) {
+      toast(err.message || tt("home.todayBusyFail"), true);
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
+  if (btn.dataset.action === "today-move-toggle") {
+    if (typeof toggleTodayPanel === "function") toggleTodayPanel("move");
+    return;
+  }
+  if (btn.dataset.action === "today-ask-toggle") {
+    if (typeof toggleTodayPanel === "function") toggleTodayPanel("ask");
+    return;
+  }
+  if (btn.dataset.action === "today-move") {
+    btn.disabled = true;
+    try {
+      await moveTodaySession(btn.dataset.from, btn.dataset.to);
+      await refreshState();
+      toast(tt("home.todayMoved", { day: short(parseDate(btn.dataset.to)) }));
+    } catch (err) {
+      toast(err.message || tt("home.todayMoveFail"), true);
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
+  if (btn.dataset.action === "today-ics") {
+    try {
+      downloadTodayIcs(btn.dataset.date || ymd(today()));
+      toast(tt("home.todayCalendarDone"));
+    } catch (err) {
+      toast(err.message || tt("home.todayCalendarFail"), true);
+    }
+    return;
   }
   if (btn.dataset.action === "delete-change") {
     try {
@@ -4123,6 +4173,30 @@ document.addEventListener("submit", async (e) => {
       await refreshState(ds);
     } catch (err) {
       toast(err.message, true);
+    }
+    return;
+  }
+  const todayAskForm = e.target.closest(".today-ask-form");
+  if (todayAskForm) {
+    e.preventDefault();
+    const text = String(todayAskForm.text?.value || "").trim();
+    if (!text) return;
+    const ds = todayAskForm.dataset.date || ymd(today());
+    const plan = planFor(ds);
+    const prefix = plan
+      ? `Today (${plan.label}): `
+      : `Today (${ds}): `;
+    const submit = todayAskForm.querySelector("button[type=submit]");
+    if (submit) submit.disabled = true;
+    try {
+      await apiRequest("POST", "/api/changes", { text: `${prefix}${text}` });
+      todayAskForm.reset();
+      await refreshState();
+      toast(tt("home.todayAskDone"));
+    } catch (err) {
+      toast(err.message || tt("home.todayAskFail"), true);
+    } finally {
+      if (submit) submit.disabled = false;
     }
     return;
   }
@@ -4475,7 +4549,7 @@ document.addEventListener("input", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeAccountMenu();
   if (e.key !== "Enter" && e.key !== " ") return;
-  const day = e.target.closest?.(".day.clickable, .today-card");
+  const day = e.target.closest?.(".day.clickable, .today-card-hit");
   if (day?.dataset?.date) {
     e.preventDefault();
     openDay(day.dataset.date);
