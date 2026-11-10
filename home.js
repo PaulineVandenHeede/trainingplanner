@@ -47,7 +47,7 @@ function dayRow(week, i, acts, now) {
   const hint = dayActs.length ? tt("day.viewActivity") : isPast ? tt("day.viewSession") : tt("day.howTo");
   const rec = isToday ? recoveryFor(ds) : null;
   const recoveryChip = rec
-    ? `<span class="recovery-chip lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${rec.score}</span>`
+    ? `<span class="recovery-chip lvl-${rec.band}" title="${esc(tt("day.recovery"))} · ${esc(typeof recoveryDayLabel === "function" ? recoveryDayLabel(rec.band) : rec.band)} ${rec.score}">${esc(typeof recoveryActionLabel === "function" ? recoveryActionLabel(rec.band) : rec.score)}</span>`
     : "";
   return `
     <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""} ${busy ? "busy" : ""} ${done ? "is-matched" : dayActs.length && wanted.length ? "has-unmatched" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(hint)}">
@@ -546,7 +546,7 @@ function todaySessionCard(acts, now) {
     ? dayActs.slice(0, 2).map((a) => dayActivityMatchLine(a, dayMatch || { trainable: false }, plan?.kind)).join("")
     : "";
   const recovery = rec
-    ? `<span class="today-rec lvl-${rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low"}" title="${esc(tt("day.recovery"))} ${rec.score}">${tt("day.recovery")} ${rec.score}</span>`
+    ? `<span class="today-rec lvl-${rec.band}" title="${esc(tt("day.recovery"))} ${rec.score}">${esc(typeof recoveryDayLabel === "function" ? recoveryDayLabel(rec.band) : tt("day.recovery"))}</span>`
     : "";
 
   const metaHtml = meta
@@ -730,6 +730,10 @@ function renderHome(acts, now) {
     </section>
 
     ${!viewingPast ? todaySessionCard(acts, now) : ""}
+    ${!viewingPast ? (() => {
+      const block = typeof recoveryBlock === "function" ? recoveryBlock(ymd(now), planFor(ymd(now))) : "";
+      return block ? `<section class="card recovery-home">${block}</section>` : "";
+    })() : ""}
     ${!viewingPast ? raceWeekChecklistCard(now) : ""}
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
 
@@ -738,10 +742,6 @@ function renderHome(acts, now) {
       <div class="marker" style="left:${Math.max(0, Math.min(100, progress))}%"></div>
     </div>
 
-    ${(() => {
-      const block = recoveryBlock(ymd(now), planFor(ymd(now)));
-      return block ? `<section class="card recovery-home">${block}</section>` : "";
-    })()}
 
     ${changesN ? `
       <a class="changes-banner" href="/plan">

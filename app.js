@@ -1198,6 +1198,14 @@ function wellnessRow(ds) {
   return (window.WELLNESS || {})[ds] || null;
 }
 
+const RECOVERY_HARD_KINDS = new Set(["quality", "long", "brick", "race", "event"]);
+
+function recoveryBand(score) {
+  if (score >= 80) return "green";
+  if (score >= 60) return "amber";
+  return "red";
+}
+
 function recoveryFor(ds) {
   const todayRow = wellnessRow(ds);
   const yday = wellnessRow(ymd(addDays(parseDate(ds), -1)));
@@ -1209,11 +1217,16 @@ function recoveryFor(ds) {
   const liveRow = todayRow || yday;
   if (!sleepRow && !hrvRow && !liveRow) return null;
   const parts = [];
+  const metrics = { sleep: null, battery: null, stress: null, hrv: null };
   if (sleepRow?.sleep_score > 0) {
-    parts.push({ key: "Sleep", text: String(Math.round(sleepRow.sleep_score)), score: Number(sleepRow.sleep_score), weight: 0.34 });
+    const value = Math.round(sleepRow.sleep_score);
+    metrics.sleep = { value, text: String(value), score: Number(sleepRow.sleep_score) };
+    parts.push({ key: "Sleep", text: metrics.sleep.text, score: metrics.sleep.score, weight: 0.34 });
   } else if (sleepRow?.sleep_sec > 0) {
     const hours = sleepRow.sleep_sec / 3600;
-    parts.push({ key: "Sleep", text: `${hours.toFixed(1)} h`, score: Math.max(0, Math.min(100, (hours / 8) * 100)), weight: 0.34 });
+    const score = Math.max(0, Math.min(100, (hours / 8) * 100));
+    metrics.sleep = { value: Math.round(score), text: `${hours.toFixed(1)} h`, score };
+    parts.push({ key: "Sleep", text: metrics.sleep.text, score, weight: 0.34 });
   }
   if (hrvRow?.hrv_night > 0) {
     let score = 85;
@@ -1223,44 +1236,113 @@ function recoveryFor(ds) {
       else score = 100;
     }
     const band = hrvRow.hrv_low && hrvRow.hrv_high ? ` · band ${Math.round(hrvRow.hrv_low)}–${Math.round(hrvRow.hrv_high)}` : "";
-    parts.push({ key: "HRV", text: `${Math.round(hrvRow.hrv_night)} ms${band}`, score, weight: 0.3 });
+    const text = `${Math.round(hrvRow.hrv_night)} ms${band}`;
+    metrics.hrv = { value: Math.round(hrvRow.hrv_night), text, score };
+    parts.push({ key: "HRV", text, score, weight: 0.3 });
   }
   const battery = liveRow?.battery_morning != null ? liveRow.battery_morning : liveRow?.battery_latest;
   if (battery != null && battery >= 0 && battery <= 100) {
-    parts.push({ key: "Body Battery", text: String(Math.round(battery)), score: Number(battery), weight: 0.24 });
+    const value = Math.round(battery);
+    metrics.battery = { value, text: String(value), score: Number(battery) };
+    parts.push({ key: "Body Battery", text: metrics.battery.text, score: metrics.battery.score, weight: 0.24 });
   }
   if (liveRow?.stress_avg != null && liveRow.stress_avg >= 0 && liveRow.stress_avg <= 100) {
-    parts.push({ key: "Stress", text: String(Math.round(liveRow.stress_avg)), score: Math.max(0, 100 - Number(liveRow.stress_avg)), weight: 0.12 });
+    const value = Math.round(liveRow.stress_avg);
+    const score = Math.max(0, 100 - Number(liveRow.stress_avg));
+    metrics.stress = { value, text: String(value), score };
+    parts.push({ key: "Stress", text: metrics.stress.text, score, weight: 0.12 });
   }
   if (!parts.length) return null;
   const weight = parts.reduce((sum, part) => sum + part.weight, 0);
   const score = Math.round(parts.reduce((sum, part) => sum + part.score * part.weight, 0) / weight);
-  return { score, parts };
+  return { score, band: recoveryBand(score), parts, metrics };
 }
 window.recoveryFor = recoveryFor;
+window.recoveryBand = recoveryBand;
 
-function recoveryWord(score) {
-  if (score >= 80) return "Ready";
-  if (score >= 60) return "Okay";
-  if (score >= 40) return "Tired";
-  return "Rest";
+function recoveryDayLabel(band) {
+  if (band === "green") return tt("rec.dayGreen");
+  if (band === "amber") return tt("rec.dayAmber");
+  return tt("rec.dayRed");
 }
 
-function recoveryAdvice(score, plan) {
+function recoveryActionLabel(band) {
+  if (band === "green") return tt("rec.actionGo");
+  if (band === "amber") return tt("rec.actionCaution");
+  return tt("rec.actionEase");
+}
+window.recoveryDayLabel = recoveryDayLabel;
+window.recoveryActionLabel = recoveryActionLabel;
+
+function recoveryAdvice(rec, plan) {
   const kind = plan?.kind || "";
-  const name = plan?.label || "Today's session";
-  if (score >= 80) {
-    if (kind === "quality") return `${name} can go ahead as written.`;
-    if (kind === "long") return `${name} can be the full distance. Stay in the easy heart-rate zone — there is room, and the plan still wants it easy.`;
-    return `${name} stays easy so the harder days can land.`;
+  const name = plan?.label || tt("rec.todaysSession");
+  const band = typeof rec === "object" ? rec.band : recoveryBand(rec);
+  if (band === "green") {
+    if (kind === "quality") return tt("rec.adviceGreenQuality", { name });
+    if (kind === "long") return tt("rec.adviceGreenLong", { name });
+    if (kind === "brick") return tt("rec.adviceGreenBrick", { name });
+    return tt("rec.adviceGreenEasy", { name });
   }
-  if (score >= 60) {
-    if (kind === "quality") return `${name} is reasonable. Start conservative and keep the set only if it feels like the plan.`;
-    return `${name} is fine at the easy end of the zone.`;
+  if (band === "amber") {
+    if (kind === "quality") return tt("rec.adviceAmberQuality", { name });
+    if (kind === "long" || kind === "brick") return tt("rec.adviceAmberKey", { name });
+    return tt("rec.adviceAmberEasy", { name });
   }
-  if (kind === "quality") return `Make ${name} an easy run. Keep the quality for a morning with better sleep and HRV.`;
-  if (kind === "long") return `Keep ${name} easy, or cut it short. Sleep, HRV, Body Battery and stress are asking for less today.`;
-  return `${name} should be short and easy, or a rest day.`;
+  if (kind === "quality") return tt("rec.adviceRedQuality", { name });
+  if (kind === "long" || kind === "brick") return tt("rec.adviceRedKey", { name });
+  return tt("rec.adviceRedEasy", { name });
+}
+
+function recoverySleepPoor(rec) {
+  if (!rec?.metrics?.sleep) return false;
+  return rec.metrics.sleep.score < 60;
+}
+
+function recoveryTrend(ds, rec) {
+  const base = parseDate(ds);
+  let hardDays = 0;
+  let scoredDays = 0;
+  let scoreSum = 0;
+  for (let i = 1; i <= 3; i++) {
+    const past = ymd(addDays(base, -i));
+    const plan = typeof planFor === "function" ? planFor(past) : null;
+    if (plan && RECOVERY_HARD_KINDS.has(plan.kind)) hardDays += 1;
+    const pastRec = recoveryFor(past);
+    if (!pastRec) continue;
+    scoredDays += 1;
+    scoreSum += pastRec.score;
+  }
+  const tomorrow = typeof planFor === "function" ? planFor(ymd(addDays(base, 1))) : null;
+  const tomorrowHard = !!(tomorrow && RECOVERY_HARD_KINDS.has(tomorrow.kind));
+  const sleepPoor = recoverySleepPoor(rec) || rec.band === "red";
+  const avgRecent = scoredDays ? scoreSum / scoredDays : null;
+
+  if (hardDays >= 2 && sleepPoor) {
+    return tomorrowHard ? tt("rec.trendHardSleepEaseTomorrow") : tt("rec.trendHardSleepEase");
+  }
+  if (hardDays >= 2 && tomorrowHard && (rec.band === "amber" || (avgRecent != null && avgRecent < 70))) {
+    return tt("rec.trendHardStackEaseTomorrow");
+  }
+  if (sleepPoor && tomorrowHard) return tt("rec.trendBadSleepEaseTomorrow");
+  if (rec.band === "green" && hardDays >= 2) return tt("rec.trendHoldingAfterHard");
+  if (rec.band === "green") return tt("rec.trendSupportive");
+  if (rec.band === "amber") return tt("rec.trendMixed");
+  return tt("rec.trendProtect");
+}
+
+function recoveryMetricCells(rec) {
+  const cells = [
+    { key: "sleep", label: tt("rec.metricSleep"), metric: rec.metrics.sleep },
+    { key: "battery", label: tt("rec.metricBattery"), metric: rec.metrics.battery },
+    { key: "stress", label: tt("rec.metricStress"), metric: rec.metrics.stress },
+  ].filter((cell) => cell.metric);
+  if (!cells.length) return "";
+  return `<div class="recovery-metrics">${cells.map((cell) => `
+    <div class="recovery-metric" data-metric="${cell.key}">
+      <em>${esc(cell.label)}</em>
+      <strong>${esc(cell.metric.text)}</strong>
+    </div>`).join("")}</div>`;
 }
 
 function recoveryBlock(ds, plan) {
@@ -1268,25 +1350,36 @@ function recoveryBlock(ds, plan) {
   if (!rec) {
     if (!GARMIN.connected || ds !== ymd(today())) return "";
     return `
-      <section class="recovery">
-        <div class="eyebrow">Recovery</div>
-        <p class="muted" style="margin:6px 0 0">Sync Garmin to score sleep, Body Battery, stress and HRV for today's session.</p>
+      <section class="recovery is-empty">
+        <div class="eyebrow">${esc(tt("day.recovery"))}</div>
+        <p class="muted recovery-empty">${esc(tt("rec.syncGarmin"))}</p>
       </section>`;
   }
-  const level = rec.score >= 80 ? "high" : rec.score >= 60 ? "mid" : "low";
+  const band = rec.band;
+  const trend = recoveryTrend(ds, rec);
+  const hrv = rec.metrics.hrv
+    ? `<div class="recovery-bits"><span><em>${esc(tt("rec.metricHrv"))}</em> ${esc(rec.metrics.hrv.text)}</span></div>`
+    : "";
   return `
-    <section class="recovery lvl-${level}">
+    <section class="recovery lvl-${band}" data-band="${band}">
       <div class="recovery-top">
         <div>
-          <div class="eyebrow">Recovery · ${esc(recoveryWord(rec.score))}</div>
-          <p class="recovery-advice">${esc(recoveryAdvice(rec.score, plan))}</p>
+          <div class="eyebrow">${esc(tt("day.recovery"))} · ${esc(recoveryDayLabel(band))}</div>
+          <p class="recovery-advice">${esc(recoveryAdvice(rec, plan))}</p>
+          <p class="recovery-trend">${esc(trend)}</p>
         </div>
-        <div class="recovery-score" aria-label="Recovery score ${rec.score}">${rec.score}</div>
+        <div class="recovery-signal" aria-label="${esc(tt("rec.signalAria", { day: recoveryDayLabel(band), score: rec.score }))}">
+          <span class="recovery-dot" aria-hidden="true"></span>
+          <strong>${esc(recoveryActionLabel(band))}</strong>
+          <span class="recovery-score">${rec.score}</span>
+        </div>
       </div>
       <div class="recovery-bar" role="meter" aria-valuenow="${rec.score}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.max(0, Math.min(100, rec.score))}%"></span></div>
-      <div class="recovery-bits">${rec.parts.map((part) => `<span><em>${esc(part.key)}</em> ${esc(part.text)}</span>`).join("")}</div>
+      ${recoveryMetricCells(rec)}
+      ${hrv}
     </section>`;
 }
+window.recoveryBlock = recoveryBlock;
 
 
 function paceGraph(plan) {
