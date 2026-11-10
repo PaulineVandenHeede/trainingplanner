@@ -3903,6 +3903,12 @@ document.addEventListener("click", async (e) => {
     requestWeekFeedback();
     return;
   }
+  if (btn.dataset.action === "home-zone") {
+    if (typeof setHomeZone === "function") setHomeZone(btn.dataset.zone);
+    if (btn.dataset.zone === "today") HOME_WEEK = null;
+    render(true);
+    return;
+  }
   if (btn.dataset.action === "home-week-prev" || btn.dataset.action === "home-week-next" || btn.dataset.action === "home-week-today") {
     if (!hasPlan()) return;
     const calendarWk = calendarPlanWeek(today());
@@ -3911,6 +3917,7 @@ document.addEventListener("click", async (e) => {
     else if (btn.dataset.action === "home-week-prev") HOME_WEEK = Math.max(1, cur - 1);
     else HOME_WEEK = Math.min(WEEKS.length, cur + 1);
     if (HOME_WEEK === calendarWk) HOME_WEEK = null;
+    if (typeof setHomeZone === "function") setHomeZone("week");
     render(true);
     return;
   }

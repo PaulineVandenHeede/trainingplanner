@@ -203,6 +203,10 @@
 
     "home.today": "Today · {date}",
     "home.viewingWeek": " · viewing week {week}",
+    "home.viewingWeekLabel": "Viewing week {week}",
+    "home.zoneToday": "Today",
+    "home.zoneWeek": "Week",
+    "home.zoneToggleAria": "Home view",
     "home.noPlan": "No plan yet",
     "home.noPlanLead": "Start a plan when you are ready. Import a CSV for this week, or add a public event to your agenda.",
     "home.startPlan": "Start plan",
@@ -616,6 +620,10 @@
 
     "home.today": "Vandaag · {date}",
     "home.viewingWeek": " · week {week} bekijken",
+    "home.viewingWeekLabel": "Week {week} bekijken",
+    "home.zoneToday": "Vandaag",
+    "home.zoneWeek": "Week",
+    "home.zoneToggleAria": "Homeweergave",
     "home.noPlan": "Nog geen plan",
     "home.noPlanLead": "Start een plan wanneer je klaar bent. Importeer een CSV voor deze week, of voeg een openbaar evenement toe aan je agenda.",
     "home.startPlan": "Plan starten",

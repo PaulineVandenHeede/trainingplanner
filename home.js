@@ -291,6 +291,39 @@ function loggedWeekBlock(acts, now) {
 }
 
 let HOME_WEEK = null;
+let HOME_ZONE = null;
+
+function homeZone() {
+  if (HOME_ZONE === "today" || HOME_ZONE === "week") return HOME_ZONE;
+  try {
+    const saved = sessionStorage.getItem("tp-home-zone");
+    if (saved === "today" || saved === "week") {
+      HOME_ZONE = saved;
+      return HOME_ZONE;
+    }
+  } catch {
+    // sessionStorage may be unavailable.
+  }
+  HOME_ZONE = "today";
+  return HOME_ZONE;
+}
+
+function setHomeZone(zone) {
+  HOME_ZONE = zone === "week" ? "week" : "today";
+  try {
+    sessionStorage.setItem("tp-home-zone", HOME_ZONE);
+  } catch {
+    // Ignore persistence failures.
+  }
+}
+
+function homeZoneToggle(active) {
+  return `
+    <div class="home-zone-toggle" role="tablist" aria-label="${esc(tt("home.zoneToggleAria"))}">
+      <button class="home-zone-btn${active === "today" ? " active" : ""}" type="button" role="tab" aria-selected="${active === "today" ? "true" : "false"}" data-action="home-zone" data-zone="today">${esc(tt("home.zoneToday"))}</button>
+      <button class="home-zone-btn${active === "week" ? " active" : ""}" type="button" role="tab" aria-selected="${active === "week" ? "true" : "false"}" data-action="home-zone" data-zone="week">${esc(tt("home.zoneWeek"))}</button>
+    </div>`;
+}
 
 function calendarPlanWeek(now) {
   return Math.max(1, Math.min(WEEKS.length, weekOf(now)));
@@ -704,24 +737,52 @@ function renderHome(acts, now) {
   const wk = homeViewWeek(now);
   HOME_WEEK = wk === calendarWk ? null : wk;
   const current = WEEKS[wk - 1];
-  const next = WEEKS[wk];
   const phase = phaseOf(wk);
   const daysToRace = daysBetween(now, RACE);
-  const progress = Math.round((daysBetween(START, now) / daysBetween(START, RACE)) * 100);
   const upcoming = upcomingEventsList(now, acts);
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const viewingPast = wk !== calendarWk;
+  const zone = viewingPast ? "week" : homeZone();
+  if (viewingPast && homeZone() !== "week") setHomeZone("week");
 
   const changesN = pendingChanges().length;
   const footnote = lastSync
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.openDayOrImport");
+
+  const recovery = (() => {
+    const block = typeof recoveryBlock === "function" ? recoveryBlock(ymd(now), planFor(ymd(now))) : "";
+    return block ? `<section class="card recovery-home">${block}</section>` : "";
+  })();
+
+  const todayZone = `
+    <div class="home-zone home-zone-today">
+      ${todaySessionCard(acts, now)}
+      ${recovery}
+      ${raceWeekChecklistCard(now)}
+    </div>`;
+
+  const weekZone = `
+    <div class="home-zone home-zone-week">
+      <div class="week-nav">
+        <button class="button ghost small" type="button" data-action="home-week-prev"${wk <= 1 ? " disabled" : ""} aria-label="${esc(tt("common.previous"))}">${tt("home.prevWeek")}</button>
+        ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">${tt("home.thisWeek")}</button>` : ""}
+        <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="${esc(tt("common.next"))}">${tt("home.nextWeek")}</button>
+      </div>
+      ${weekCard(current, acts, now, homeWeekCardTitle(wk, calendarWk, 0))}
+      ${reviewCard(acts, now)}
+      ${eventsCard(now, upcoming, { acts })}
+      <div class="cta"><a class="button ghost" href="/plan">${tt("home.seeFullPlan")}</a></div>
+    </div>`;
+
   return `
     <section class="hero morning-hero">
       <div>
-        <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}${viewingPast ? tt("home.viewingWeek", { week: wk }) : ""}</div>
+        <div class="eyebrow">${zone === "today"
+          ? tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })
+          : (viewingPast ? tt("home.viewingWeekLabel", { week: wk }) : phase.name)}</div>
         <h1>${tt("home.weekOf", { week: wk, total: WEEKS.length })} <span class="muted">· ${phase.name}</span></h1>
-        <p class="muted">${phase.focus}</p>
+        <p class="muted">${esc(phase.focus)}</p>
         ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
       </div>
       <button type="button" class="countdown" data-action="open-day" data-date="${ymd(RACE)}" title="${esc(tt("home.viewEvent", { event: eventLabel() }))}">
@@ -729,19 +790,8 @@ function renderHome(acts, now) {
       </button>
     </section>
 
-    ${!viewingPast ? todaySessionCard(acts, now) : ""}
-    ${!viewingPast ? (() => {
-      const block = typeof recoveryBlock === "function" ? recoveryBlock(ymd(now), planFor(ymd(now))) : "";
-      return block ? `<section class="card recovery-home">${block}</section>` : "";
-    })() : ""}
-    ${!viewingPast ? raceWeekChecklistCard(now) : ""}
+    ${homeZoneToggle(zone)}
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
-
-    <div class="timeline">
-      ${PHASES.map((p) => `<div class="seg p-${p.name} ${p === phase ? "active" : ""}" style="flex:${p.to - p.from + 1}"><span>${p.name}</span></div>`).join("")}
-      <div class="marker" style="left:${Math.max(0, Math.min(100, progress))}%"></div>
-    </div>
-
 
     ${changesN ? `
       <a class="changes-banner" href="/plan">
@@ -749,22 +799,7 @@ function renderHome(acts, now) {
         <span>${tt("home.changesReview")}</span>
       </a>` : ""}
 
-    ${reviewCard(acts, now)}
-
-    <div class="week-nav">
-      <button class="button ghost small" type="button" data-action="home-week-prev"${wk <= 1 ? " disabled" : ""} aria-label="${esc(tt("common.previous"))}">${tt("home.prevWeek")}</button>
-      ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">${tt("home.thisWeek")}</button>` : ""}
-      <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="${esc(tt("common.next"))}">${tt("home.nextWeek")}</button>
-    </div>
-
-    <div class="grid">
-      ${weekCard(current, acts, now, homeWeekCardTitle(wk, calendarWk, 0))}
-      ${next ? weekCard(next, acts, now, homeWeekCardTitle(wk, calendarWk, 1)) : ""}
-    </div>
-
-    ${eventsCard(now, upcoming, { acts })}
-
-    <div class="cta"><a class="button" href="/plan">${tt("home.seeFullPlan")}</a></div>
+    ${zone === "today" ? todayZone : weekZone}
     <p class="footnote">${footnote}</p>
   `;
 }
