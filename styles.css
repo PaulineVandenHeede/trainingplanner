@@ -1415,12 +1415,32 @@ body.onboarding .nav-sep { display: none; }
 .choice-btn.active,
 .choice-btn.is-on { background: var(--text); color: var(--bg); border-color: var(--text); }
 .settings-form .language-choice { margin-bottom: 12px; }
-.auth-lang {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  margin: 0 0 14px; font-size: 13px; color: var(--muted);
+.auth-lang-switch {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  line-height: 1;
 }
-.auth-lang .choice-row { gap: 6px; }
-.auth-lang .choice-btn { padding: 6px 10px; font-size: 12px; }
+.auth-lang-opt {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 4px 2px;
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.auth-lang-opt:hover { color: var(--text); }
+.auth-lang-opt.is-on { color: var(--text); }
+.auth-lang-sep { color: var(--line); user-select: none; }
 .custom-dists { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .custom-dists[hidden], .custom-dists label[hidden], .setup-form label[hidden], .setup-form fieldset[hidden] { display: none; }
 .setup-form .button { width: 100%; text-align: center; }

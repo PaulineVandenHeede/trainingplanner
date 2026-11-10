@@ -23,6 +23,7 @@ secrets/
 .strava-*
 .deploy-*
 .mcp-*
+.coach-deploy-payload.json
 .content_escaped.txt
 .garmin-content.jsonstring
 d.json

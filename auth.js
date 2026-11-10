@@ -149,11 +149,15 @@ function passwordRulesHtml({ hidden = true, id = "password-rules" } = {}) {
 }
 
 function authLanguagePicker() {
-  const row = typeof window.languageChoiceRow === "function"
-    ? window.languageChoiceRow(window.I18N?.language || "en")
-    : "";
-  if (!row) return "";
-  return `<div class="auth-lang"><span>${tt("auth.language")}</span>${row}</div>`;
+  const lang = typeof window.I18N?.normalizeLang === "function"
+    ? window.I18N.normalizeLang(window.I18N?.language || "en")
+    : "en";
+  return `
+    <div class="auth-lang-switch" role="group" aria-label="Language">
+      <button class="auth-lang-opt${lang === "en" ? " is-on" : ""}" type="button" data-lang="en" aria-pressed="${lang === "en" ? "true" : "false"}">EN</button>
+      <span class="auth-lang-sep" aria-hidden="true">|</span>
+      <button class="auth-lang-opt${lang === "nl" ? " is-on" : ""}" type="button" data-lang="nl" aria-pressed="${lang === "nl" ? "true" : "false"}">NL</button>
+    </div>`;
 }
 window.passwordError = passwordError;
 window.paintPasswordRules = paintPasswordRules;
@@ -175,6 +179,7 @@ function renderLogin(message = "", options = {}) {
   if (header) header.hidden = true;
   document.getElementById("day-dialog")?.close();
   document.getElementById("app").innerHTML = `
+    ${authLanguagePicker()}
     <section class="auth-card">
       <div class="auth-brand">
         <picture>
@@ -186,7 +191,6 @@ function renderLogin(message = "", options = {}) {
           <h1>${tt("brand.name")}</h1>
         </div>
       </div>
-      ${authLanguagePicker()}
       <p class="muted auth-lead">${tt("auth.leadSignIn")}</p>
       <div class="auth-tabs">
         <button class="auth-tab active" type="button" data-auth-mode="signin">${tt("auth.signIn")}</button>
@@ -221,6 +225,7 @@ function renderPasswordReset(email = "", message = "") {
   if (header) header.hidden = true;
   document.getElementById("day-dialog")?.close();
   document.getElementById("app").innerHTML = `
+    ${authLanguagePicker()}
     <section class="auth-card">
       <div class="auth-brand">
         <picture>
@@ -232,7 +237,6 @@ function renderPasswordReset(email = "", message = "") {
           <h1>${tt("auth.newPasswordTitle")}</h1>
         </div>
       </div>
-      ${authLanguagePicker()}
       <p class="muted auth-lead"></p>
       <form class="auth-form" data-mode="recovery" novalidate>
         <input type="hidden" name="email" value="" />

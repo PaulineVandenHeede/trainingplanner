@@ -4274,25 +4274,31 @@ function phaseBlocksForReview(weeks) {
 }
 
 function reviewStages(weeks) {
-  const longs = (weeks || []).map((w) => {
-    const blob = longLabel(w);
-    return {
-      wk: Number(w.wk),
-      long: Number(w.long) || 0,
-      mp: /@ ?mp|marathon pace/i.test(blob),
-      phase: String(w.phase || ""),
-    };
-  }).filter((l) => l.wk > 0);
-  const withMp = longs.filter((l) => l.mp && l.long >= 20);
-  const first = withMp[0];
-  const main = withMp.find((l) => l.long >= 26);
-  const lock = [...withMp].reverse().find((l) => /peak/i.test(l.phase) && l.long >= 24);
+  const sport = String(window.CURRENT_PLAN?.sport || "run").toLowerCase();
+  const preset = String(window.CURRENT_PLAN?.distance_preset || "").toLowerCase();
+  const marathonLike = sport === "run" && (/marathon|42|full/.test(preset) || Number(window.CURRENT_PLAN?.run_km) >= 40);
   const stages = [];
-  if (first) stages.push({ id: "first-mp-20", wk: first.wk, title: "first 20 km+ with marathon pace" });
-  if (main && main.wk !== first?.wk) stages.push({ id: "main-mp", wk: main.wk, title: "main marathon-pace long" });
-  if (lock && lock.wk !== main?.wk && lock.wk !== first?.wk) stages.push({ id: "lock-mp", wk: lock.wk, title: "lock race pace" });
 
-  // Also re-check paces/volume when a training block ends (skip taper — freshen, don't retarget).
+  if (marathonLike) {
+    const longs = (weeks || []).map((w) => {
+      const blob = longLabel(w);
+      return {
+        wk: Number(w.wk),
+        long: Number(w.long) || 0,
+        mp: /@ ?mp|marathon pace/i.test(blob),
+        phase: String(w.phase || ""),
+      };
+    }).filter((l) => l.wk > 0);
+    const withMp = longs.filter((l) => l.mp && l.long >= 20);
+    const first = withMp[0];
+    const main = withMp.find((l) => l.long >= 26);
+    const lock = [...withMp].reverse().find((l) => /peak/i.test(l.phase) && l.long >= 24);
+    if (first) stages.push({ id: "first-mp-20", wk: first.wk, title: "first 20 km+ with marathon pace" });
+    if (main && main.wk !== first?.wk) stages.push({ id: "main-mp", wk: main.wk, title: "main marathon-pace long" });
+    if (lock && lock.wk !== main?.wk && lock.wk !== first?.wk) stages.push({ id: "lock-mp", wk: lock.wk, title: "lock race pace" });
+  }
+
+  // Re-check paces/volume when a training block ends (skip taper — freshen, don't retarget).
   for (const block of phaseBlocksForReview(weeks)) {
     if (/taper/i.test(block.name)) continue;
     const id = `end-${block.name.toLowerCase().replace(/\s+/g, "-")}`;
@@ -4305,6 +4311,12 @@ function reviewStages(weeks) {
   }
 
   return stages.sort((a, b) => a.wk - b.wk || String(a.id).localeCompare(String(b.id)));
+}
+
+function toastCoachResult(data, fallback) {
+  toast(data?.summary || fallback);
+  const alert = typeof data?.alert === "string" ? data.alert.trim() : "";
+  if (alert) toast(alert, true);
 }
 
 function dueReviewStages(now) {
@@ -4369,7 +4381,7 @@ async function sendCoachRequest(opts = {}) {
     const data = await invokeCoach({ action: "start", stage });
     if (data.status === "applied") {
       COACH_STATUS = "idle";
-      toast(data.summary || "Plan updated.");
+      toastCoachResult(data, "Plan updated.");
       const { data: plan } = await sb.from("plans").select("*").eq("user_id", CURRENT_USER_ID).maybeSingle();
       if (plan) applyPlanRow(plan);
       const previousNote = currentReviewNote();
@@ -4469,7 +4481,7 @@ async function requestProgressReport(opts = {}) {
     const data = await invokeCoach({ action: "progress", snapshot: progressSnapshot(visible, today()) });
     if (data.status === "applied" && (data.report || data.summary)) {
       storeProgressReport({ ...data, fingerprint: data.fingerprint || fp }, "ai");
-      if (!data.unchanged) toast(data.summary || "Progress report ready.");
+      if (!data.unchanged) toastCoachResult(data, "Progress report ready.");
       render(true);
       return;
     }
@@ -4489,7 +4501,7 @@ async function pollProgressJob(jobId) {
     const data = await invokeCoach({ action: "status", jobId });
     if (data.status === "applied") {
       storeProgressReport(data, "ai");
-      if (!data.unchanged) toast(data.summary || "Progress report ready.");
+      if (!data.unchanged) toastCoachResult(data, "Progress report ready.");
       render(true);
       return;
     }
@@ -4530,7 +4542,7 @@ async function pollCoachJob(jobId) {
     const data = await invokeCoach({ action: "status", jobId });
     if (data.status === "applied") {
       COACH_STATUS = "idle";
-      toast(data.summary || "Plan updated.");
+      toastCoachResult(data, "Plan updated.");
       const { data: plan } = await sb.from("plans").select("*").eq("user_id", CURRENT_USER_ID).maybeSingle();
       if (plan) applyPlanRow(plan);
       const previousNote = currentReviewNote();
@@ -4672,7 +4684,8 @@ async function requestWeekFeedback() {
       stampWeekFeedback(data.week || week.wk, data.fingerprint || snapshot.fingerprint);
       if (!data.unchanged) FEEDBACK = await loadFeedback();
       FEEDBACK_STATUS = "idle";
-      toast(data.unchanged ? "Feedback already matches this week's sessions." : (data.summary || "Week feedback updated."));
+      if (data.unchanged) toast("Feedback already matches this week's sessions.");
+      else toastCoachResult(data, "Week feedback updated.");
       render(true);
       refreshOpenDay();
       return;
@@ -4693,7 +4706,8 @@ async function pollFeedbackJob(jobId) {
       FEEDBACK_STATUS = "idle";
       if (data.week && data.fingerprint) stampWeekFeedback(data.week, data.fingerprint);
       if (!data.unchanged) FEEDBACK = await loadFeedback();
-      toast(data.unchanged ? "Feedback already matches this week's sessions." : (data.summary || "Week feedback updated."));
+      if (data.unchanged) toast("Feedback already matches this week's sessions.");
+      else toastCoachResult(data, "Week feedback updated.");
       render(true);
       refreshOpenDay();
       return;
@@ -5579,11 +5593,12 @@ document.addEventListener("click", async (e) => {
   if (langBtn) {
     const value = langBtn.dataset.lang;
     if (value === "en" || value === "nl") {
-      const scope = langBtn.closest("form") || langBtn.closest(".auth-lang") || document;
+      const scope = langBtn.closest("form") || langBtn.closest(".auth-lang-switch") || document;
       const hidden = scope.querySelector?.("[name=language]");
       if (hidden) hidden.value = value;
       scope.querySelectorAll?.("[data-lang]")?.forEach?.((b) => {
         b.classList.toggle("is-on", b.dataset.lang === value);
+        b.setAttribute?.("aria-pressed", b.dataset.lang === value ? "true" : "false");
       });
       if (!langBtn.closest(".settings-form") && typeof window.setLanguage === "function") {
         window.setLanguage(value, { persist: true });

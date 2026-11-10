@@ -80,6 +80,10 @@ function omitStravaActs(rows: Record<string, unknown>[] | null, blocked: Set<str
 function compactWeeks(weeks: Record<string, unknown>[]) {
   return (weeks || []).map((w) => {
     const days = Array.isArray(w.days) ? w.days : [];
+    const sessions = days
+      .filter((d): d is unknown[] => Array.isArray(d) && d.length >= 1)
+      .map((d) => ({ kind: d[0], label: d[1] ?? null }))
+      .filter((d) => d.kind && d.kind !== "rest");
     const long = days.find((d) => Array.isArray(d) && d[0] === "long");
     return {
       wk: w.wk,
@@ -89,8 +93,166 @@ function compactWeeks(weeks: Record<string, unknown>[]) {
       focus: w.focus,
       note: w.note || null,
       longLabel: long ? long[1] : null,
+      sessions,
     };
   });
+}
+
+const PLAN_FIELDS =
+  "sport, distance_preset, event_name, event_date, start_date, run_days, weekly_km, paces, weeks, notes, swim_m, bike_km, run_km, swim_weekdays, bike_weekdays, run_weekdays, include_strength, experience";
+
+function compactWellness(rows: Record<string, unknown>[] | null) {
+  return (rows || []).slice(0, 14).map((row) => ({
+    day: row.day,
+    sleep: row.sleep_score ?? null,
+    sleepH: row.sleep_sec != null ? Math.round(Number(row.sleep_sec) / 360) / 10 : null,
+    battery: row.battery_morning ?? row.battery_latest ?? null,
+    stress: row.stress_avg ?? null,
+    hrv: row.hrv_night ?? null,
+    hrvStatus: row.hrv_status ?? null,
+    rhr: row.resting_hr ?? null,
+  }));
+}
+
+function compactMetrics(row: Record<string, unknown> | null) {
+  if (!row) return null;
+  return {
+    maxHr: row.max_hr ?? null,
+    restingHr: row.resting_hr ?? null,
+    lthr: row.lthr ?? null,
+    vo2: row.vo2_run ?? null,
+    zones: row.zones ?? null,
+    load: row.load ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+function recoverySummary(rows: Record<string, unknown>[] | null) {
+  const recent = (rows || []).slice(0, 7);
+  if (!recent.length) return { days: 0, flag: "unknown" as const, note: "No recent wellness data." };
+  const nums = (key: string) =>
+    recent.map((r) => Number(r[key])).filter((n) => Number.isFinite(n) && n > 0);
+  const avg = (vals: number[]) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
+  const sleep = avg(nums("sleep_score"));
+  const battery = avg(
+    recent
+      .map((r) => Number(r.battery_morning ?? r.battery_latest))
+      .filter((n) => Number.isFinite(n) && n >= 0),
+  );
+  const stress = avg(nums("stress_avg"));
+  const hrvPoor = recent.filter((r) => /unbalanced|low|poor/i.test(String(r.hrv_status || ""))).length;
+  let flag: "good" | "ok" | "poor" | "unknown" = "ok";
+  const poorSignals =
+    (sleep != null && sleep < 60 ? 1 : 0) +
+    (battery != null && battery < 45 ? 1 : 0) +
+    (stress != null && stress > 55 ? 1 : 0) +
+    (hrvPoor >= 3 ? 1 : 0);
+  if (poorSignals >= 2) flag = "poor";
+  else if ((sleep == null || sleep >= 70) && (battery == null || battery >= 60) && hrvPoor <= 1) flag = "good";
+  return {
+    days: recent.length,
+    flag,
+    avgSleep: sleep != null ? Math.round(sleep) : null,
+    avgBattery: battery != null ? Math.round(battery) : null,
+    avgStress: stress != null ? Math.round(stress) : null,
+    hrvPoorDays: hrvPoor,
+    note:
+      flag === "poor"
+        ? "Recent recovery looks strained (sleep / Body Battery / stress / HRV)."
+        : flag === "good"
+          ? "Recent recovery looks supportive of planned load."
+          : "Recent recovery is mixed; judge key sessions carefully.",
+  };
+}
+
+async function loadRecovery(userClient: ReturnType<typeof createClient>, userId: string) {
+  const from = new Date();
+  from.setUTCDate(from.getUTCDate() - 14);
+  const fromDay = from.toISOString().slice(0, 10);
+  const [{ data: wellness }, { data: metrics }] = await Promise.all([
+    userClient
+      .from("wellness_days")
+      .select("day, sleep_score, sleep_sec, battery_morning, battery_latest, stress_avg, hrv_night, hrv_week, hrv_status, resting_hr")
+      .eq("user_id", userId)
+      .gte("day", fromDay)
+      .order("day", { ascending: false })
+      .limit(21),
+    userClient
+      .from("training_metrics")
+      .select("max_hr, resting_hr, lthr, vo2_run, zones, load, updated_at")
+      .eq("user_id", userId)
+      .maybeSingle(),
+  ]);
+  return {
+    wellness: wellness || [],
+    metrics: metrics || null,
+    summary: recoverySummary(wellness || []),
+  };
+}
+
+function planHeader(plan: Record<string, unknown>, week: number) {
+  const sport = String(plan.sport || "run").toLowerCase();
+  const bits = [
+    `Sport: ${sport}`,
+    plan.distance_preset ? `Distance: ${plan.distance_preset}` : "",
+    `Event: ${plan.event_name || "n/a"} on ${plan.event_date || "n/a"}`,
+    `Plan start: ${plan.start_date} · current week ${week}`,
+    plan.weekly_km != null ? `Typical week volume marker: ${plan.weekly_km} km` : "",
+    plan.run_days != null ? `Run days/week: ${plan.run_days}` : "",
+    plan.swim_m != null ? `Swim race: ${plan.swim_m} m` : "",
+    plan.bike_km != null ? `Bike race: ${plan.bike_km} km` : "",
+    plan.run_km != null ? `Run race: ${plan.run_km} km` : "",
+    plan.include_strength ? "Strength days: included" : "",
+    plan.experience ? `Experience: ${plan.experience}` : "",
+  ];
+  return { sport, lines: bits.filter(Boolean) };
+}
+
+function sportRules(sport: string, distancePreset: unknown) {
+  const preset = String(distancePreset || "").toLowerCase();
+  if (sport === "triathlon") {
+    return [
+      "- This is a multi-sport plan. Balance swim, bike, and run; do not treat weekly_km as run-only volume.",
+      "- Protect key sessions across disciplines (long bike, long/brick run, key swim). Do not turn the week into run-only advice.",
+      "- Pace/effort guides may include swim and bike cues as well as run paces — update only fields that fit the sport.",
+      "- Stage re-evals happen at end-of-block reviews and major race-specific milestones, not marathon-pace-only logic unless the run leg warrants it.",
+    ];
+  }
+  if (sport === "swim") {
+    return [
+      "- Prioritize key swim sets and technique consistency over run-style volume rules.",
+      "- Do not invent run long-run logic. Raise load gradually; avoid stacking hard sets on consecutive days.",
+      "- Stage re-evals happen at end-of-block reviews. Tighten pace/effort only when logged swims support it.",
+    ];
+  }
+  if (sport === "bike") {
+    return [
+      "- Prioritize the long ride and key quality rides. Raise weekly load gradually; no back-to-back hard rides.",
+      "- Do not invent run long-run / marathon-pace logic.",
+      "- Stage re-evals happen at end-of-block reviews. Refresh effort/pace guides only when rides support it.",
+    ];
+  }
+  const marathon = /marathon|42|mara/.test(preset) || preset === "42.2" || preset === "full";
+  return [
+    "- Keep the long run as the priority. Raise weekly volume by about 10% at most. No back-to-back long runs.",
+    marathon
+      ? "- Stage re-evals happen at marathon-pace milestones and at the end of each training block (Rebuild/Base/Build/Peak). Taper is not a pace retarget."
+      : "- Stage re-evals happen at end-of-block reviews and race-pace milestones when present. Taper is not a pace retarget.",
+    "- If this is a stage re-eval and logged sessions look good (weekly volume hit, easy days stay easy, key/quality work feels controlled), you MAY update paces: tighten race pace one step (max 5–8 sec/km for run) and refresh easy / steady / tempo from recent data. Never tighten during rebuild weeks 1–4. Do not add a run day unless they asked.",
+    "- At end-of-block reviews, prefer refreshing the whole pace guide when activity data supports it; hold if the block was messy.",
+  ];
+}
+
+function recoveryRules() {
+  return [
+    "Recovery / load rules:",
+    "- Use wellness (sleep, Body Battery, stress, HRV) as a load signal, not a reason to abandon the A-race.",
+    "- Keep the structure that makes race day reachable (key long / quality sessions and sensible progression). Prefer easing intensity and paces over deleting the volume the race still needs.",
+    "- If recovery is chronically poor or logged work shows the plan is too heavy: set alert to a clear athlete-facing warning (e.g. plan may be too heavy; ease paces / drop ambition a step), optionally ease paces (easy first; race pace only if clearly unsustainable), and add weekNotes. Do not gut weekly volume so far that the race becomes unreachable.",
+    "- Acute one-day recovery dips: soft-pedal via weekNotes / activityFeedback for that window. Do not rewrite the whole plan.",
+    "- If recovery looks good and sessions are controlled, you may tighten cautiously per the sport rules above.",
+    "- If there is not enough activity or wellness data, keep paces and say so in summary; alert stays null.",
+  ];
 }
 
 Deno.serve(async (req) => {
@@ -222,10 +384,11 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
     .limit(1);
   if (open?.[0]) return json({ jobId: open[0].id, status: open[0].status, existing: true });
 
-  const [{ data: plan }, { data: changes }, { data: acts }] = await Promise.all([
-    userClient.from("plans").select("event_name, event_date, start_date, run_days, weekly_km, paces, weeks, notes").eq("user_id", userId).maybeSingle(),
+  const [{ data: plan }, { data: changes }, { data: acts }, recovery] = await Promise.all([
+    userClient.from("plans").select(PLAN_FIELDS).eq("user_id", userId).maybeSingle(),
     userClient.from("changes").select("id, type, summary, details, status, created_at").eq("user_id", userId).eq("status", "pending").order("created_at", { ascending: false }),
     userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(200),
+    loadRecovery(userClient, userId),
   ]);
   if (!plan) return json({ error: "No plan" }, 400);
   const blocked = await stravaBlockedStarts(userClient, userId);
@@ -234,17 +397,18 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
   const start = new Date(`${plan.start_date}T00:00:00`);
   const today = new Date();
   const week = Math.floor((today.getTime() - start.getTime()) / 86400000 / 7) + 1;
+  const header = planHeader(plan, week);
 
   const prompt = [
     "You are the training-plan coach for this athlete. Do not write code or files.",
     "Read the snapshot and return ONE JSON object only, no extra prose.",
     "",
     `User id: ${userId}`,
-    `Event: ${plan.event_name} on ${plan.event_date}`,
-    `Run days: ${plan.run_days} · start ${plan.start_date} · current week ${week}`,
+    ...header.lines,
     stage ? `Stage re-eval: ${stage}` : "",
+    plan.notes ? `Athlete notes: ${plan.notes}` : "",
     "",
-    "Current paces:",
+    "Current paces / effort guide:",
     JSON.stringify(plan.paces || []),
     "",
     "Weeks:",
@@ -256,22 +420,27 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
     "Recent activities:",
     JSON.stringify(compactActs(visibleActs)),
     "",
-    "Rules:",
-    "- Keep the long run as the priority. Raise weekly volume by about 10% at most. No back-to-back long runs.",
-    "- Stage re-evals happen at marathon-pace milestones and at the end of each training block (Rebuild/Base/Build/Peak). Taper is not a pace retarget.",
-    "- If this is a stage re-eval and logged sessions look good (weekly volume hit, easy days stay easy, key/quality work feels controlled), you MAY update paces: tighten race/MP one step (max 5–8 sec/km) and refresh easy / steady / tempo from recent easy-day and quality paces. Never tighten during rebuild weeks 1–4. Do not add a run day unless they asked.",
-    "- At end-of-block reviews, prefer refreshing the whole pace guide (easy through race) when activity data supports it; hold if the block was messy.",
-    "- If things look poor (missed key sessions, niggles, easy days too hard), hold or ease volume. Do not tighten pace.",
-    "- If there is not enough activity data, keep paces and say so in summary.",
+    "Recovery summary:",
+    JSON.stringify(recovery.summary),
+    "Recent wellness days:",
+    JSON.stringify(compactWellness(recovery.wellness)),
+    "Training metrics:",
+    JSON.stringify(compactMetrics(recovery.metrics)),
+    "",
+    "Sport rules:",
+    ...sportRules(header.sport, plan.distance_preset),
+    "- If things look poor (missed key sessions, niggles, easy days too hard), hold or ease intensity. Do not tighten pace.",
+    ...recoveryRules(),
     "",
     "JSON shape:",
-    '{"summary":"one sentence","hold":false,"paces":null,"weekNotes":{},"weekFeedback":{},"activityFeedback":{},"applyChangeIds":[]}',
+    '{"summary":"one sentence","alert":null,"hold":false,"paces":null,"weekNotes":{},"weekFeedback":{},"activityFeedback":{},"applyChangeIds":[]}',
     '- paces: array of [name, pace, use] like the current paces, or null to leave them.',
     '- weekNotes: { "11": "note" } keys are week numbers. Only weeks you change.',
     '- weekFeedback: { "11": "feedback" } for completed weeks you reviewed.',
     '- activityFeedback: { "<started_at>": "feedback" } using the activity started_at values.',
     "- applyChangeIds: pending change ids you accounted for.",
     "- hold: true if you did not change paces or weekly km.",
+    "- alert: null, or one short athlete-facing warning when the plan looks too heavy / paces should ease. Not a second summary.",
   ].filter(Boolean).join("\n");
 
   const created = await fetch("https://api.cursor.com/v1/agents", {
@@ -359,20 +528,23 @@ async function handleProgress(userClient: ReturnType<typeof createClient>, userI
     }, 503);
   }
 
-  const [{ data: plan }, { data: acts }] = await Promise.all([
-    userClient.from("plans").select("event_name, event_date, start_date, weekly_km, notes, weeks").eq("user_id", userId).maybeSingle(),
+  const [{ data: plan }, { data: acts }, recovery] = await Promise.all([
+    userClient.from("plans").select(PLAN_FIELDS).eq("user_id", userId).maybeSingle(),
     userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(200),
+    loadRecovery(userClient, userId),
   ]);
   if (!plan) return json({ error: "No plan" }, 400);
   const blocked = await stravaBlockedStarts(userClient, userId);
   const visibleActs = omitStravaActs(acts, blocked);
+  const start = new Date(`${plan.start_date}T00:00:00`);
+  const weekNow = Math.floor((Date.now() - start.getTime()) / 86400000 / 7) + 1;
+  const header = planHeader(plan, weekNow);
 
   const prompt = [
     "You are the training-plan coach for this athlete. Do not write code or files. Do not change the plan.",
     "Write a progress report from the snapshot. Return ONE JSON object only, no extra prose.",
     "",
-    `Event: ${plan.event_name} on ${plan.event_date}`,
-    `Plan start: ${plan.start_date} · typical week ${plan.weekly_km} km`,
+    ...header.lines,
     plan.notes ? `Athlete notes: ${plan.notes}` : "",
     "",
     "Client snapshot:",
@@ -384,12 +556,21 @@ async function handleProgress(userClient: ReturnType<typeof createClient>, userI
     "Weeks:",
     JSON.stringify(compactWeeks(plan.weeks || [])),
     "",
-    "Write 2–4 short paragraphs: how the block is going, whether volume and key sessions are on track, current vs projected race time if present, and what matters in the next 1–2 weeks.",
+    "Recovery summary:",
+    JSON.stringify(recovery.summary),
+    "Recent wellness days:",
+    JSON.stringify(compactWellness(recovery.wellness)),
+    "Training metrics:",
+    JSON.stringify(compactMetrics(recovery.metrics)),
+    "",
+    "Write 2–4 short paragraphs for this sport: how the block is going, whether volume and key sessions (all disciplines if triathlon) are on track, recovery/load fit, current vs projected race outcome if present, and what matters in the next 1–2 weeks.",
+    "If recovery suggests the plan is getting too heavy, say so clearly and recommend easing paces / ambition while keeping race day reachable — do not propose abandoning the race.",
     "Tone: direct, specific, encouraging. No headings, no bullets, no markdown.",
     "",
     "JSON shape:",
-    '{"summary":"one sentence","report":"paragraphs separated by blank lines","week":null}',
+    '{"summary":"one sentence","alert":null,"report":"paragraphs separated by blank lines","week":null}',
     "- week: current week number from the snapshot, or null.",
+    "- alert: null, or one short athlete-facing warning when load looks too heavy.",
   ].filter(Boolean).join("\n");
 
   const created = await fetch("https://api.cursor.com/v1/agents", {
@@ -504,22 +685,21 @@ async function handleFeedback(userClient: ReturnType<typeof createClient>, userI
     return json({ error: "CURSOR_API_KEY is not set", needsKey: true }, 503);
   }
 
-  const { data: plan } = await userClient
-    .from("plans")
-    .select("event_name, event_date, start_date, paces, notes")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const [{ data: plan }, recovery] = await Promise.all([
+    userClient.from("plans").select(PLAN_FIELDS).eq("user_id", userId).maybeSingle(),
+    loadRecovery(userClient, userId),
+  ]);
   if (!plan) return json({ error: "No plan" }, 400);
+  const header = planHeader(plan, week);
 
   const prompt = [
     "You are the training-plan coach for this athlete. Do not write code or files. Do not change the plan, paces, or weekly volume.",
     "Comment on this one training week. Return ONE JSON object only, no extra prose.",
     "",
-    `Event: ${plan.event_name} on ${plan.event_date}`,
-    `Plan start: ${plan.start_date}`,
+    ...header.lines,
     plan.notes ? `Athlete notes: ${plan.notes}` : "",
     "",
-    "Paces:",
+    "Paces / effort guide:",
     JSON.stringify(plan.paces || []),
     "",
     "Week snapshot:",
@@ -534,14 +714,21 @@ async function handleFeedback(userClient: ReturnType<typeof createClient>, userI
       sessions,
     }),
     "",
-    "Write a short week note (2–4 sentences) about how the week went: volume, the long or key session, and easy-day effort.",
+    "Recovery summary:",
+    JSON.stringify(recovery.summary),
+    "Recent wellness days:",
+    JSON.stringify(compactWellness(recovery.wellness)),
+    "",
+    "Write a short week note (2–4 sentences) about how the week went for this sport: volume across disciplines if triathlon, the long or key session(s), easy-day effort, and whether recovery matched the load.",
+    "If recovery or execution suggests the week was too heavy, say that paces may need to ease while keeping the race reachable.",
     "Add a one-sentence note only for sessions that need a comment. Skip walks and ordinary easy sessions that went as planned.",
     "Tone: direct and specific. No headings, no bullets, no markdown.",
     "",
     "JSON shape:",
-    `{"summary":"one sentence","weekFeedback":{"${week}":"week note"},"activityFeedback":{}}`,
+    `{"summary":"one sentence","alert":null,"weekFeedback":{"${week}":"week note"},"activityFeedback":{}}`,
     "- weekFeedback: exactly one key, the week number above.",
     "- activityFeedback: keys must be copied exactly from started_at. Omit sessions with nothing to add.",
+    "- alert: null, or one short athlete-facing warning when load looks too heavy.",
   ].filter(Boolean).join("\n");
 
   const created = await fetch("https://api.cursor.com/v1/agents", {
@@ -594,7 +781,9 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
     .maybeSingle();
   if (error || !job) return json({ error: "Job not found" }, 404);
   if (job.status === "applied" || job.status === "error") {
-    const result = job.result && typeof job.result === "object" ? job.result as { report?: string; week?: number; fingerprint?: string } : null;
+    const result = job.result && typeof job.result === "object"
+      ? job.result as { report?: string; week?: number; fingerprint?: string; alert?: string | null }
+      : null;
     const kind = job.stage === "progress-report" ? "progress" : job.stage === "week-feedback" ? "feedback" : undefined;
     return json({
       jobId: job.id,
@@ -604,6 +793,7 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
       report: result?.report || job.summary || "",
       week: result?.week ?? null,
       fingerprint: result?.fingerprint,
+      alert: typeof result?.alert === "string" && result.alert.trim() ? result.alert.trim() : null,
       kind,
     });
   }
@@ -653,8 +843,9 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
 
   if (job.stage === "progress-report") {
     const report = String(patch.report || patch.summary || "").trim();
+    const alert = typeof patch.alert === "string" && patch.alert.trim() ? patch.alert.trim() : null;
     const prev = job.result && typeof job.result === "object" ? job.result as Record<string, unknown> : {};
-    const result = { ...prev, ...patch, report };
+    const result = { ...prev, ...patch, report, alert };
     await userClient.from("coach_jobs").update({
       status: "applied",
       summary: patch.summary || "Progress report",
@@ -666,6 +857,7 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
       status: "applied",
       summary: patch.summary || "Progress report",
       report,
+      alert,
       week: patch.week ?? null,
       fingerprint: result.fingerprint || null,
       kind: "progress",
@@ -689,16 +881,18 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
       return json({ jobId: job.id, status: "error", error: message, kind: "feedback" });
     }
     const summary = String(patch.summary || "Week feedback updated").trim();
+    const alert = typeof patch.alert === "string" && patch.alert.trim() ? patch.alert.trim() : null;
     await userClient.from("coach_jobs").update({
       status: "applied",
       summary,
-      result: { fingerprint: prev.fingerprint, week, sessions },
+      result: { fingerprint: prev.fingerprint, week, sessions, alert },
       updated_at: new Date().toISOString(),
     }).eq("id", job.id);
     return json({
       jobId: job.id,
       status: "applied",
       summary,
+      alert,
       week,
       fingerprint: prev.fingerprint || null,
       kind: "feedback",
@@ -718,14 +912,21 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
     return json({ jobId: job.id, status: "error", error: message });
   }
 
+  const alert = typeof patch.alert === "string" && patch.alert.trim() ? patch.alert.trim() : null;
+  const result = { ...patch, alert };
   await userClient.from("coach_jobs").update({
     status: "applied",
     summary: patch.summary || "Plan reviewed",
-    result: patch,
+    result,
     updated_at: new Date().toISOString(),
   }).eq("id", job.id);
 
-  return json({ jobId: job.id, status: "applied", summary: patch.summary || "Plan reviewed" });
+  return json({
+    jobId: job.id,
+    status: "applied",
+    summary: patch.summary || "Plan reviewed",
+    alert,
+  });
 }
 
 async function saveFeedback(
