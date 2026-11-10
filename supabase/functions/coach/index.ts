@@ -213,9 +213,10 @@ function sportRules(sport: string, distancePreset: unknown) {
   if (sport === "triathlon") {
     return [
       "- This is a multi-sport plan. Balance swim, bike, and run; do not treat weekly_km as run-only volume.",
-      "- Protect key sessions across disciplines (long bike, long/brick run, key swim). Do not turn the week into run-only advice.",
-      "- Pace/effort guides may include swim and bike cues as well as run paces — update only fields that fit the sport.",
+      "- Protect key sessions across disciplines (brick as first-class bike→run, long bike, key swim). Do not turn the week into run-only advice.",
+      "- Pace/effort guides may include swim sets (WU/main/CD), bike power or RPE when no meter, and per-leg race pacing — update only fields that fit the sport.",
       "- Stage re-evals happen at end-of-block reviews and major race-specific milestones, not marathon-pace-only logic unless the run leg warrants it.",
+      "- In race week, protect the mini T2 brick / openers and prefer checklist / transition notes over adding volume.",
     ];
   }
   if (sport === "swim") {
@@ -281,7 +282,7 @@ function weekExecutionSnapshot(plan: Record<string, unknown>, acts: Record<strin
   const today = new Date();
   const todayKey = today.toISOString().slice(0, 10);
   const days = Array.isArray(week.days) ? week.days as unknown[] : [];
-  const keyKinds = new Set(["long", "quality", "race", "event"]);
+  const keyKinds = new Set(["long", "quality", "race", "event", "brick"]);
   return {
     week: weekNum,
     sessions: days.map((day, i) => {
@@ -292,7 +293,9 @@ function weekExecutionSnapshot(plan: Record<string, unknown>, acts: Record<strin
       d.setDate(d.getDate() + i);
       const ds = d.toISOString().slice(0, 10);
       const logged = acts.some((a) => actDateKey(a.date || a.started_at) === ds);
-      const key = keyKinds.has(kind) || (kind === "bike" && /long|brick|key/i.test(label || ""));
+      const key = keyKinds.has(kind)
+        || (kind === "bike" && /long|brick|key|sweet|race-pace/i.test(label || ""))
+        || (kind === "swim" && /key|css|threshold|race-pace|main/i.test(label || ""));
       return {
         i,
         date: ds,

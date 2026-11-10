@@ -177,38 +177,122 @@ const GUIDES = {
     targets: [],
   },
   swimA: {
-    title: "Main swim: Session A (30–50 min)",
-    why: "Builds the swim habit and technique for the 70.3 (1.9 km). Low impact, so it supports running recovery.",
+    title: "Main swim (structured set)",
+    why: "Builds the swim habit and technique for race distance. Low impact, so it supports running recovery.",
     how: [
-      "Warm-up (~8 min): 200 m easy freestyle (or 4×50), then 4×50 as 25 drill / 25 easy with 20 s rest.",
-      "Rotate drills: catch-up (hands meet in front), fingertip drag (fingers trail the surface on recovery), 6-kick switch (kick on your side, switch after 6 kicks), single-arm freestyle.",
-      "Main: 4–6 × 100 easy freestyle with 20–30 s rest, or 10–15 minutes continuous easy.",
-      "Cool-down: 100–200 m easy.",
+      "Warm-up: 200–400 m easy freestyle (or 4–8 × 50), then 4 × 50 as 25 drill / 25 easy with 15–20 s rest.",
+      "Drills to rotate: catch-up, fingertip drag, 6-kick switch, single-arm freestyle.",
+      "Main set: 4–8 × 100 easy–steady freestyle with 20–30 s rest, or 12–20 minutes continuous aerobic.",
+      "Cool-down: 100–200 m easy, long strokes.",
     ],
-    targets: [["Effort", "Easy, smooth, long strokes"], ["Track", "Swolf (lower = more efficient)"]],
+    sets: [
+      ["Warm-up", "200–400 m easy + 4 × 50 drill/swim"],
+      ["Main", "4–8 × 100 aerobic or 12–20' continuous"],
+      ["Cool-down", "100–200 m easy"],
+    ],
+    targets: [["Effort", "Easy–steady, smooth strokes"], ["Track", "Swolf (lower = more efficient)"]],
   },
   swimB: {
-    title: "Short technique swim: Session B (20–30 min)",
-    why: "Technique work when you're tired or short on time. Low effort, lots of focus on form; it makes the main swim more efficient.",
+    title: "Technique swim (short set)",
+    why: "Technique work when you're tired or short on time. Low effort, lots of focus on form.",
     how: [
-      "200 m very easy to warm up.",
-      "6 × 50 as 25 drill / 25 swim, 20 s rest. Pick 2 drills: catch-up and 6-kick switch.",
-      "4 × 50 kick with a board, relaxed, kicking from the hips.",
-      "4 × 50 counting strokes per length; try to take 1–2 fewer strokes with a longer glide.",
-      "100 m easy to finish.",
+      "Warm-up: 200 m very easy.",
+      "Main: 6 × 50 as 25 drill / 25 swim (20 s rest), then 4 × 50 kick, then 4 × 50 stroke-count.",
+      "Cool-down: 100 m easy.",
     ],
-    targets: [["Effort", "Very easy"], ["Focus", "Long body, relaxed breathing, glide"]],
+    sets: [
+      ["Warm-up", "200 m easy"],
+      ["Main", "Drill 50s → kick 50s → stroke-count 50s"],
+      ["Cool-down", "100 m easy"],
+    ],
+    targets: [["Effort", "Very easy · RPE 2–3"], ["Focus", "Long body, relaxed breathing, glide"]],
+  },
+  swimRace: {
+    title: "Race-pace / CSS swim set",
+    why: "Short controlled race-pace work so open-water pace feels familiar without leaving you flat.",
+    how: [
+      "Warm-up: 300–400 m easy + 4 × 50 build.",
+      "Main: 6–10 × 100 at race / CSS pace with 15–25 s rest, or 8–12 × 50 race-pace with equal easy.",
+      "Hold even splits; stop a rep early if form collapses.",
+      "Cool-down: 200 m easy.",
+    ],
+    sets: [
+      ["Warm-up", "300–400 m + 4 × 50 build"],
+      ["Main", "6–10 × 100 CSS / race pace"],
+      ["Cool-down", "200 m easy"],
+    ],
+    targets: [["Effort", "Controlled race pace"], ["Cue", "Even splits, quiet kick"]],
   },
   bike: {
     title: "Easy bike",
-    why: "Aerobic volume and a head start on 70.3 bike fitness without running impact. Easy only until the marathon.",
+    why: "Aerobic volume for the bike leg without stealing from key run or brick sessions.",
     how: [
       "Conversational the whole way: you could chat with a riding partner.",
-      "Spin a light gear at 85–95 rpm rather than pushing big gears.",
+      "If you have a power meter: stay in Z2 (~55–75% FTP). If not: RPE 3/10, nose-breathing on flats.",
+      "Spin 85–95 rpm rather than pushing big gears.",
       "No intervals, no hammer group rides.",
-      "If your legs are heavy from the long run, shorten it or skip it.",
     ],
-    targets: [["Effort", "Easy, RPE 3/10"], ["Cadence", "85–95 rpm"]],
+    targets: [["Power / RPE", "Z2 or RPE 3/10"], ["Cadence", "85–95 rpm"]],
+  },
+  bikeQuality: {
+    title: "Quality / sweet-spot bike",
+    why: "Raises sustainable race power so 70.3 bike pace stays controlled.",
+    how: [
+      "Warm-up 10–15 minutes easy spinning.",
+      "Main: 2–3 × 10–20 minutes at sweet-spot (~85–95% FTP) or RPE 5–6 if no meter, with 5 minutes easy between.",
+      "Cool-down easy. Keep cadence smooth; sit for most of the work.",
+      "Fuel if the ride is over 75 minutes.",
+    ],
+    targets: [["Power / RPE", "~85–95% FTP or RPE 5–6"], ["Cadence", "85–95 rpm"]],
+  },
+  bikeLong: {
+    title: "Long / race-pace ride",
+    why: "The key endurance session on the bike: time in aero, fueling practice, and race-effort feel.",
+    how: [
+      "Mostly aerobic (Z2 / RPE 3–4). In build/peak, add race-pace blocks (Z3 or RPE 5–6) in the second half.",
+      "Practise race nutrition: 40–70 g carbs / hour from early in the ride.",
+      "If no power meter: use RPE + breath — still able to speak short sentences at race effort.",
+      "Dismount smoothly if a brick run follows.",
+    ],
+    targets: [["Power / RPE", "Z2 base · race blocks Z3 / RPE 5–6"], ["Fuel", "40–70 g carbs / hour"]],
+  },
+  brick: {
+    title: "Bike → run brick (T2 practice)",
+    why: "Teaches your legs to run off the bike and rehearses transition so race-day T2 is automatic.",
+    how: [
+      "Ride the planned bike block at the effort on the card (easy or race-sim).",
+      "Transition practice: rack quickly, helmet off, shoes on, start the run within 1–2 minutes.",
+      "First 5–8 minutes of the run: settle — short stride, high cadence, ignore the heavy legs.",
+      "Then hold easy→steady. Do not chase run PR pace off the bike.",
+      "Note what you want in T2 bags (gels, shoes, salt) while it is fresh.",
+    ],
+    targets: [
+      ["Bike", "As labelled · power Z2–race or RPE"],
+      ["T2", "Under ~2 minutes in training"],
+      ["Run", "Easy→steady · Brick run effort"],
+    ],
+  },
+  transition: {
+    title: "Transition practice (T1 / T2)",
+    why: "Race-week speed comes from calm, practised routines — not from fitness on the day.",
+    how: [
+      "T1: swim exit → goggles/cap off → helmet on before touching the bike → mount line.",
+      "T2: dismount → rack bike → helmet off → run shoes → start jogging while fastening.",
+      "Lay bags out the night before; do one full dry run in kit.",
+      "Race morning: only open what you need; no new gear.",
+    ],
+    targets: [["T1 focus", "Helmet before bike"], ["T2 focus", "Shoes + go"]],
+  },
+  raceTri: {
+    title: "Triathlon race day",
+    why: "Swim controlled, bike steady, run patient. Trust the taper and the brick rehearsals.",
+    how: [
+      "Swim: settle in 200–400 m; sight often; do not race the first buoy.",
+      "T1 calm. Bike: first 20–30 minutes easier than goal; then hold race power / RPE.",
+      "Fuel on the bike so the run starts topped up. T2: shoes on, start easy.",
+      "Run: first 2–3 km settle; then goal effort. Walk aid stations if that is your plan.",
+    ],
+    targets: [["Swim", "Controlled race pace"], ["Bike", "Race power / RPE"], ["Run", "Patient goal effort"]],
   },
   rest: {
     title: "Rest day",
@@ -286,11 +370,13 @@ function stampPaces(guide) {
     "Easy zone": `${displayPaceRange(z.easy.range)} ${unit}`,
     "Steady / cruise": `${displayPaceRange(z.steady.range)} ${unit}`,
     "Marathon pace": `${displayPaceRange(z.mp.range)} ${unit}`,
+    "Brick run effort": `${displayPaceRange(z.easy.range)} → ${displayPaceRange(z.steady.range)} ${unit}`,
     "Aspirational from plan paces": `${raceGoalClock()} (aspirational)`,
     "See pace guide": raceSolidBand(),
   };
   return {
     ...guide,
+    sets: guide.sets || null,
     targets: (guide.targets || []).map(([k, v]) => [k, map[v] || v]),
   };
 }
@@ -303,16 +389,32 @@ function strengthGuideForAccess() {
 }
 
 function guidesFor(kind, label) {
-  const l = label.toLowerCase();
+  const l = String(label || "").toLowerCase();
+  const sport = window.CURRENT_PLAN?.sport || "run";
   let out;
-  if (kind === "race") out = [GUIDES.race];
-  else if (kind === "event") out = [GUIDES.event];
+  if (kind === "race") {
+    out = sport === "triathlon" ? [GUIDES.raceTri, GUIDES.transition] : [GUIDES.race];
+  } else if (kind === "brick" || (kind === "bike" && /brick|t2/i.test(l))) {
+    out = [GUIDES.brick];
+    if (/t2|transition|mini/i.test(l)) out.push(GUIDES.transition);
+  } else if (kind === "event") out = [GUIDES.event];
   else if (kind === "travel") out = /ski/.test(l) ? [GUIDES.ski] : [GUIDES.travel];
-  else if (kind === "bike") out = [GUIDES.bike];
-  else if (kind === "walkswim") out = [GUIDES.swimA, GUIDES.walk];
+  else if (kind === "bike") {
+    if (/long|race-pace|race pace|endurance/i.test(l)) out = [GUIDES.bikeLong];
+    else if (/quality|sweet|steady|key|tempo/i.test(l)) out = [GUIDES.bikeQuality];
+    else out = [GUIDES.bike];
+  } else if (kind === "swim") {
+    if (/race-pace|race pace|css|threshold|pace set/i.test(l)) out = [GUIDES.swimRace];
+    else if (/technique|feel|short|drill/i.test(l)) out = [GUIDES.swimB];
+    else out = [GUIDES.swimA];
+  } else if (kind === "walkswim") out = [GUIDES.swimA, GUIDES.walk];
   else if (kind === "walk") out = /swim/.test(l) ? [GUIDES.walk, { ...GUIDES.swimB, title: GUIDES.swimB.title + " (optional)" }] : [GUIDES.walk];
-  else if (kind === "rest") out = /backup/.test(l) ? [GUIDES.backup] : /shakeout/.test(l) ? [GUIDES.rest, { ...GUIDES.easy, title: "Optional 20' shakeout" }] : [GUIDES.rest];
-  else if (kind === "long") {
+  else if (kind === "rest") {
+    if (/backup/.test(l)) out = [GUIDES.backup];
+    else if (/bag|checklist|early night|t1|t2/i.test(l)) out = [GUIDES.rest, GUIDES.transition];
+    else if (/shakeout/.test(l)) out = [GUIDES.rest, { ...GUIDES.easy, title: "Optional 20' shakeout" }];
+    else out = [GUIDES.rest];
+  } else if (kind === "long") {
     out = [/@ ?mp/.test(l) ? GUIDES.longMP : GUIDES.long];
     if (/fuel/.test(l)) out.push(GUIDES.fuel);
   } else if (kind === "quality") {
@@ -364,6 +466,22 @@ function finishSegments(raw, totalKm) {
 function sessionProfile(kind, label, km) {
   const l = String(label || "").toLowerCase();
   const total = Number(km) || 0;
+
+  if (kind === "brick" || /brick|t2/i.test(l)) {
+    const runMatch = l.match(/(\d+)\s*[–-]\s*(\d+)'\s*(?:easy\s*)?run|(\d+)'\s*(?:t2\s*)?run/);
+    const runLo = Number(runMatch?.[1] || runMatch?.[3] || 12);
+    const runHi = Number(runMatch?.[2] || runLo);
+    const runMin = (runLo + runHi) / 2;
+    const runKm = Math.max(1.5, minutesToKm(runMin, "easy"));
+    return {
+      title: "Brick · bike then run",
+      segments: finishSegments([
+        { name: "Bike (as planned)", minutes: 45, zone: "easy" },
+        { name: "T2 run settle", minutes: Math.min(8, runMin * 0.4), zone: "easy" },
+        { name: "Off-bike run", km: Math.max(0.8, runKm - minutesToKm(Math.min(8, runMin * 0.4), "easy")), zone: "steady" },
+      ]),
+    };
+  }
 
   if (/strides/.test(l) && (kind === "run" || kind === "quality")) {
     const reps = Number((l.match(/(\d+)\s*[×x]\s*20/) || [])[1] || 6);
@@ -492,7 +610,12 @@ function busySuggestion(week, i) {
     const swimDay = free.find((d) => d.kind === "walk");
     return swimDay ? `Suggestion: move the swim to ${dayName(week, swimDay.i)}, or skip it this week. Runs take priority.` : "Suggestion: skip the swim this week. Runs take priority.";
   }
-  if (kind === "bike") return "Suggestion: skip it. The bike is the first thing to cut in the marathon block.";
+  if (kind === "brick") {
+    if (free.length) return `This is a key brick (bike→run). Suggestion: move it to ${dayName(week, free[0].i)} so you still practise T2 this week.`;
+    return "This is a key brick. If you cannot move it, do a shorter version: 30–45' easy bike + 8–12' run.";
+  }
+  if (kind === "bike") return "Suggestion: skip it if the week is overloaded — unless it is a long or key ride, which should move before it is dropped.";
+  if (kind === "swim") return "Suggestion: move the swim to another free day, or keep a short technique set if time is tight.";
   return "Nothing to move: no training was planned today.";
 }
 
@@ -618,7 +741,7 @@ function bikeFeedback(act, plan, acts) {
   if (mins) bits.push(`in ${Math.round(mins)} minutes`);
   if (act.pace) bits.push(`at ${act.pace} km/h average`);
   out.push(`${bits.join(" ")}.`);
-  if (plan && plan.kind !== "bike") {
+  if (plan && plan.kind !== "bike" && plan.kind !== "brick") {
     const firstBike = Array.isArray(window.WEEKS) && window.PLAN_START
       ? window.WEEKS.findIndex((w) => w.bike && w.bike !== "—")
       : -1;
@@ -626,11 +749,25 @@ function bikeFeedback(act, plan, acts) {
     out.push(bikeFrom && act.date < bikeFrom
       ? `The bike isn't in the plan until ${bikeFrom}, so keep these occasional for now.`
       : "This ride wasn't on today's plan.");
+  } else if (plan?.kind === "brick") {
+    out.push(`Brick bike leg: ${plan.label.toLowerCase()}. Keep the run easy→steady off the bike.`);
+  } else if (plan) {
+    out.push(`Planned: ${plan.label.toLowerCase()}.`);
   }
-  else if (plan) out.push(`Planned: ${plan.label.toLowerCase()}.`);
+  const power = num(act.raw?.["Avg Power"]);
+  if (power > 0) out.push(`Average power ${Math.round(power)} W — use RPE alongside power when legs feel heavier than the number.`);
+  else if (plan && (plan.kind === "bike" || plan.kind === "brick")) {
+    out.push("No power meter reading: pace this ride by RPE and cadence (easy ~3/10, sweet-spot ~5–6/10).");
+  }
   if (te != null) out.push(teText(te));
-  if (te >= 4) out.push("Through the marathon block, bike rides should stay easy (TE under ~3.5) so they don't take energy from running.");
-  if (acts.some((a) => a.cat === "run" && a.date === act.date && a.dist >= 8)) out.push("Same day as a longer run, which adds a lot of load in one day.");
+  if (te >= 4 && plan && !/race|quality|sweet|key|brick/i.test(plan.label || "")) {
+    out.push("That TE is high for an easy spin — ease gears or shorten next time.");
+  }
+  if (acts.some((a) => a.cat === "run" && a.date === act.date)) {
+    out.push(plan?.kind === "brick"
+      ? "Run logged the same day — that completes the brick."
+      : "Same day as a run, which stacks load; keep one of the sessions easy.");
+  }
   return out.join(" ");
 }
 
@@ -1179,14 +1316,87 @@ window.racePrediction = function racePrediction(acts, now) {
   const usedHr = runSamples.some((s) => s.fraction != null);
   const phys = trainingMetrics();
   const note = incomplete
-    ? "Run fitness is solid; log swims and rides for a full triathlon estimate."
+    ? "Per-leg times fill in as you log swims and rides; run estimate is already active."
     : !runSamples.length && !swimSamples.length && !bikeSamples.length
       ? "From your plan race pace until there are timed sessions to work from."
-      : phys.vo2_run
-        ? "From recent runs, with heart rate as the effort, blended with Garmin VO2max. Projection assumes you follow the rest of the plan."
-        : usedHr
-          ? "From recent runs, with heart rate as the effort. A comfortable long run is not scored as race pace. Projection assumes you follow the rest of the plan."
-          : "From logged sessions. Projection assumes you follow the rest of the plan.";
+      : spec.sport === "triathlon"
+        ? "Per-leg estimates from recent swim, bike and run sessions. Projection assumes you follow the rest of the plan."
+        : phys.vo2_run
+          ? "From recent runs, with heart rate as the effort, blended with Garmin VO2max. Projection assumes you follow the rest of the plan."
+          : usedHr
+            ? "From recent runs, with heart rate as the effort. A comfortable long run is not scored as race pace. Projection assumes you follow the rest of the plan."
+            : "From logged sessions. Projection assumes you follow the rest of the plan.";
+
+  function scaleLeg(sec) {
+    if (!(sec > 0)) return null;
+    return {
+      currentSec: sec,
+      projectedSec: sec * (1 - gain),
+      solidLo: sec * (1 - gain * 0.35),
+      solidHi: sec * (1 + Math.max(0.02, gain * 0.25)),
+    };
+  }
+
+  const legs = spec.sport === "triathlon"
+    ? {
+      swim: scaleLeg(current.swimSec),
+      bike: scaleLeg(current.bikeSec),
+      run: scaleLeg(current.runSec),
+      transitions: { currentSec: transSec, projectedSec: transSec },
+    }
+    : null;
+
+  const pacingBands = (() => {
+    if (spec.sport === "triathlon" && legs) {
+      const bands = [];
+      if (legs.swim && spec.swimM) {
+        const per = (sec) => fmtPace(sec / (spec.swimM / 100));
+        bands.push({
+          leg: "Swim",
+          goal: `${per(legs.swim.projectedSec)}/100m`,
+          solid: `${per(legs.swim.solidLo)}–${per(legs.swim.solidHi)}/100m`,
+          time: fmtRaceClock(legs.swim.projectedSec),
+        });
+      }
+      if (legs.bike && spec.bikeKm) {
+        const kph = (sec) => (spec.bikeKm / (sec / 3600)).toFixed(1);
+        bands.push({
+          leg: "Bike",
+          goal: `${kph(legs.bike.projectedSec)} km/h`,
+          solid: `${kph(legs.bike.solidHi)}–${kph(legs.bike.solidLo)} km/h`,
+          time: fmtRaceClock(legs.bike.projectedSec),
+        });
+      }
+      if (legs.run && spec.targetRunKm) {
+        const per = (sec) => fmtPace(sec / spec.targetRunKm);
+        bands.push({
+          leg: "Run",
+          goal: `${per(legs.run.projectedSec)}/km`,
+          solid: `${per(legs.run.solidLo)}–${per(legs.run.solidHi)}/km`,
+          time: fmtRaceClock(legs.run.projectedSec),
+        });
+      }
+      if (transSec) {
+        bands.push({
+          leg: "T1+T2",
+          goal: fmtRaceClock(transSec),
+          solid: `${fmtRaceClock(transSec - 60)}–${fmtRaceClock(transSec + 120)}`,
+          time: fmtRaceClock(transSec),
+        });
+      }
+      return bands;
+    }
+    if (spec.sport === "run" && spec.targetRunKm && currentSec) {
+      const per = (sec) => fmtPace(sec / spec.targetRunKm);
+      return [{
+        leg: "Run",
+        goal: `${per(projectedSec)}/km`,
+        solid: `${per(optimisticSec)}–${per(pessimisticSec)}/km`,
+        time: fmtRaceClock(projectedSec),
+      }];
+    }
+    return null;
+  })();
 
   return {
     spec,
@@ -1203,6 +1413,8 @@ window.racePrediction = function racePrediction(acts, now) {
     projectedPaceSec: (current.paceSec || currentSec) * (projectedSec / currentSec),
     optimisticSec,
     pessimisticSec,
+    legs,
+    pacingBands,
     complete: !incomplete,
     source: runSamples.length || swimSamples.length || bikeSamples.length ? "activities" : "plan",
   };
@@ -1210,15 +1422,41 @@ window.racePrediction = function racePrediction(acts, now) {
 
 window.fmtRaceClock = fmtRaceClock;
 
+window.raceWeekChecklist = function raceWeekChecklist(now = typeof today === "function" ? today() : new Date()) {
+  const plan = window.CURRENT_PLAN || {};
+  if (plan.sport !== "triathlon") return null;
+  if (!hasPlan || !hasPlan()) return null;
+  const race = typeof RACE !== "undefined" ? RACE : parseDate(window.MARATHON_DATE);
+  if (!race || Number.isNaN(race.getTime())) return null;
+  const daysLeft = daysBetween(now, race);
+  if (daysLeft > 10 || daysLeft < -1) return null;
+  const wk = typeof weekOf === "function" ? weekOf(now) : null;
+  const week = Array.isArray(window.WEEKS) && wk ? window.WEEKS[wk - 1] : null;
+  const items = [
+    { id: "bags", text: "Lay out T1 and T2 bags (helmet, shoes, nutrition, spare tube)" },
+    { id: "dry-run", text: "One dry-run transition: helmet before bike; shoes then go" },
+    { id: "nutrition", text: "Count race gels / bottles to match your long-ride fueling" },
+    { id: "openers", text: "Keep sessions short — openers and the mini brick only" },
+    { id: "sleep", text: "Protect sleep two nights before race day" },
+    { id: "course", text: "Check swim start, mount line, and bag drop times" },
+  ];
+  return {
+    daysLeft,
+    eventName: plan.event_name || "Race",
+    weekFocus: week?.focus || null,
+    items,
+  };
+};
+
 // ---------- Week adaptation (missed-week / rescue / niggle) ----------
 
-const ADAPT_KEY_KINDS = new Set(["long", "quality", "race", "event"]);
+const ADAPT_KEY_KINDS = new Set(["long", "quality", "race", "event", "brick"]);
 
 function isKeySession(kind, label = "") {
   if (ADAPT_KEY_KINDS.has(kind)) return true;
   const blob = String(label || "");
-  if (kind === "bike" && /long|brick|key|endurance/i.test(blob)) return true;
-  if (kind === "swim" && /key|main|css|threshold|quality/i.test(blob)) return true;
+  if (kind === "bike" && /long|brick|key|endurance|race-pace|sweet/i.test(blob)) return true;
+  if (kind === "swim" && /key|main|css|threshold|quality|race-pace/i.test(blob)) return true;
   return false;
 }
 
@@ -1376,6 +1614,13 @@ function buildRescueProposal(assess) {
       actions.push(`Drop quality on ${DAY_NAMES()[d.i]} (protect the long)`);
       return;
     }
+    if (d.kind === "brick") {
+      // Keep a shortened brick when the week is messy — T2 practice still matters for 70.3.
+      const shortened = ["brick", "Short brick · 30–45' easy bike + 8–12' run"];
+      nextDays[d.i] = shortened;
+      actions.push(`Keep a short brick on ${DAY_NAMES()[d.i]}`);
+      return;
+    }
     if ((d.kind === "bike" || d.kind === "swim" || d.kind === "walkswim") && (missedKeys.length || protectLong)) {
       nextDays[d.i] = restDay("Rest — rescue week");
       actions.push(`Drop ${d.kind} on ${DAY_NAMES()[d.i]}`);
@@ -1448,9 +1693,14 @@ function buildRebuildProposal(assess, prevAssess) {
       if (d.kind === "quality") {
         nextDays[d.i] = restDay("Rest — rebuild");
         actions.push(`Drop remaining quality on ${DAY_NAMES()[d.i]}`);
-      } else if (d.kind === "long" || d.kind === "event" || d.kind === "race") {
-        nextDays[d.i] = trimLongDay(week.days[d.i], 0.85);
-        actions.push(`Keep ${DAY_NAMES()[d.i]} as the priority session (eased)`);
+      } else if (d.kind === "long" || d.kind === "event" || d.kind === "race" || d.kind === "brick") {
+        if (d.kind === "brick") {
+          nextDays[d.i] = ["brick", "Short brick · 30–45' easy bike + 8–12' run"];
+          actions.push(`Keep a short brick on ${DAY_NAMES()[d.i]}`);
+        } else {
+          nextDays[d.i] = trimLongDay(week.days[d.i], 0.85);
+          actions.push(`Keep ${DAY_NAMES()[d.i]} as the priority session (eased)`);
+        }
       } else if (d.kind === "run") {
         nextDays[d.i] = restDay("Rest — rebuild");
         actions.push(`Drop easy run on ${DAY_NAMES()[d.i]}`);
@@ -1502,6 +1752,9 @@ function buildNiggleProposal(week, now) {
     } else if (kind === "run") {
       nextDays[i] = asEasyDay(day);
       nextDays[i][1] = softenLabel(nextDays[i][1], "niggle");
+    } else if (kind === "brick") {
+      nextDays[i] = ["brick", "Easy brick · keep short · easy run off the bike"];
+      actions.push(`${DAY_NAMES()[i]} brick shortened / easy`);
     } else if (kind === "bike" && isKeySession(kind, day[1])) {
       const eased = cloneDay(day);
       eased[1] = softenLabel(eased[1], "niggle");

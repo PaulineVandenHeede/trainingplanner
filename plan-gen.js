@@ -575,19 +575,55 @@ function bikeLabel(sport, phase, bikeKm) {
 }
 
 function brickLabel(phase, band, wk) {
-  if (phase === "Taper") return "Short brick: easy bike + 8–12' run";
+  if (phase === "Taper") return "Short brick · easy bike + 8–12' T2 run";
   if (phase === "Peak") {
-    if (band === "full") return "Race-sim brick: long ride + 25–40' run";
-    if (band === "half") return "Race-sim brick: 2–3 h bike + 20–35' run";
-    return "Brick: 60–90' bike + 15–25' run";
+    if (band === "full") return "Race-sim brick · long ride + 25–40' run";
+    if (band === "half") return "Race-sim brick · 2–3 h bike + 20–35' run";
+    return "Brick · 60–90' bike + 15–25' run";
   }
   if (phase === "Build") {
-    if (band === "half" || band === "full") return "Brick: 75–120' bike + 15–25' easy run";
-    return "Brick: 45–75' bike + 10–20' run";
+    if (band === "half" || band === "full") return "Brick · 75–120' bike + 15–25' easy run";
+    return "Brick · 45–75' bike + 10–20' run";
   }
   // Base / Rebuild: infrequent short bricks
-  if (wk % 2 === 0) return "Easy brick every other week: 45–75' bike + 10–15' run";
+  if (wk % 2 === 0) return "Easy brick · 45–75' bike + 10–15' run";
   return null;
+}
+
+function swimSetLabel(phase, n, band) {
+  if (phase === "Taper") {
+    return n === 0
+      ? "Swim · WU + short race-pace opens + CD"
+      : "Swim · technique feel · keep it short";
+  }
+  if (phase === "Build" || phase === "Peak") {
+    if (n === 0) return "Swim · WU drills + aerobic main + CD";
+    if (band === "half" || band === "full") {
+      return n === 1
+        ? "Swim · WU + race-pace 100s / CSS sets + CD"
+        : "Swim · endurance continuous + form CD";
+    }
+    return "Swim · WU + threshold / pace sets + CD";
+  }
+  return n === 0
+    ? "Swim · WU drills + easy endurance + CD"
+    : "Swim · technique focus (catch / glide) + easy";
+}
+
+function bikeSessionLabel(sport, phase, band, isKey, distances) {
+  if (phase === "Taper") return isKey ? "Easy spin + short race-pace opens" : "Recovery spin · RPE 2–3";
+  if (phase === "Build" || phase === "Peak") {
+    if (isKey) {
+      if (band === "full" || band === "half") {
+        return "Long aerobic / race-pace ride · power Z2–Z3 or RPE 4–6";
+      }
+      return "Key ride · steady / sweet-spot · power or RPE 5–6";
+    }
+    return "Steady / sweet-spot · ~65–80% FTP or RPE 4–5";
+  }
+  return isKey
+    ? bikeLabel(sport, phase, distances.bike)
+    : "Easy aerobic ride · Z2 / RPE 3 · 85–95 rpm";
 }
 
 function splitRunKm(total, longKm, hasQuality, nDays) {
@@ -879,16 +915,48 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   const set = (i, kind, label, run) => { days[i] = run != null ? [kind, label, run] : [kind, label]; };
 
   if (isRaceWeek) {
-    for (let i = 0; i < 7; i++) {
-      if (i === raceDay) {
-        const name = distances.label || "Race";
-        if (sport === "swim") set(i, "race", `${name} ${distances.swim} m`);
-        else if (sport === "bike") set(i, "race", `${name} ${fmtKmLabel(distances.bike)} km`);
-        else if (sport === "triathlon") set(i, "race", `${name}`, distances.run);
-        else set(i, "race", `${name} ${fmtKmLabel(distances.run)} km`, distances.run);
-      } else if (i === Math.max(0, raceDay - 3)) set(i, "run", "Shakeout 4–6 easy", 5);
-      else if (i < raceDay && sport !== "swim" && sport !== "bike" && i % 2 === 0) set(i, "run", "Easy 4–5", 4);
-      else set(i, "rest", i === raceDay - 1 ? "Rest / 20' shakeout" : "Rest");
+    const name = distances.label || "Race";
+    if (sport === "swim") set(raceDay, "race", `${name} ${distances.swim} m`);
+    else if (sport === "bike") set(raceDay, "race", `${name} ${fmtKmLabel(distances.bike)} km`);
+    else if (sport === "triathlon") set(raceDay, "race", `${name}`, distances.run);
+    else set(raceDay, "race", `${name} ${fmtKmLabel(distances.run)} km`, distances.run);
+
+    if (sport === "triathlon") {
+      const used = new Set([raceDay]);
+      // Closest day before race: bag check. If only one day exists (e.g. Tue race),
+      // fold a tiny T2 opener into that day so transition practice still happens.
+      if (raceDay === 1) {
+        set(0, "brick", "Mini T2 · 20–30' easy bike + 8' run · bag check");
+        used.add(0);
+      } else if (raceDay > 1) {
+        const preRace = [
+          [raceDay - 1, ["rest", "Rest · bag check / early night"]],
+          [raceDay - 2, ["brick", "Mini T2 brick · 20–30' easy bike + 8–12' run"]],
+          [raceDay - 3, ["swim", "Swim · short feel + 4–6 × race-pace 50s"]],
+          [raceDay - 4, ["run", "Shakeout 4–5 easy + strides", 5]],
+        ];
+        for (const [i, day] of preRace) {
+          if (i < 0 || used.has(i)) continue;
+          set(i, day[0], day[1], day[2]);
+          used.add(i);
+        }
+      }
+      for (let i = 0; i < 7; i++) {
+        if (used.has(i)) continue;
+        if (i < raceDay && i % 2 === 0) set(i, "bike", "Easy spin 30–40' · RPE 2–3");
+        else set(i, "rest", "Rest");
+      }
+    } else {
+      for (let i = 0; i < 7; i++) {
+        if (i === raceDay) continue;
+        if (i === Math.max(0, raceDay - 3) && sport !== "swim" && sport !== "bike") {
+          set(i, "run", "Shakeout 4–6 easy", 5);
+        } else if (i < raceDay && sport !== "swim" && sport !== "bike" && i % 2 === 0) {
+          set(i, "run", "Easy 4–5", 4);
+        } else {
+          set(i, "rest", i === raceDay - 1 ? "Rest / 20' shakeout" : "Rest");
+        }
+      }
     }
     return days;
   }
@@ -942,7 +1010,10 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   const addOn = (i, extra) => {
     const [kind, label, run] = days[i];
     if (kind === "rest") set(i, extra.kind, extra.label, extra.km);
-    else days[i] = [kind, `${label} + ${extra.short}`, run];
+    else {
+      const addLabel = extra.detail || extra.short;
+      days[i] = [kind, `${label} + ${addLabel}`, run];
+    }
   };
 
   if (!runIdx.includes(4) && !swimDays.includes(4) && !bikeDays.includes(4)) set(4, "rest", "Rest");
@@ -963,27 +1034,28 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
     : null;
 
   swimDays.forEach((i, n) => {
-    const technique = phase === "Base" || phase === "Rebuild" || n === 0;
-    const label = technique
-      ? (phase === "Taper" ? "Swim: short technique + feel" : "Swim technique + easy endurance")
-      : (phase === "Build" || phase === "Peak" ? "Swim endurance / race-pace sets" : "Swim aerobic");
+    const label = sport === "triathlon" || sport === "swim"
+      ? swimSetLabel(phase, n, band)
+      : (phase === "Taper" ? "Swim: short technique + feel" : "Swim technique + easy endurance");
     addOn(i, { kind: "swim", label, short: "swim", km: undefined });
   });
   bikeDays.forEach((i, n) => {
-    const isKey = i === brickBikeDay || n === bikeDays.length - 1;
-    let label;
-    if (sport === "triathlon" && brick && i === brickBikeDay) {
-      label = brick;
-    } else if (phase === "Taper") {
-      label = isKey ? "Easy spin + short opens" : "Recovery spin";
-    } else if (phase === "Build" || phase === "Peak") {
-      label = isKey
-        ? (band === "full" || band === "half" ? "Long aerobic / race-pace ride" : "Key ride")
-        : "Steady / sweet-spot ride";
-    } else {
-      label = isKey ? bikeLabel(sport, phase, distances.bike) : "Easy aerobic ride";
+    const isBrickDay = !!(sport === "triathlon" && brick && i === brickBikeDay);
+    const isKey = isBrickDay || n === bikeDays.length - 1;
+    if (isBrickDay) {
+      const [kind, label, run] = days[i];
+      if (kind === "rest") set(i, "brick", brick);
+      else days[i] = ["brick", `${label} · ${brick}`, run];
+      return;
     }
-    addOn(i, { kind: "bike", label, short: i === brickBikeDay && brick ? "brick" : "bike", km: undefined });
+    const label = bikeSessionLabel(sport, phase, band, isKey, distances);
+    addOn(i, {
+      kind: "bike",
+      label,
+      short: "bike",
+      detail: isKey ? label : (sport === "triathlon" || sport === "bike" ? label : "bike"),
+      km: undefined,
+    });
   });
   strengthDays.forEach((i) => {
     addOn(i, { kind: days[i][0] === "rest" ? "run" : days[i][0], label: "Strength", short: "strength", km: days[i][2] });
@@ -1183,14 +1255,27 @@ function buildRoadmap(after, race, eventName) {
 }
 
 function defaultPaces(sport) {
-  if (sport === "swim") return [["Easy", "Conversational effort", "Most of the volume"], ["Threshold", "Controlled hard", "Short sets"]];
-  if (sport === "bike") return [["Easy", "Z2 / can talk", "Most rides"], ["Long", "Steady endurance", "Weekend ride"]];
+  if (sport === "swim") {
+    return [
+      ["Easy", "Smooth strokes, full sentences if talking between sets", "Warm-up, cool-down, most volume"],
+      ["Threshold / CSS", "Controlled hard; even splits", "Main-set 100s–400s"],
+      ["Race pace", "Sustainable open-water race effort", "Short opens in build/taper"],
+    ];
+  }
+  if (sport === "bike") {
+    return [
+      ["Easy / Z2", "~55–75% FTP or RPE 3 · can talk · 85–95 rpm", "Most rides"],
+      ["Steady / sweet-spot", "~85–95% FTP or RPE 5–6", "Build quality"],
+      ["Long", "Steady endurance; fuel as race day", "Weekend ride"],
+    ];
+  }
   if (sport === "triathlon") {
     return [
-      ["Easy / aerobic", "Can talk in full sentences (Z1–Z2)", "Most swim/bike/run volume — especially base"],
-      ["Steady / tempo", "Controlled hard, ~70–85% threshold", "Build-phase bike/run; beginner 70.3 often stays here"],
-      ["Race pace", "Sustainable 70.3 / race effort", "Short sets in build; longer bricks in peak"],
-      ["Brick run", "Easy→steady off the bike", "Practise T2; keep early minutes relaxed"],
+      ["Easy / aerobic", "Can talk · bike Z2 / RPE 3 · swim smooth", "Most swim/bike/run volume — especially base"],
+      ["Steady / tempo", "Bike ~70–85% FTP or RPE 4–5 · run controlled", "Build-phase bike/run; beginner 70.3 often stays here"],
+      ["Race pace", "Sustainable 70.3 effort per leg", "Short swim/bike sets in build; longer bricks in peak"],
+      ["Bike power / RPE", "Easy Z2 · sweet-spot ~85–90% FTP · or RPE 3 / 5–6 if no meter", "Use power when you have it; otherwise cadence + RPE"],
+      ["Brick run", "Easy→steady off the bike (T2)", "Practise transition; keep early minutes relaxed"],
       ["Strides / opens", "Fast but relaxed", "Keep neuromuscular feel in taper"],
     ];
   }
@@ -1357,9 +1442,11 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
       }
     } else if (brick && (phase.name === "Build" || phase.name === "Peak")) {
       note = `Key transition work this week: ${brick}. Practise fueling on the long ride.`;
+    } else if (!isFitness && isRaceWeek && sport === "triathlon") {
+      note = "Race week: short openers only, one mini T2 brick, then rest. Use the race-week checklist (bags, nutrition, transitions).";
     } else if (!isFitness && phase.name === "Taper" && wk === (taper ? taper.from : n - 1)) {
       note = sport === "triathlon"
-        ? "Taper starts: cut volume sharply, keep swim/bike/run frequency, and include short race-pace reminders."
+        ? "Taper starts: cut volume sharply, keep swim/bike/run frequency, short race-pace opens, and practise T1/T2 once."
         : "Taper starts: reduce volume, keep some sharpness.";
     }
     return {

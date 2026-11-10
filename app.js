@@ -9,7 +9,8 @@ function KIND_LABEL(kind) {
   if (typeof window.kindLabel === "function") return window.kindLabel(kind);
   const fallback = {
     run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
-    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", rest: "Rest", travel: "Travel",
+    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", brick: "Brick",
+    rest: "Rest", travel: "Travel",
   };
   return fallback[kind] || kind || "";
 }
@@ -19,6 +20,7 @@ function tt(key, vars) {
 const KIND_MATCH = {
   run: ["run"], quality: ["run"], long: ["run"], event: ["run"], race: ["run"],
   walk: ["walk"], swim: ["swim"], walkswim: ["swim"], bike: ["bike"],
+  brick: ["bike", "run"],
 };
 
 // Activity ↔ planned session matching (sport + distance + soft time-of-day).
@@ -68,7 +70,7 @@ function matchTimeBonus(plan, act) {
   const hour = activityHour(act);
   if (hour == null || !plan) return 0;
   const kind = plan.kind;
-  if (kind === "long" || kind === "event" || kind === "race") {
+  if (kind === "long" || kind === "event" || kind === "race" || kind === "brick") {
     if (hour >= 5 && hour <= 11) return MATCH_TIME_MAX;
     if (hour >= 12 && hour <= 15) return 4;
     return 0;
@@ -123,6 +125,42 @@ function matchPlanDay(plan, dayActs) {
       match: null,
       unmatched: acts.slice(),
       byDatetime: {},
+    };
+  }
+
+  // Bricks need both bike and run legs when possible.
+  if (plan.kind === "brick") {
+    const byCat = { bike: null, run: null };
+    const byDatetime = {};
+    for (const cat of ["bike", "run"]) {
+      const scored = acts
+        .filter((a) => a.cat === cat)
+        .map((a) => ({ a, m: scoreActivityAgainstPlan(a, { ...plan, kind: cat === "bike" ? "bike" : "run" }) }))
+        .filter((row) => row.m)
+        .sort((x, y) => y.m.score - x.m.score);
+      if (scored[0]) {
+        byCat[cat] = scored[0];
+        byDatetime[scored[0].a.datetime] = { ...scored[0].m, leg: cat };
+      }
+    }
+    const parts = [byCat.bike, byCat.run].filter(Boolean);
+    const done = parts.length >= 2;
+    const partial = parts.length === 1;
+    const primary = byCat.bike || byCat.run;
+    const unmatched = acts.filter((a) => !byDatetime[a.datetime]);
+    const confidence = done
+      ? (parts.every((p) => p.m.confidence === "high") ? "high" : "medium")
+      : (partial ? "low" : null);
+    return {
+      trainable: true,
+      done,
+      partial,
+      matched: primary?.a || null,
+      match: primary
+        ? { ...primary.m, confidence: confidence || primary.m.confidence, brickLegs: parts.length }
+        : null,
+      unmatched,
+      byDatetime,
     };
   }
 
@@ -1020,10 +1058,15 @@ function statGrid(a) {
 }
 
 function guideBlock(g) {
+  const sets = Array.isArray(g.sets) && g.sets.length
+    ? `<div class="set-structure">${g.sets.map(([name, detail]) => `
+        <div><span>${esc(name)}</span><strong>${esc(detail)}</strong></div>`).join("")}</div>`
+    : "";
   return `
     <section class="guide">
       <h3>${esc(g.title)}</h3>
       <p>${esc(g.why)}</p>
+      ${sets}
       ${g.how.length ? `<ol>${g.how.map((h) => `<li>${esc(h)}</li>`).join("")}</ol>` : ""}
       ${g.targets.length ? `<div class="stats compact">${g.targets.map(([k, v]) => `<div><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join("")}</div>` : ""}
     </section>`;

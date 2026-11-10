@@ -406,7 +406,15 @@ function localProgressReport(acts, now) {
   if (pred && !pred.empty) {
     const cur = fmtRaceClock(pred.currentSec);
     const proj = fmtRaceClock(pred.projectedSec);
-    paras.push(`Current predicted finish is ${cur}. If you follow the rest of the plan, the projection is ${proj}.`);
+    if (pred.pacingBands?.length && pred.spec?.sport === "triathlon") {
+      const legs = pred.pacingBands
+        .filter((b) => b.leg !== "T1+T2")
+        .map((b) => `${b.leg} ${b.time} (${b.goal})`)
+        .join("; ");
+      paras.push(`Current predicted finish is ${cur} (projection ${proj}). Per-leg bands: ${legs}.`);
+    } else {
+      paras.push(`Current predicted finish is ${cur}. If you follow the rest of the plan, the projection is ${proj}.`);
+    }
   } else {
     paras.push("Log or import timed sessions so the race prediction can fill in.");
   }
@@ -770,8 +778,28 @@ function renderRacePrediction(acts, now, nested = false) {
           ${delta ? `<em>${esc(delta)}</em>` : ""}
         </div>
       </div>
+      ${renderPredictLegs(pred, mode)}
       <p class="muted small-text predict-note">${esc(pred.note)}</p>
     ${closeTag}`;
+}
+
+function renderPredictLegs(pred, mode) {
+  const bands = pred?.pacingBands;
+  if (!Array.isArray(bands) || !bands.length) return "";
+  if (pred.spec?.sport !== "triathlon" && bands.length < 2) return "";
+  return `
+    <div class="predict-legs" aria-label="Per-leg pacing bands">
+      ${bands.map((b) => {
+        const primary = mode === "pace" ? b.goal : b.time;
+        const secondary = mode === "pace" ? b.time : b.goal;
+        return `
+          <div>
+            <span>${esc(b.leg)}</span>
+            <strong>${esc(primary)}</strong>
+            <em>${esc(b.solid)}${secondary && secondary !== primary ? ` · ${esc(secondary)}` : ""}</em>
+          </div>`;
+      }).join("")}
+    </div>`;
 }
 
 function storeProgressReport(data, source = "ai") {

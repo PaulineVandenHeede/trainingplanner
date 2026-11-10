@@ -158,6 +158,9 @@ function renderDayDetail(ds) {
     </header>
     ${recoveryBlock(ds, plan)}
     ${evs.map((ev) => eventDetailBlock(ev)).join("")}
+    ${plan?.week?.focus === "Race week" || /bag check|t2|race week/i.test(plan?.label || "")
+      ? raceWeekChecklistCard(parseDate(ds))
+      : ""}
     ${plan ? busyBlock(plan, ds) : ""}
     ${plan ? paceGraph(plan) : ""}
     ${activities}
@@ -316,9 +319,10 @@ function todayGuideTargets(plan) {
 
 function todayEffortText(plan, targets) {
   const rows = targets || todayGuideTargets(plan);
-  const effort = rows.find(([k]) => /effort|rpe/i.test(k));
+  const effort = rows.find(([k]) => /effort|rpe|power/i.test(k));
   if (effort) return effort[1];
   if (!plan) return "";
+  if (plan.kind === "brick") return tt("home.todayEffortBrick");
   if (plan.kind === "quality" || plan.kind === "race") return tt("home.todayEffortQuality");
   if (plan.kind === "long" || plan.kind === "event") return tt("home.todayEffortLong");
   if (["rest", "travel", "walk"].includes(plan.kind)) return tt("home.todayEffortRest");
@@ -328,8 +332,9 @@ function todayEffortText(plan, targets) {
 function todayTargetText(plan, targets) {
   if (!plan) return "";
   const rows = targets || todayGuideTargets(plan);
-  const paceLike = rows.find(([k]) => /pace|mp|cruise|steady|reps|cadence|goal|solid/i.test(k));
+  const paceLike = rows.find(([k]) => /pace|mp|cruise|steady|reps|cadence|goal|solid|power|bike|run|t2/i.test(k));
   const dist = plan.km > 0 ? fmtDistWithUnit(plan.km, plan.km % 1 ? 1 : 0) : "";
+  if (plan.kind === "brick") return paceLike?.[1] || plan.label || tt("home.todayTargetBrick");
   if (dist && paceLike) return `${dist} · ${paceLike[1]}`;
   if (paceLike) return paceLike[1];
   if (dist) return dist;
@@ -364,6 +369,13 @@ function todayGearText(plan, targets) {
 
   const wantTypes = plannedSportCats(plan.kind);
   let type = "shoes";
+  if (plan.kind === "brick") {
+    const bike = items.find((g) => g.type === "bike");
+    const shoes = items.find((g) => g.type === "shoes" && (g.shoeKind === "daily" || g.shoeKind === "tempo"))
+      || items.find((g) => g.type === "shoes");
+    if (bike || shoes) return [bike?.name, shoes?.name].filter(Boolean).join(" · ");
+    return tt("home.todayGearBrick");
+  }
   if (wantTypes.includes("bike") && !wantTypes.includes("run")) type = "bike";
   else if (wantTypes.includes("swim")) type = /wet/i.test(plan.label) ? "wetsuit" : "swimsuit";
   else if (!wantTypes.includes("run") && !wantTypes.includes("walk")) {
@@ -390,15 +402,38 @@ function todayMoveCandidates(plan) {
   if (!plan || typeof freeDaysInWeek !== "function") return [];
   const free = freeDaysInWeek(plan.week, plan.i);
   if (!free.length) return [];
-  const longIdx = plan.week.days.findIndex(([k], j) => j !== plan.i && ["long", "event", "race"].includes(k));
+  const longIdx = plan.week.days.findIndex(([k], j) => j !== plan.i && ["long", "event", "race", "brick"].includes(k));
   const notNextToLong = free.filter((d) => longIdx === -1 || Math.abs(d.i - longIdx) > 1);
   let order = free;
-  if (plan.kind === "long" || plan.kind === "event") {
+  if (plan.kind === "long" || plan.kind === "event" || plan.kind === "brick") {
     order = [6, 4, 5, 3, 0, 2, 1].map((j) => free.find((d) => d.i === j)).filter(Boolean);
   } else if (plan.kind === "quality") {
     order = (notNextToLong.length ? notNextToLong : free).slice();
   }
   return order.slice(0, 4);
+}
+
+function raceWeekChecklistCard(now) {
+  const list = typeof window.raceWeekChecklist === "function" ? window.raceWeekChecklist(now) : null;
+  if (!list?.items?.length) return "";
+  const when = list.daysLeft === 0
+    ? tt("home.raceWeekToday")
+    : list.daysLeft === 1
+      ? tt("home.raceWeekTomorrow")
+      : tt("home.raceWeekIn", { days: list.daysLeft });
+  return `
+    <section class="card race-checklist">
+      <div class="card-head">
+        <div>
+          <div class="eyebrow">${esc(tt("home.raceWeekEyebrow"))}</div>
+          <h2>${esc(list.eventName)}</h2>
+          <p class="muted small-text">${esc(when)}</p>
+        </div>
+      </div>
+      <ul class="checklist">
+        ${list.items.map((item) => `<li>${esc(item.text)}</li>`).join("")}
+      </ul>
+    </section>`;
 }
 
 function todaySessionMeta(plan) {
@@ -480,6 +515,9 @@ function todaySessionCard(acts, now) {
   } else if (dayMatch?.done) {
     statusLine = matchConfidenceLabel(dayMatch.match?.confidence);
     statusClass = "done";
+  } else if (dayMatch?.partial && plan?.kind === "brick") {
+    statusLine = tt("home.todayBrickPartial");
+    statusClass = "todo";
   } else if (plan && plannedSportCats(plan.kind).length) {
     statusLine = tt("home.todayTodo");
     statusClass = "todo";
@@ -692,6 +730,7 @@ function renderHome(acts, now) {
     </section>
 
     ${!viewingPast ? todaySessionCard(acts, now) : ""}
+    ${!viewingPast ? raceWeekChecklistCard(now) : ""}
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
 
     <div class="timeline">

@@ -366,6 +366,7 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 .chip.k-swim { background: var(--swim); }
 .chip.k-walkswim { background: linear-gradient(90deg, var(--walk), var(--swim)); }
 .chip.k-bike { background: var(--bike); }
+.chip.k-brick { background: linear-gradient(90deg, var(--bike), var(--run)); }
 .chip.k-walk { background: var(--walk); }
 .chip.k-rest, .chip.k-travel { background: var(--rest); color: var(--text); }
 
@@ -760,6 +761,80 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
   display: block; font-style: normal; font-size: 12px; color: var(--swim); margin-top: 2px;
 }
 .predict-note { margin: 10px 0 0; }
+.predict-legs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+.predict-legs div {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.predict-legs span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.predict-legs strong {
+  display: block;
+  font-size: 15px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.predict-legs em {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.race-checklist .checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.race-checklist .checklist li {
+  position: relative;
+  padding: 8px 10px 8px 28px;
+  background: var(--bg);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.race-checklist .checklist li::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 12px;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--muted);
+  border-radius: 3px;
+}
+.set-structure {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+.set-structure div {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.set-structure span {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 11px;
+}
 .volume-card .card-head { align-items: center; }
 .progress-copy { margin-bottom: 8px; }
 .progress-copy .coach-text { font-size: 15px; line-height: 1.6; }
@@ -1706,6 +1781,8 @@ body.onboarding .nav-sep { display: none; }
   .grid { grid-template-columns: 1fr; }
   .card { padding: 16px 14px; }
   .targets { grid-template-columns: repeat(2, 1fr); }
+  .predict-legs { grid-template-columns: repeat(2, 1fr); }
+  .set-structure div { grid-template-columns: 72px 1fr; }
   .seg span { display: none; }
   .week-nav { gap: 8px; }
   .week-nav .button {
