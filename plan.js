@@ -2055,6 +2055,10 @@ window.finishSetupWithPlan = finishSetupWithPlan;
 
 async function saveGeneratedPlan(userId, input) {
   const generated = generateTrainingPlan(input);
+  const acts = typeof window.peekActivities === "function" ? window.peekActivities() : [];
+  if (typeof window.personalizePlanPaces === "function" && acts.length) {
+    generated.paces = window.personalizePlanPaces(generated.paces, acts, generated);
+  }
   // Client-only / optional fields — strip before insert in case DB columns aren't there yet.
   const { sources, long_weekday, goal_type, ...persisted } = generated;
   const row = { user_id: userId, ...persisted };

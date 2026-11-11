@@ -482,8 +482,9 @@ function phaseFocus(name, sport, band, fitness) {
   }
   if (name === "Taper") return "Freshen up for race week";
   if (name === "Peak") return fitness ? "Highest sustainable load — keep the habit" : "Highest load, then recover";
-  if (name === "Build") return "Quality + longer key session";
+  if (name === "Build") return "Quality (intervals / cruise / MP) + longer key session";
   if (name === "Rebuild") return "Ease back into training";
+  if (name === "Base") return "Aerobic base with light VO₂ intervals and strides";
   return "Consistency and aerobic base";
 }
 
@@ -626,10 +627,38 @@ function bikeSessionLabel(sport, phase, band, isKey, distances) {
     : "Easy aerobic ride · Z2 / RPE 3 · 85–95 rpm";
 }
 
-function splitRunKm(total, longKm, hasQuality, nDays) {
+function qualitySessionSpec(phase, weekNum, qualityKm) {
+  const km = fmtKmLabel(qualityKm);
+  const cutback = weekNum % 4 === 0;
+  if (phase === "Base") {
+    // Introduce VO₂ early; keep cutbacks as strides only.
+    if (cutback) return { kind: "run", label: `Run ${km} easy + 6×20s strides`, km: qualityKm };
+    const rot = weekNum % 3;
+    if (rot === 1) return { kind: "quality", label: `Run ~${km} · 8×200m @ interval`, km: qualityKm };
+    if (rot === 2) return { kind: "quality", label: `Run ~${km} · 6×400m @ interval`, km: qualityKm };
+    return { kind: "quality", label: `Run ~${km} · 5×3' @ interval`, km: qualityKm };
+  }
+  if (phase === "Build") {
+    if (cutback) return { kind: "run", label: `Run ${km} easy + strides`, km: qualityKm };
+    const rot = weekNum % 3;
+    if (rot === 0) return { kind: "quality", label: `Run ~${km} · 5×1000m @ interval`, km: qualityKm };
+    if (rot === 1) return { kind: "quality", label: `Run ~${km} · cruise 5×6'`, km: qualityKm };
+    return { kind: "quality", label: `Run ~${km} · 3×2 km @ MP`, km: qualityKm };
+  }
+  if (phase === "Peak") {
+    const rot = weekNum % 3;
+    if (rot === 0) return { kind: "quality", label: `Run ~${km} · 4×1000m @ interval`, km: qualityKm };
+    if (rot === 1) return { kind: "quality", label: `Run ~${km} · cruise 4×6'`, km: qualityKm };
+    return { kind: "quality", label: `Run ~${km} sharp · short MP + strides`, km: qualityKm };
+  }
+  return { kind: "quality", label: `Quality ${km}`, km: qualityKm };
+}
+
+function splitRunKm(total, longKm, hasQuality, nDays, phase = "Build") {
   const rest = Math.max(0, total - longKm);
   const qualityDays = hasQuality && nDays >= 3 ? 1 : 0;
-  const quality = qualityDays ? Math.max(4, Math.round(rest * 0.35)) : 0;
+  const share = phase === "Base" ? 0.28 : 0.35;
+  const quality = qualityDays ? Math.max(phase === "Base" ? 5 : 4, Math.round(rest * share)) : 0;
   const easyCount = Math.max(1, nDays - 1 - qualityDays);
   let left = Math.max(0, rest - quality);
   const easies = [];
@@ -909,7 +938,8 @@ const fmtKmLabel = (n) => {
 function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts = {}) {
   const nDays = Math.max(2, Math.min(6, Number(opts.runDays) || 3));
   const wantStrength = !!opts.strength;
-  const hasQuality = ["Build", "Peak"].includes(phase) && !isRaceWeek;
+  // Base gets lighter VO₂ / interval quality; Build/Peak mix intervals, cruise and MP.
+  const hasQuality = ["Base", "Build", "Peak"].includes(phase) && !isRaceWeek;
   const days = Array.from({ length: 7 }, () => ["rest", "Rest"]);
 
   const set = (i, kind, label, run) => { days[i] = run != null ? [kind, label, run] : [kind, label]; };
@@ -988,7 +1018,7 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
     ? (runIdx.includes(2) && 2 !== longIdx ? 2 : runIdx.find((i) => i !== longIdx && i !== 0))
     : null;
   const easyIdx = runIdx.filter((i) => i !== longIdx && i !== qualityIdx);
-  const split = splitRunKm(km, longKm, !!qualityIdx, runIdx.length);
+  const split = splitRunKm(km, longKm, !!qualityIdx, runIdx.length, phase);
   const strengthDays = wantStrength
     ? freeDays(opts.strengthWeekdays, [easyIdx.includes(0) ? 0 : (easyIdx[0] ?? runIdx[0] ?? 0)])
     : [];
@@ -1022,7 +1052,10 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
     const easyKm = Math.max(3, split.easies[n] || 4);
     set(i, "run", `Run ${fmtKmLabel(easyKm)} easy`, easyKm);
   });
-  if (qualityIdx != null && split.quality) set(qualityIdx, "quality", `Quality ${fmtKmLabel(split.quality)}`, split.quality);
+  if (qualityIdx != null && split.quality) {
+    const q = qualitySessionSpec(phase, Number(opts.weekNum) || 1, split.quality);
+    set(qualityIdx, q.kind, q.label, q.km);
+  }
   if (longIdx != null) set(longIdx, "long", `Long ${fmtKmLabel(longKm)} easy`, longKm);
 
   const band = sport === "triathlon" ? triDistanceBand(distances) : null;
@@ -1281,7 +1314,8 @@ function defaultPaces(sport) {
   }
   return [
     ["Easy / long", "Comfortably conversational", "Most km"],
-    ["Steady / cruise", "Controlled, not racing", "Mid-week quality"],
+    ["Steady / cruise", "Controlled, not racing", "Threshold / cruise quality"],
+    ["Interval / VO₂", "Hard but controlled · short reps", "Base–peak interval sessions"],
     ["Race pace", "Goal event effort", "Short segments late in the plan"],
     ["Strides", "Fast but relaxed", "6–8 × 20 sec"],
   ];

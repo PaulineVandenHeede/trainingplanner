@@ -1,8 +1,9 @@
 // Session explanations and rule-based feedback. Loaded before app.js; uses its helpers at call time.
 
-const DEFAULT_EASY = { lo: 410, hi: 450, mid: 430 }; // 6:50–7:30
+const DEFAULT_EASY = { lo: 410, hi: 450, mid: 430 }; // 6:50–7:30 — last-resort only
 const DEFAULT_STEADY = { lo: 380, hi: 400, mid: 390 }; // 6:20–6:40
 const DEFAULT_MP = { lo: 383, hi: 385, mid: 384 }; // ~6:24
+const DEFAULT_INTERVAL = { lo: 340, hi: 360, mid: 350 }; // ~5:40–6:00 VO₂ / I-pace
 
 function parsePaceSpec(text) {
   const parts = String(text || "").match(/(\d+):(\d{2})/g) || [];
@@ -16,22 +17,34 @@ function parsePaceSpec(text) {
   return { lo, hi, mid: Math.round((lo + hi) / 2) };
 }
 
-function planPace(matcher, fallback) {
+function planPace(matcher, fallback, zoneKey) {
   const rows = Array.isArray(window.PACES) ? window.PACES : [];
   const row = rows.find((p) => matcher.test(String(p[0] || "")));
-  return parsePaceSpec(row && row[1]) || fallback;
+  const parsed = parsePaceSpec(row && row[1]);
+  const derived = typeof athletePaceZones === "function" ? athletePaceZones() : null;
+  const fromFitness = derived && zoneKey ? derived[zoneKey] : null;
+  // Easy / steady track logged fitness live so athletes never share stale targets.
+  if (zoneKey && zoneKey !== "mp" && fromFitness) return fromFitness;
+  // Race pace: keep an explicit goal time; otherwise use fitness.
+  if (zoneKey === "mp" && parsed && typeof hasExplicitRaceGoal === "function" && hasExplicitRaceGoal(rows)) {
+    return parsed;
+  }
+  if (fromFitness) return fromFitness;
+  if (parsed) return parsed;
+  return fallback;
 }
 
 function easyZone() {
-  const p = planPace(/easy|long/i, DEFAULT_EASY);
+  const p = planPace(/easy|long|aerobic/i, DEFAULT_EASY, "easy");
   return [p.lo, p.hi];
 }
 function easyRange() {
   const [lo, hi] = easyZone();
   return `${fmtPace(lo)}–${fmtPace(hi)}`;
 }
-function steadyPace() { return planPace(/steady|cruise/i, DEFAULT_STEADY); }
-function mpPace() { return planPace(/marathon|race pace/i, DEFAULT_MP); }
+function steadyPace() { return planPace(/steady|cruise|tempo/i, DEFAULT_STEADY, "steady"); }
+function mpPace() { return planPace(/marathon|race pace/i, DEFAULT_MP, "mp"); }
+function intervalPace() { return planPace(/interval|i-?pace|vo\s*?2|vo₂/i, DEFAULT_INTERVAL, "interval"); }
 function fmtClock(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.round((sec % 3600) / 60);
@@ -87,16 +100,27 @@ const GUIDES = {
     ],
     targets: [["Cruise pace", "Steady / cruise"], ["Recovery", "90 sec jog"], ["Shoes", "Faster pair if you have one"]],
   },
+  intervals: {
+    title: "VO₂ / interval session",
+    why: "Short hard reps raise oxygen uptake and leg speed so marathon pace and late-race surges feel easier. Used lightly in base, then mixed with cruise/MP in build and peak.",
+    how: [
+      "Warm up 2–3 km easy, then 3–4 strides.",
+      "Main set as written (e.g. 5×3', 6×400m, 5×1000m) at interval pace — hard but controlled, not a sprint.",
+      "Jog or walk the recoveries fully; the next rep should still be crisp.",
+      "Cool down easy. If legs are heavy before a key long run, cut the set by 1–2 reps.",
+    ],
+    targets: [["Interval pace", "Interval / VO₂"], ["Effort", "Hard, controlled · RPE 8/10"], ["Shoes", "Faster pair if you have one"]],
+  },
   quality: {
     title: "Thursday quality run",
-    why: "The one harder run of the week during build and peak. It develops marathon-specific fitness.",
+    why: "The one harder run of the week. It rotates interval, cruise and marathon-pace work so you build speed and race-specific fitness.",
     how: [
       "Warm up 2–3 km easy.",
-      "Main set, rotating weekly: 3 × 2 km at marathon pace, 5 × 6' cruise, or 20–25' steady.",
+      "Main set as labelled: VO₂ intervals, cruise reps, or marathon-pace reps.",
       "Cool down easy to reach the total distance.",
       "If you're tired or the Saturday long is at risk, make it an easy run instead.",
     ],
-    targets: [["MP", "Marathon pace"], ["Cruise", "Steady / cruise"], ["Shoes", "Faster pair if you have one"]],
+    targets: [["Interval", "Interval / VO₂"], ["MP", "Marathon pace"], ["Cruise", "Steady / cruise"], ["Shoes", "Faster pair if you have one"]],
   },
   shortMP: {
     title: "Easy run with a short MP block",
@@ -370,6 +394,7 @@ function stampPaces(guide) {
     "Easy zone": `${displayPaceRange(z.easy.range)} ${unit}`,
     "Steady / cruise": `${displayPaceRange(z.steady.range)} ${unit}`,
     "Marathon pace": `${displayPaceRange(z.mp.range)} ${unit}`,
+    "Interval / VO₂": `${displayPaceRange(z.interval.range)} ${unit}`,
     "Brick run effort": `${displayPaceRange(z.easy.range)} → ${displayPaceRange(z.steady.range)} ${unit}`,
     "Aspirational from plan paces": `${raceGoalClock()} (aspirational)`,
     "See pace guide": raceSolidBand(),
@@ -420,7 +445,11 @@ function guidesFor(kind, label) {
   } else if (kind === "quality") {
     if (/steady/.test(l)) out = [GUIDES.steady];
     else if (/cruise/.test(l)) out = [GUIDES.cruise];
-    else out = [GUIDES.quality];
+    else if (/interval|vo\s*?2|vo₂|×\s*200|×\s*400|×\s*800|×\s*1000|\d+\s*[×x]\s*\d+\s*'/.test(l) && !/cruise|steady|mp|marathon/i.test(l)) {
+      out = [GUIDES.intervals];
+    } else if (/interval|vo\s*?2|vo₂|400m|800m|1000m|3'\s*@|@\s*interval/i.test(l)) {
+      out = [GUIDES.intervals];
+    } else out = [GUIDES.quality];
   } else {
     out = /short mp/.test(l) ? [GUIDES.shortMP] : /strides/.test(l) ? [GUIDES.easy, GUIDES.strides] : [GUIDES.easy];
     if (/strength/.test(l)) out.push(strengthGuideForAccess());
@@ -431,9 +460,10 @@ function guidesFor(kind, label) {
 // ---------- Planned session pace profile ----------
 
 function paceZones() {
-  const easy = planPace(/easy|long/i, DEFAULT_EASY);
+  const easy = planPace(/easy|long|aerobic/i, DEFAULT_EASY, "easy");
   const steady = steadyPace();
   const mp = mpPace();
+  const interval = intervalPace();
   const settle = Math.round((easy.mid + mp.mid) / 2);
   return {
     easy: { sec: easy.mid, range: `${fmtPace(easy.lo)}–${fmtPace(easy.hi)}`, label: "Easy" },
@@ -442,7 +472,8 @@ function paceZones() {
     steady: { sec: steady.mid, range: `${fmtPace(steady.lo)}–${fmtPace(steady.hi)}`, label: "Steady" },
     cruise: { sec: steady.mid, range: `${fmtPace(steady.lo)}–${fmtPace(steady.hi)}`, label: "Cruise" },
     mp: { sec: mp.mid, range: `~${fmtPace(mp.mid)}`, label: "Marathon pace" },
-    stride: { sec: 300, range: "fast / relaxed", label: "Stride" },
+    interval: { sec: interval.mid, range: `${fmtPace(interval.lo)}–${fmtPace(interval.hi)}`, label: "Interval" },
+    stride: { sec: Math.max(240, interval.mid - 25), range: "fast / relaxed", label: "Stride" },
   };
 }
 
@@ -494,7 +525,7 @@ function sessionProfile(kind, label, km) {
     return { title: "Easy run + strides", segments: finishSegments(raw) };
   }
 
-  if (kind === "quality" || /(\d+)\s*[×x]\s*10/.test(l) || /cruise/.test(l)) {
+  if (kind === "quality" || /(\d+)\s*[×x]\s*10/.test(l) || /cruise/.test(l) || /interval|vo\s*?2|400m|800m|1000m/i.test(l)) {
     if (/(\d+)\s*[×x]\s*10/.test(l) || (kind === "quality" && /steady/.test(l))) {
       const n = Number((l.match(/(\d+)\s*[×x]\s*10/) || [])[1] || 2);
       const raw = [{ name: "Warm-up", km: 2.2, zone: "easy" }];
@@ -512,6 +543,35 @@ function sessionProfile(kind, label, km) {
         raw.push({ name: i === 0 ? `${n} × 6 min cruise` : "", minutes: 6, zone: "cruise" });
       }
       return { title: "Cruise intervals", segments: finishSegments(raw, total || 10) };
+    }
+    // VO₂ / interval sets (time or distance reps).
+    const timeRep = l.match(/(\d+)\s*[×x]\s*(\d+)\s*'/);
+    const distRep = l.match(/(\d+)\s*[×x]\s*(\d+)\s*m/);
+    if (timeRep || distRep || /interval|vo\s*?2|vo₂/i.test(l)) {
+      const raw = [{ name: "Warm-up", km: 2.2, zone: "easy" }];
+      if (timeRep) {
+        const n = Number(timeRep[1]) || 5;
+        const mins = Number(timeRep[2]) || 3;
+        for (let i = 0; i < n; i++) {
+          if (i) raw.push({ name: "Jog", minutes: Math.max(1.5, mins * 0.5), zone: "easy" });
+          raw.push({ name: i === 0 ? `${n} × ${mins}' @ interval` : "", minutes: mins, zone: "interval" });
+        }
+      } else if (distRep) {
+        const n = Number(distRep[1]) || 5;
+        const meters = Number(distRep[2]) || 400;
+        const repKm = meters / 1000;
+        const jogMin = meters <= 400 ? 1.5 : meters <= 800 ? 2 : 2.5;
+        for (let i = 0; i < n; i++) {
+          if (i) raw.push({ name: "Jog", minutes: jogMin, zone: "easy" });
+          raw.push({ name: i === 0 ? `${n} × ${meters}m @ interval` : "", km: repKm, zone: "interval" });
+        }
+      } else {
+        for (let i = 0; i < 5; i++) {
+          if (i) raw.push({ name: "Jog", minutes: 2, zone: "easy" });
+          raw.push({ name: i === 0 ? "5 × 3' @ interval" : "", minutes: 3, zone: "interval" });
+        }
+      }
+      return { title: "VO₂ intervals", segments: finishSegments(raw, total || 8) };
     }
     if (kind === "quality") {
       const raw = [{ name: "Warm-up", km: 2.2, zone: "easy" }];
@@ -1210,6 +1270,362 @@ function weightedVdot(samples) {
   });
   return den ? num / den : null;
 }
+
+function paceBand(lo, hi) {
+  const a = Math.round(Math.min(lo, hi));
+  const b = Math.round(Math.max(lo, hi));
+  return { lo: a, hi: b, mid: Math.round((a + b) / 2) };
+}
+
+function paceSecAtVo2Frac(vdot, frac) {
+  if (!(vdot > 0) || !(frac > 0.4 && frac < 1.15)) return null;
+  const target = vdot * frac;
+  let lo = 80, hi = 480;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (vo2At(mid) > target) hi = mid;
+    else lo = mid;
+  }
+  const v = (lo + hi) / 2; // m/min
+  if (!(v > 50 && v < 500)) return null;
+  return 60000 / v; // sec/km
+}
+
+function racePaceFromVdot(vdot, distKm) {
+  const d = distKm > 1 ? distKm : 42.195;
+  const sec = timeFromVdot(vdot, d * 1000);
+  if (!(sec > 0)) return null;
+  const mid = Math.round(sec / d);
+  return paceBand(mid - 2, mid + 2);
+}
+
+function pacesFromVdot(vdot, distKm) {
+  if (!(vdot >= 15 && vdot <= 90)) return null;
+  // Daniels-style intensities: Easy ~62–74% VO2, Threshold/cruise ~84–90%,
+  // Interval/I-pace ~95–100% VO2, race from VDOT.
+  const easyFast = paceSecAtVo2Frac(vdot, 0.74);
+  const easySlow = paceSecAtVo2Frac(vdot, 0.62);
+  const steadyFast = paceSecAtVo2Frac(vdot, 0.90);
+  const steadySlow = paceSecAtVo2Frac(vdot, 0.84);
+  const intFast = paceSecAtVo2Frac(vdot, 1.0);
+  const intSlow = paceSecAtVo2Frac(vdot, 0.95);
+  const mp = racePaceFromVdot(vdot, distKm);
+  if (!(easyFast > 0) || !(easySlow > 0) || !(steadyFast > 0) || !(steadySlow > 0) || !(intFast > 0) || !(intSlow > 0) || !mp) {
+    return null;
+  }
+  return {
+    easy: paceBand(easyFast, easySlow),
+    steady: paceBand(steadyFast, steadySlow),
+    interval: paceBand(intFast, intSlow),
+    mp,
+    vdot,
+  };
+}
+
+function pacesFromRacePace(mpSec) {
+  if (!(mpSec >= 150 && mpSec <= 600)) return null;
+  return {
+    easy: paceBand(mpSec + 45, mpSec + 95),
+    steady: paceBand(mpSec - 8, mpSec + 18),
+    interval: paceBand(mpSec - 45, mpSec - 25),
+    mp: paceBand(mpSec - 2, mpSec + 2),
+    vdot: null,
+  };
+}
+
+function collectRunFitnessSamples(acts, now = new Date()) {
+  const maxHr = observedMaxHr(acts);
+  const today = typeof ymd === "function" ? ymd(now) : String(now).slice(0, 10);
+  const samples = [];
+  (acts || []).forEach((a) => {
+    if (a.date > today) return;
+    const row = runPerformance(a, maxHr);
+    if (row) samples.push(row);
+  });
+  const lt = lactateSample(today);
+  if (lt) samples.push(lt);
+  return samples;
+}
+
+function estimateAthleteVdot(acts, now = new Date()) {
+  const samples = collectRunFitnessSamples(acts, now);
+  const vo2 = num(trainingMetrics().vo2_run);
+  if (!samples.length) return vo2 >= 25 && vo2 <= 85 ? vo2 : null;
+
+  const ds = typeof ymd === "function" ? ymd(now) : String(now).slice(0, 10);
+  const recentFrom = typeof addDays === "function" && typeof parseDate === "function"
+    ? ymd(addDays(parseDate(ds), -28))
+    : ds;
+  const raceFrom = typeof addDays === "function" && typeof parseDate === "function"
+    ? ymd(addDays(parseDate(ds), -400))
+    : ds;
+  const prior = samples.filter((s) => s.date <= ds);
+  const races = prior.filter((s) => s.source === "race" && s.date >= raceFrom);
+  const recent = prior.filter((s) => s.date >= recentFrom);
+  const perf = recent.filter((s) => s.source !== "easy");
+  const use = races.length ? races : (perf.length ? perf : recent);
+  let vdot = use.length ? weightedVdot(use) : null;
+  if (vdot && vo2 >= 25 && vo2 <= 85) {
+    const hard = use.some((s) => s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
+    // Garmin VO2 can sit well above what logged paces support — only blend lightly, and
+    // almost ignore it when it disagrees by more than ~8 VDOT points.
+    const gap = Math.abs(vo2 - vdot);
+    let w = races.length ? 0.12 : (hard ? 0.22 : 0.3);
+    if (gap > 8) w = Math.min(w, 0.06);
+    else if (gap > 5) w = Math.min(w, 0.12);
+    vdot = vdot * (1 - w) + vo2 * w;
+  } else if (!vdot && vo2 >= 25 && vo2 <= 85) {
+    // No usable sessions: accept Garmin VO2, but callers still clamp via observed easy.
+    vdot = vo2;
+  }
+  return vdot >= 15 && vdot <= 90 ? vdot : null;
+}
+
+function observedEasyPaceSec(acts, now = new Date()) {
+  const ds = typeof ymd === "function" ? ymd(now) : String(now).slice(0, 10);
+  const from = typeof addDays === "function" && typeof parseDate === "function"
+    ? ymd(addDays(parseDate(ds), -28))
+    : ds;
+  const paces = [];
+  (acts || []).forEach((a) => {
+    if (a.cat !== "run" || a.date < from || a.date > ds) return;
+    const distKm = Number(a.dist);
+    const sec = activitySeconds(a);
+    if (!(distKm >= 3) || !(sec >= 12 * 60)) return;
+    if (raceLikeRun(a, distKm)) return;
+    const kind = sessionEffortKind(a);
+    if (kind === "quality") return;
+    const fromStrava = stravaWorkoutKind(a);
+    if (fromStrava === "race" || fromStrava === "quality") return;
+    const te = num(a.raw?.["Aerobic TE"]);
+    if (te >= 4) return;
+    let pace = sec / distKm;
+    const gap = gapPaceSec(a);
+    const ascent = num(a.raw?.["Total Ascent"]);
+    if (gap && gap < pace - 5 && ascent / distKm >= 8) pace = gap;
+    if (pace >= 180 && pace <= 600) paces.push(pace);
+  });
+  return paces.length >= 2 ? median(paces) : (paces.length === 1 ? paces[0] : null);
+}
+
+function blendEasyWithObserved(easy, observed) {
+  if (!(observed >= 180 && observed <= 600)) return easy;
+  // Easy days are defined by what the athlete actually runs easy — not Garmin VO2 tables.
+  const halfLo = 20;
+  const halfHi = 30;
+  if (!easy) return paceBand(observed - halfLo, observed + halfHi);
+  // Allow the table to pull a little faster only when logs look sandbagged.
+  let mid = observed;
+  if (easy.mid < observed - 25) mid = Math.round(observed * 0.8 + easy.mid * 0.2);
+  else if (easy.mid > observed + 20) mid = Math.round(observed * 0.85 + easy.mid * 0.15);
+  return paceBand(mid - halfLo, mid + halfHi);
+}
+
+function clampRaceToEasy(mp, easy) {
+  if (!mp || !easy) return mp;
+  // Marathon/race pace should sit clearly quicker than easy, but not elite-table absurd
+  // relative to logged conversational running.
+  const fastestPlausible = easy.mid - 95; // ~1:35 /km faster than easy mid
+  const slowestPlausible = easy.mid - 12;
+  const mid = Math.max(fastestPlausible, Math.min(slowestPlausible, mp.mid));
+  return paceBand(mid - 2, mid + 2);
+}
+
+function clampSteadyToBands(steady, easy, mp) {
+  if (!steady) return steady;
+  let lo = steady.lo;
+  let hi = steady.hi;
+  if (mp) {
+    // Steady/cruise is around threshold: a bit quicker than MP, not a sprint.
+    lo = Math.max(lo, mp.mid - 35);
+    hi = Math.min(hi, mp.mid + 20);
+  }
+  if (easy) {
+    lo = Math.max(lo, easy.lo - 70);
+    hi = Math.min(hi, easy.mid - 8);
+  }
+  if (!(lo < hi)) {
+    const anchor = mp ? mp.mid : (easy ? easy.mid - 25 : steady.mid);
+    return paceBand(anchor - 12, anchor + 8);
+  }
+  return paceBand(lo, hi);
+}
+
+function clampIntervalToBands(interval, steady, mp) {
+  if (!interval) return interval;
+  const anchor = steady?.mid || (mp ? mp.mid - 20 : interval.mid);
+  // I-pace sits clearly quicker than cruise/threshold, roughly 3–5K effort.
+  let lo = Math.min(interval.lo, anchor - 45);
+  let hi = Math.min(interval.hi, anchor - 12);
+  if (mp) lo = Math.max(lo, mp.mid - 70);
+  if (!(lo < hi)) return paceBand(anchor - 35, anchor - 15);
+  return paceBand(lo, hi);
+}
+
+function hasExplicitRaceGoal(paces) {
+  const rows = Array.isArray(paces) ? paces : (Array.isArray(window.PACES) ? window.PACES : []);
+  return rows.some((row) => {
+    if (!/marathon|race pace/i.test(String(row[0] || ""))) return false;
+    const blob = `${row[1] || ""} ${row[2] || ""}`;
+    return /\bgoal\b|\b\d:\d{2}\b.*goal|aspir/i.test(blob);
+  });
+}
+
+function goalEventRunKm() {
+  const plan = window.CURRENT_PLAN || {};
+  const runKm = Number(plan.run_km);
+  if (runKm > 1) return runKm;
+  if ((plan.sport || "run") === "run") return 42.195;
+  return 21.1;
+}
+
+let _athletePaceCache = { key: "", zones: null };
+
+function athletePaceZones(acts, now = new Date()) {
+  const list = Array.isArray(acts)
+    ? acts
+    : (typeof window.peekActivities === "function" ? window.peekActivities() : []);
+  const vo2 = num(trainingMetrics().vo2_run) || "";
+  const lt = num(trainingMetrics().lt_speed_mps) || "";
+  const tail = list.length ? list[list.length - 1] : null;
+  const head = list.length ? list[0] : null;
+  const key = `${list.length}|${head?.date || ""}|${tail?.date || ""}|${tail?.pace || ""}|${tail?.hr || ""}|${vo2}|${lt}|${goalEventRunKm()}`;
+  if (_athletePaceCache.key === key) return _athletePaceCache.zones;
+
+  const distKm = goalEventRunKm();
+  const observedEasy = observedEasyPaceSec(list, now);
+  const vdot = estimateAthleteVdot(list, now);
+  let zones = vdot ? pacesFromVdot(vdot, distKm) : null;
+  if (!zones) {
+    // Fall back to observed easy, then a stored race-pace number in the plan.
+    if (observedEasy) {
+      zones = pacesFromRacePace(Math.max(180, observedEasy - 45));
+    } else {
+      const rows = Array.isArray(window.PACES) ? window.PACES : [];
+      const raceRow = rows.find((p) => /marathon|race pace/i.test(String(p[0] || "")));
+      const mp = parsePaceSpec(raceRow && raceRow[1]);
+      if (mp) zones = pacesFromRacePace(mp.mid);
+    }
+  }
+  if (zones) {
+    const easy = blendEasyWithObserved(zones.easy, observedEasy);
+    const mp = clampRaceToEasy(zones.mp, easy);
+    const steady = clampSteadyToBands(zones.steady, easy, mp);
+    const interval = clampIntervalToBands(zones.interval || null, steady, mp)
+      || paceBand((steady?.mid || mp.mid) - 35, (steady?.mid || mp.mid) - 15);
+    zones = { ...zones, easy, steady, mp, interval, observedEasy, vdot: zones.vdot || vdot };
+  }
+  _athletePaceCache = { key, zones };
+  return zones;
+}
+window.athletePaceZones = athletePaceZones;
+
+function runPaceRowKey(name) {
+  const n = String(name || "");
+  if (/bike power|brick|strides|opens|swim/i.test(n)) return null;
+  if (/interval|i-?pace|vo\s*?2|vo₂/i.test(n)) return "interval";
+  if (/easy|long|aerobic/i.test(n)) return "easy";
+  if (/steady|cruise|tempo/i.test(n)) return "steady";
+  if (/race pace|marathon/i.test(n)) return "mp";
+  return null;
+}
+
+function formatPaceRange(band) {
+  if (!band) return "";
+  if (band.lo === band.hi) return fmtPace(band.mid);
+  return `${fmtPace(band.lo)}–${fmtPace(band.hi)}`;
+}
+
+function ensureIntervalPaceRow(paces, zones) {
+  const rows = Array.isArray(paces) ? paces.map((row) => [...row]) : [];
+  if (!zones?.interval) return rows;
+  const idx = rows.findIndex((row) => runPaceRowKey(row[0]) === "interval");
+  const intervalRow = ["Interval / VO₂", formatPaceRange(zones.interval), "Short hard reps in base–peak"];
+  if (idx >= 0) {
+    rows[idx] = [rows[idx][0], intervalRow[1], rows[idx][2] || intervalRow[2]];
+    return rows;
+  }
+  // Insert after steady/cruise when present, else before race pace / strides.
+  const afterSteady = rows.findIndex((row) => runPaceRowKey(row[0]) === "steady");
+  if (afterSteady >= 0) {
+    rows.splice(afterSteady + 1, 0, intervalRow);
+    return rows;
+  }
+  const beforeRace = rows.findIndex((row) => runPaceRowKey(row[0]) === "mp");
+  if (beforeRace >= 0) {
+    rows.splice(beforeRace, 0, intervalRow);
+    return rows;
+  }
+  rows.push(intervalRow);
+  return rows;
+}
+
+function personalizePlanPaces(paces, acts, plan) {
+  const prevPlan = window.CURRENT_PLAN;
+  if (plan) window.CURRENT_PLAN = { ...prevPlan, ...plan };
+  const zones = athletePaceZones(acts);
+  const keepRaceGoal = hasExplicitRaceGoal(paces);
+  if (plan) window.CURRENT_PLAN = prevPlan;
+  if (!zones || !Array.isArray(paces) || !paces.length) return paces || [];
+
+  const mapped = paces.map((row) => {
+    const key = runPaceRowKey(row[0]);
+    if (!key || !zones[key]) return row;
+    // Keep an explicit race-time goal; refresh easy/steady/interval (and MP without a goal) from fitness.
+    if (key === "mp" && keepRaceGoal && parsePaceSpec(row[1])) return row;
+    const range = key === "mp" ? `~${formatPaceRange(zones[key])}` : formatPaceRange(zones[key]);
+    return [row[0], range, row[2]];
+  });
+  return ensureIntervalPaceRow(mapped, zones);
+}
+window.personalizePlanPaces = personalizePlanPaces;
+
+function displayPlanPaces(paces, acts) {
+  const rows = Array.isArray(paces) ? paces : [];
+  const zones = athletePaceZones(acts);
+  if (!zones) return rows;
+  const keepRaceGoal = hasExplicitRaceGoal(rows);
+  const mapped = rows.map((row) => {
+    const key = runPaceRowKey(row[0]);
+    if (!key || !zones[key]) return row;
+    if (key === "mp" && keepRaceGoal && parsePaceSpec(row[1])) return row;
+    const range = key === "mp" ? `~${formatPaceRange(zones[key])}` : formatPaceRange(zones[key]);
+    return [row[0], range, row[2]];
+  });
+  return ensureIntervalPaceRow(mapped, zones);
+}
+window.displayPlanPaces = displayPlanPaces;
+
+function pacesDiffer(a, b) {
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
+async function maybeSeedPlanPacesFromFitness(acts) {
+  if (typeof hasPlan === "function" && !hasPlan()) return false;
+  if (!window.CURRENT_USER_ID || typeof sb === "undefined") return false;
+  const current = Array.isArray(window.PACES) ? window.PACES : [];
+  if (!current.length) return false;
+  const zones = athletePaceZones(acts);
+  if (!zones) return false;
+  const next = personalizePlanPaces(current, acts, window.CURRENT_PLAN);
+  if (!next?.length || !pacesDiffer(next, current)) return false;
+  const { error } = await sb.from("plans").update({ paces: next }).eq("user_id", window.CURRENT_USER_ID);
+  if (error) throw error;
+  window.PACES = next;
+  if (window.CURRENT_PLAN) window.CURRENT_PLAN.paces = next;
+  _athletePaceCache = { key: "", zones: null };
+  return true;
+}
+window.maybeSeedPlanPacesFromFitness = maybeSeedPlanPacesFromFitness;
+
+window.refreshFitnessPaces = async function refreshFitnessPaces(acts) {
+  _athletePaceCache = { key: "", zones: null };
+  try {
+    return await maybeSeedPlanPacesFromFitness(acts);
+  } catch {
+    return false;
+  }
+};
 
 function improvementByRace(now, acts, spec) {
   const weeks = Array.isArray(window.WEEKS) ? window.WEEKS : [];

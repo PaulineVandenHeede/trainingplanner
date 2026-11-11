@@ -2314,7 +2314,7 @@ function renderPlan(acts, now) {
         <div class="card-head"><h2>${tt("plan.paceGuide")}</h2></div>
         <table class="table">
           <thead><tr><th>${tt("plan.effort")}</th><th>${tt("plan.pace", { unit: distUnit() === "mi" ? "mi" : "km" })}</th><th>${tt("plan.use")}</th></tr></thead>
-          <tbody>${PACES.map((p) => {
+          <tbody>${(typeof displayPlanPaces === "function" ? displayPlanPaces(PACES, ACTS) : PACES).map((p) => {
             const pace = typeof displayPaceRange === "function" ? displayPaceRange(p[1]) : p[1];
             return `<tr><td>${p[0]}</td><td><strong>${pace}</strong></td><td class="muted">${p[2]}</td></tr>`;
           }).join("")}</tbody>
@@ -2917,6 +2917,7 @@ async function importCSV(file) {
     if (error) throw error;
     ACTS = await loadActivities();
     window._setupActs = ACTS;
+    try { if (typeof window.refreshFitnessPaces === "function") await window.refreshFitnessPaces(ACTS); } catch {}
     try { CHANGES = await loadChanges(); } catch {}
     try { if (hasPlan()) await queueWeekAdaptations(today()); } catch {}
     if (onSetup) {
@@ -4780,6 +4781,10 @@ window.bootApp = function bootApp() {
     CHANGES = changes;
     GEAR = gear;
     await loadWellness();
+    if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
+    if (hasPlan() && typeof window.refreshFitnessPaces === "function") {
+      try { await window.refreshFitnessPaces(ACTS); } catch { /* keep generic paces */ }
+    }
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     await Promise.all([loadGarminStatus(), loadStravaStatus()]);
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;

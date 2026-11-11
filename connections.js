@@ -558,6 +558,9 @@ async function runNavSync() {
         errors.push(err.message || "Strava sync failed.");
       }
     }
+    try {
+      if (typeof window.refreshFitnessPaces === "function") await window.refreshFitnessPaces(ACTS);
+    } catch { /* keep existing paces */ }
     render(true);
     if (messages.length) toast(messages.join(" "));
     if (errors.length) toast(errors.join(" "), true);
