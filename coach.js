@@ -1076,6 +1076,27 @@ function sessionEffortKind(a) {
   return "easy";
 }
 
+function stravaWorkoutKind(a) {
+  const wt = num(a?.raw?.stravaWorkoutType);
+  // Strava run workout_type: 0 default, 1 race, 2 long run, 3 workout.
+  if (wt === 1) return "race";
+  if (wt === 2) return "long";
+  if (wt === 3) return "quality";
+  return "";
+}
+
+function raceLikeRun(a, distKm) {
+  if (stravaWorkoutKind(a) === "race") return true;
+  const title = String(a?.title || a?.raw?.Title || "").toLowerCase();
+  if (/\b(race|wedstrijd|marathon|half[\s-]?marathon|10\s?k|5\s?k|15\s?k|21\.?1|42\.?2)\b/.test(title)) {
+    return distKm >= 4.5;
+  }
+  // Untitled but clearly race-distance efforts (half / marathon band).
+  if (distKm >= 20.5 && distKm <= 22.5) return true;
+  if (distKm >= 41 && distKm <= 43.5) return true;
+  return false;
+}
+
 function runPerformance(a, maxHr) {
   if (a.cat !== "run") return null;
   const distKm = Number(a.dist);
@@ -1085,12 +1106,15 @@ function runPerformance(a, maxHr) {
   const te = num(a.raw?.["Aerobic TE"]);
   const label = teLabel(a);
   const fromLabel = labelKind(label);
+  const fromStrava = stravaWorkoutKind(a);
   // Plan day wins over Garmin's "base/recovery" label so a controlled long run is not dropped.
   let source = kind === "quality" || kind === "long"
     ? kind
-    : (fromLabel || "easy");
-  if (fromLabel === "quality" || te >= 4) source = "quality";
-  const rep = representativeEffort(a, source === "quality" ? "quality" : kind);
+    : (fromStrava || fromLabel || "easy");
+  if (fromLabel === "quality" || te >= 4 || fromStrava === "quality") source = "quality";
+  if (fromStrava === "long" && source === "easy") source = "long";
+  if (raceLikeRun(a, distKm)) source = "race";
+  const rep = representativeEffort(a, source === "quality" || source === "race" ? "quality" : kind);
   const hr = rep?.hr || num(a.hr);
   let paceSec = sec / distKm;
   if (rep?.secPerKm) paceSec = rep.secPerKm;
@@ -1101,14 +1125,24 @@ function runPerformance(a, maxHr) {
   const v = (1000 / paceSec) * 60;
   const fraction = effortFraction(hr, maxHr, a);
   let intensity = fraction;
-  if (source === "quality" && fraction != null && fraction >= 0.8) intensity = Math.max(fraction, 0.86);
+  if ((source === "quality" || source === "race") && fraction != null && fraction >= 0.8) {
+    intensity = Math.max(fraction, 0.86);
+  }
   if ((source === "easy" || source === "long") && fraction != null && fraction >= 0.78) source = "hr";
   let vdot;
-  if (source === "quality" && intensity == null) vdot = vo2At(v) / 0.9;
-  else {
+  if (source === "race") {
+    // Race clock is the fitness signal — do not inflate via low easy-day HR.
+    vdot = vdotFromRace(distKm * 1000, sec);
+  } else if (source === "quality" && intensity == null) {
+    vdot = vo2At(v) / 0.9;
+  } else {
     // Heart rate is the effort. Do not invent a high long-run floor when HR says it was easy.
     const fallback = ({ beginner: 0.82, intermediate: 0.70, advanced: 0.65 }[window.CURRENT_PLAN?.experience] || 0.70);
-    const i = intensity != null ? intensity : (source === "long" ? 0.78 : fallback);
+    // Easy/social runs with very low HR otherwise invent elite VDOT; floor effort for those.
+    const easyFloor = source === "easy" ? 0.82 : (source === "long" ? 0.78 : fallback);
+    const i = intensity != null
+      ? (source === "easy" ? Math.max(intensity, easyFloor) : intensity)
+      : easyFloor;
     vdot = vo2At(v) / i;
   }
   if (!(vdot >= 15 && vdot <= 90)) return null;
@@ -1145,8 +1179,28 @@ function planGoalRunSec(spec) {
   return pace.mid * spec.targetRunKm;
 }
 
+function sourceRank(source) {
+  if (source === "race") return 5;
+  if (source === "quality") return 4;
+  if (source === "hr") return 3;
+  if (source === "long") return 2;
+  return 1;
+}
+
 function weightedVdot(samples) {
-  const ranked = [...samples].sort((a, b) => b.vdot - a.vdot).slice(0, 4);
+  if (!samples?.length) return null;
+  const bestRank = Math.max(...samples.map((s) => sourceRank(s.source)));
+  // Prefer race/quality over easy dog-runs; only fall back to easy when nothing better exists.
+  const pool = bestRank >= 4
+    ? samples.filter((s) => sourceRank(s.source) >= 4)
+    : bestRank >= 2
+      ? samples.filter((s) => sourceRank(s.source) >= 2)
+      : samples;
+  const ranked = [...pool].sort((a, b) => {
+    const rankDiff = sourceRank(b.source) - sourceRank(a.source);
+    if (rankDiff) return rankDiff;
+    return b.vdot - a.vdot;
+  }).slice(0, 4);
   const weights = [0.42, 0.28, 0.18, 0.12];
   let num = 0, den = 0;
   ranked.forEach((s, i) => {
@@ -1251,13 +1305,17 @@ window.racePrediction = function racePrediction(acts, now) {
       const prior = runSamples.filter((s) => s.date <= ds);
       const from = ymd(addDays(parseDate(ds), -21));
       const recent = prior.filter((s) => s.date >= from);
+      // Races stay useful for months; keep a longer window than routine sessions.
+      const raceFrom = ymd(addDays(parseDate(ds), -400));
+      const races = prior.filter((s) => s.source === "race" && s.date >= raceFrom);
       const perf = recent.filter((s) => s.source !== "easy");
-      const use = (perf.length ? perf : recent);
+      const use = races.length ? races : (perf.length ? perf : recent);
       vdot = use.length ? weightedVdot(use) : null;
       const vo2 = num(trainingMetrics().vo2_run);
       if (vdot && vo2 >= 25 && vo2 <= 85) {
-        const hard = use.some((s) => s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
-        const w = hard ? 0.3 : 0.45;
+        const hard = use.some((s) => s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
+        // When we already have a race result, trust it more than Garmin VO2 blend.
+        const w = races.length ? 0.15 : (hard ? 0.3 : 0.45);
         vdot = vdot * (1 - w) + vo2 * w;
       }
       if (vdot) runSec = timeFromVdot(vdot, spec.targetRunKm * 1000);
@@ -1314,6 +1372,7 @@ window.racePrediction = function racePrediction(acts, now) {
 
   const incomplete = spec.sport === "triathlon" && current && !current.complete;
   const usedHr = runSamples.some((s) => s.fraction != null);
+  const usedRace = runSamples.some((s) => s.source === "race");
   const phys = trainingMetrics();
   const note = incomplete
     ? "Per-leg times fill in as you log swims and rides; run estimate is already active."
@@ -1321,11 +1380,13 @@ window.racePrediction = function racePrediction(acts, now) {
       ? "From your plan race pace until there are timed sessions to work from."
       : spec.sport === "triathlon"
         ? "Per-leg estimates from recent swim, bike and run sessions. Projection assumes you follow the rest of the plan."
-        : phys.vo2_run
-          ? "From recent runs, with heart rate as the effort, blended with Garmin VO2max. Projection assumes you follow the rest of the plan."
-          : usedHr
-            ? "From recent runs, with heart rate as the effort. A comfortable long run is not scored as race pace. Projection assumes you follow the rest of the plan."
-            : "From logged sessions. Projection assumes you follow the rest of the plan.";
+        : usedRace
+          ? "Anchored on recent race efforts (half/marathon/5–10K), not easy social runs. Projection assumes you follow the rest of the plan."
+          : phys.vo2_run
+            ? "From recent runs, with heart rate as the effort, blended with Garmin VO2max. Projection assumes you follow the rest of the plan."
+            : usedHr
+              ? "From recent runs, with heart rate as the effort. Easy social runs are down-weighted. Projection assumes you follow the rest of the plan."
+              : "From logged sessions. Projection assumes you follow the rest of the plan.";
 
   function scaleLeg(sec) {
     if (!(sec > 0)) return null;

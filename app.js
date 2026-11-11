@@ -393,7 +393,11 @@ function categorize(type) {
   const t = type.toLowerCase();
   if (t.includes("run")) return "run";
   if (t.includes("swim")) return "swim";
-  if (t.includes("cycl") || t.includes("bik")) return "bike";
+  // Strava uses "Ride" / "Gravel Ride" / "VirtualRide"; Garmin often "cycling".
+  if (
+    t.includes("cycl") || t.includes("bik") || t.includes("ride") ||
+    t.includes("ebike") || t.includes("gravel")
+  ) return "bike";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
 }
@@ -968,7 +972,7 @@ function reviewBlock(week, acts, now) {
     <p class="auto-text">${esc(weekFeedback(week, acts, now))}</p>`;
 }
 
-function reviewCard(acts, now) {
+function reviewCard(acts, now, opts = {}) {
   const week = reviewWeek(acts, now);
   if (!week) return "";
   const isCurrent = week.wk === weekOf(now);
@@ -977,6 +981,7 @@ function reviewCard(acts, now) {
   const aiSessions = reviewWeekActs(week, aiActs);
   const writing = FEEDBACK_STATUS === "writing";
   const hasNote = !!FEEDBACK.weeks[String(week.wk)];
+  const planNote = opts.includePlanNote ? String(week.note || "").trim() : "";
   const current = aiSessions.length > 0 && feedbackIsCurrent(week, aiActs);
   const showButton = writing || (aiSessions.length > 0 && !current);
   const label = writing ? "Writing…" : hasNote ? "Update feedback" : "Request feedback";
@@ -991,12 +996,13 @@ function reviewCard(acts, now) {
     <section class="card review">
       <div class="card-head">
         <div>
-          <div class="eyebrow">${isCurrent ? "This week" : "Last week"} · review</div>
-          <h2>Week ${week.wk} feedback</h2>
+          <div class="eyebrow">${isCurrent ? tt("home.thisWeekReview") : tt("home.lastWeekReview")}</div>
+          <h2>${tt("home.weekFeedbackTitle", { week: week.wk })}</h2>
         </div>
         ${showButton ? `<button type="button" class="button ghost small" data-action="request-feedback"${writing ? " disabled" : ""}>${label}</button>` : ""}
       </div>
       ${reviewBlock(week, acts, now)}
+      ${planNote ? `<p class="week-review-note">${esc(planNote)}</p>` : ""}
       ${hint ? `<p class="muted small-text">${hint}</p>` : ""}
     </section>`;
 }
@@ -1556,7 +1562,7 @@ window.unitsChoiceRow = unitsChoiceRow;
 
 
 let GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: false };
 let STRAVA_CALLBACK_HANDLED = false;
 
 
@@ -1973,22 +1979,22 @@ function eventsCard(now, upcoming, opts = {}) {
 }
 
 function renderPastEvents(now) {
-  const past = pastEventsList(now);
+  const upcoming = upcomingEventsList(now, ACTS);
+  const past = pastEventsList(now, ACTS);
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow"><a href="/home">Home</a> · Events</div>
-        <h1>Past events</h1>
-        <p class="muted">${past.length
-          ? `${past.length} finished event${past.length === 1 ? "" : "s"}`
-          : "No past events yet."}</p>
+        <div class="eyebrow"><a href="/home">${tt("nav.home")}</a> · ${tt("nav.events")}</div>
+        <h1>${tt("home.upcomingEvents")}</h1>
+        <p class="muted">${upcoming.length
+          ? tt("events.upcomingCount", { count: upcoming.length })
+          : past.length
+            ? tt("events.noneUpcoming")
+            : tt("events.emptyLead")}</p>
       </div>
     </section>
-    <section class="card">
-      <ul class="events">
-        ${past.map((e) => eventListItem(e, now, { past: true })).join("") || `<li class="muted">Nothing here yet. Finished events show up after their date.</li>`}
-      </ul>
-    </section>`;
+    ${eventsCard(now, upcoming, { acts: ACTS })}
+  `;
 }
 
 function eventPresetKm(sport, presetId) {
@@ -3878,7 +3884,7 @@ document.addEventListener("click", async (e) => {
     btn.disabled = true;
     try {
       await invokeStrava({ action: "disconnect" });
-      STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+      STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: true };
       ACTS = await loadActivities();
       render(true);
       toast("Strava disconnected. Imported activities were removed.");
@@ -3901,6 +3907,10 @@ document.addEventListener("click", async (e) => {
   }
   if (btn.dataset.action === "request-feedback") {
     requestWeekFeedback();
+    return;
+  }
+  if (btn.dataset.action === "toggle-recovery") {
+    if (typeof toggleRecoveryPanel === "function") toggleRecoveryPanel();
     return;
   }
   if (btn.dataset.action === "home-zone") {
@@ -4827,7 +4837,7 @@ window.resetApp = function resetApp() {
     localStorage.removeItem(`training-metrics:${CURRENT_USER_ID || "anon"}`);
   } catch { /* ignore */ }
   GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-  STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+  STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: false };
   STRAVA_CALLBACK_HANDLED = false;
   PLAN_OPEN_WEEKS = null;
   PLAN_FOCUS_WEEK = null;

@@ -233,17 +233,18 @@ function extraSportTargets(week) {
   ].join("");
 }
 
-function weekCard(week, acts, now, title) {
+function weekCard(week, acts, now, title, opts = {}) {
   const s = weekStart(week.wk), e = addDays(s, 6);
   const actual = weekRunKm(week, acts);
   const showActual = s <= now;
   const pct = Math.min(100, Math.round((actual / week.km) * 100));
+  const hideNote = !!opts.hideNote;
   return `
     <section class="card">
       <div class="card-head">
         <div>
           <div class="eyebrow">${title}</div>
-          <h2>${tt("home.weekTitle", { week: week.wk, range: `${short(s)} – ${short(e)}` })}</h2>
+          <h2>${short(s)} – ${short(e)}</h2>
         </div>
         <span class="pill p-${week.phase}">${week.phase}</span>
       </div>
@@ -257,7 +258,7 @@ function weekCard(week, acts, now, title) {
           <div class="progress-label">${tt("home.loggedRun", { unit: distUnit() })} <strong>${fmtDist(actual, 1)}</strong> / ${fmtDist(week.km, 0)}</div>
           <div class="bar"><div style="width:${pct}%"></div></div>
         </div>` : ""}
-      ${week.note ? `<p class="note">${week.note}</p>` : ""}
+      ${!hideNote && week.note ? `<p class="note">${week.note}</p>` : ""}
       <ul class="days">${week.days.map((_, i) => dayRow(week, i, acts, now)).join("")}</ul>
     </section>`;
 }
@@ -385,11 +386,35 @@ function todayPreferredShoeKind(targets) {
   return shoes ? "daily" : null;
 }
 
+function todayPickShoe(items, preferred = "daily") {
+  const pool = items.filter((g) => g.type === "shoes");
+  if (!pool.length) return null;
+  if (preferred && preferred !== "strength") {
+    return pool.find((g) => g.shoeKind === preferred)
+      || (preferred === "tempo" ? pool.find((g) => g.shoeKind === "race") : null)
+      || (preferred === "race" ? pool.find((g) => g.shoeKind === "tempo") : null)
+      || pool.find((g) => g.shoeKind === "daily")
+      || pool[0];
+  }
+  return pool.find((g) => g.shoeKind === "daily") || pool[0];
+}
+
+function todayPickSwim(items, label = "") {
+  const type = /wet/i.test(label) ? "wetsuit" : "swimsuit";
+  return items.find((g) => g.type === type)
+    || items.find((g) => g.type === "swimsuit" || g.type === "wetsuit")
+    || null;
+}
+
 function todayGearText(plan, targets) {
   if (!plan) return "";
   const rows = targets || todayGuideTargets(plan);
-  const preferred = todayPreferredShoeKind(rows);
+  let preferred = todayPreferredShoeKind(rows);
   const items = (typeof GEAR !== "undefined" && Array.isArray(GEAR.items)) ? GEAR.items.filter((g) => !g.retired) : [];
+  const label = String(plan.label || "");
+  const wantTypes = plannedSportCats(plan.kind);
+  const wantsSwim = plan.kind === "walkswim" || wantTypes.includes("swim") || /swim/i.test(label);
+  const wantsWalk = plan.kind === "walk" || plan.kind === "walkswim" || wantTypes.includes("walk") || /walk/i.test(label);
 
   if (plan.kind === "strength" || preferred === "strength") {
     if (typeof strengthGearAdvice === "function") {
@@ -400,33 +425,50 @@ function todayGearText(plan, targets) {
     return guideGear?.[1] || tt("home.todayGearBodyweight");
   }
 
-  const wantTypes = plannedSportCats(plan.kind);
-  let type = "shoes";
   if (plan.kind === "brick") {
     const bike = items.find((g) => g.type === "bike");
-    const shoes = items.find((g) => g.type === "shoes" && (g.shoeKind === "daily" || g.shoeKind === "tempo"))
-      || items.find((g) => g.type === "shoes");
+    const shoes = todayPickShoe(items, preferred || "daily");
     if (bike || shoes) return [bike?.name, shoes?.name].filter(Boolean).join(" · ");
     return tt("home.todayGearBrick");
   }
+
+  // Walk + swim (kind or label) should not pick race/tempo run shoes alone.
+  if (wantsSwim && wantsWalk) {
+    const shoes = todayPickShoe(items, "daily");
+    const swim = todayPickSwim(items, label);
+    const parts = [shoes?.name, swim?.name].filter(Boolean);
+    if (parts.length) return parts.join(" · ");
+    const guideGear = rows.find(([k]) => /shoe|kit|equipment|swim/i.test(k));
+    return guideGear?.[1] || tt("home.todayGearWalkSwim");
+  }
+
+  if (plan.kind === "walk" || (wantTypes.includes("walk") && !wantTypes.includes("run"))) {
+    preferred = preferred || "daily";
+    const shoes = todayPickShoe(items, preferred);
+    if (shoes) return shoes.name;
+    const guideGear = rows.find(([k]) => /shoe|kit|equipment/i.test(k));
+    return guideGear?.[1] || tt("home.todayGearNone");
+  }
+
+  let type = "shoes";
   if (wantTypes.includes("bike") && !wantTypes.includes("run")) type = "bike";
-  else if (wantTypes.includes("swim")) type = /wet/i.test(plan.label) ? "wetsuit" : "swimsuit";
+  else if (wantsSwim) type = /wet/i.test(label) ? "wetsuit" : "swimsuit";
   else if (!wantTypes.includes("run") && !wantTypes.includes("walk")) {
     const guideGear = rows.find(([k]) => /shoe|kit|equipment/i.test(k));
     return guideGear?.[1] || "";
   }
 
-  const pool = items.filter((g) => g.type === type);
-  if (!pool.length) {
+  if (type === "shoes") {
+    const shoes = todayPickShoe(items, preferred || "daily");
+    if (shoes) return shoes.name;
     const guideGear = rows.find(([k]) => /shoe|kit|equipment/i.test(k));
     return guideGear?.[1] || tt("home.todayGearNone");
   }
 
-  if (type === "shoes" && preferred && preferred !== "strength") {
-    const match = pool.find((g) => g.shoeKind === preferred)
-      || (preferred === "tempo" ? pool.find((g) => g.shoeKind === "race") : null)
-      || (preferred === "race" ? pool.find((g) => g.shoeKind === "tempo") : null);
-    if (match) return match.name;
+  const pool = items.filter((g) => g.type === type);
+  if (!pool.length) {
+    const guideGear = rows.find(([k]) => /shoe|kit|equipment|swim/i.test(k));
+    return guideGear?.[1] || tt("home.todayGearNone");
   }
   return pool[0].name;
 }
@@ -535,9 +577,6 @@ function todaySessionCard(acts, now) {
   const dayActs = (acts || []).filter((a) => a.date === ds);
   const busy = BUSY[ds];
   const dayMatch = plan ? matchPlanDay(plan, dayActs) : null;
-  const rec = typeof recoveryFor === "function" ? recoveryFor(ds) : null;
-  const weekday = fmt(now, { weekday: "long" });
-  const dateLine = fmt(now, { day: "numeric", month: "long" });
   const meta = !busy ? todaySessionMeta(plan) : null;
 
   let statusLine = tt("home.todayOpen");
@@ -578,9 +617,6 @@ function todaySessionCard(acts, now) {
   const logged = dayActs.length
     ? dayActs.slice(0, 2).map((a) => dayActivityMatchLine(a, dayMatch || { trainable: false }, plan?.kind)).join("")
     : "";
-  const recovery = rec
-    ? `<span class="today-rec lvl-${rec.band}" title="${esc(tt("day.recovery"))} ${rec.score}">${esc(typeof recoveryDayLabel === "function" ? recoveryDayLabel(rec.band) : tt("day.recovery"))}</span>`
-    : "";
 
   const metaHtml = meta
     ? `<div class="today-meta">
@@ -595,11 +631,9 @@ function todaySessionCard(acts, now) {
       <button class="today-card-hit" type="button" data-action="open-day" data-date="${esc(ds)}" aria-label="${esc(tt("home.todayOpenAria", { title }))}">
         <div class="today-card-top">
           <div class="eyebrow">${esc(tt("home.todayFocus"))}</div>
-          ${recovery}
         </div>
         <div class="today-card-main">
           <div>
-            <p class="today-date"><strong>${esc(weekday)}</strong> · ${esc(dateLine)}</p>
             <h2>${chip} <span class="today-title">${esc(title)}</span></h2>
             <p class="today-status">${statusLine}</p>
           </div>
@@ -610,6 +644,39 @@ function todaySessionCard(acts, now) {
       ${logged ? `<div class="today-logged">${logged}</div>` : ""}
       ${todayActionsHtml(plan, ds, statusClass)}
     </section>`;
+}
+
+function recoveryHomeCard(now) {
+  const ds = ymd(now);
+  const plan = planFor(ds);
+  const rec = typeof recoveryFor === "function" ? recoveryFor(ds) : null;
+  const block = typeof recoveryBlock === "function" ? recoveryBlock(ds, plan) : "";
+  if (!block) return "";
+  if (!rec) {
+    return `<section class="card recovery-home recovery-empty-home">${block}</section>`;
+  }
+  const band = rec.band;
+  const dayLabel = typeof recoveryDayLabel === "function" ? recoveryDayLabel(band) : band;
+  return `
+    <section class="card recovery-home recovery-collapsible lvl-${band}" data-band="${band}">
+      <button class="recovery-circle-btn" type="button" data-action="toggle-recovery" aria-expanded="false" aria-controls="recovery-panel">
+        <span class="recovery-circle lvl-${band}" aria-hidden="true">${esc(String(rec.score))}</span>
+        <span class="recovery-circle-copy">
+          <strong>${esc(dayLabel)}</strong>
+          <span class="muted small-text">${esc(tt("home.recoveryTap"))}</span>
+        </span>
+      </button>
+      <div class="recovery-panel" id="recovery-panel">${block}</div>
+    </section>`;
+}
+
+function toggleRecoveryPanel() {
+  const card = document.querySelector(".recovery-collapsible");
+  if (!card) return;
+  const open = !card.classList.contains("is-open");
+  card.classList.toggle("is-open", open);
+  const btn = card.querySelector("[data-action=toggle-recovery]");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function toggleTodayPanel(name) {
@@ -709,7 +776,6 @@ function downloadTodayIcs(ds) {
 
 function renderNoPlanHome(acts, now) {
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
-  const upcoming = upcomingEventsList(now, acts);
   const footnote = lastSync
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.logOrImport");
@@ -728,7 +794,7 @@ function renderNoPlanHome(acts, now) {
       <section class="card">
         <p class="muted" style="margin:0">${tt("home.emptyCard")}</p>
       </section>`}
-    ${eventsCard(now, upcoming, { acts })}
+    <div class="cta"><a class="button ghost" href="/events">${tt("home.manageEvents")}</a></div>
     <p class="footnote">${footnote}</p>`;
 }
 
@@ -739,7 +805,6 @@ function renderHome(acts, now) {
   const current = WEEKS[wk - 1];
   const phase = phaseOf(wk);
   const daysToRace = daysBetween(now, RACE);
-  const upcoming = upcomingEventsList(now, acts);
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const viewingPast = wk !== calendarWk;
   const zone = viewingPast ? "week" : homeZone();
@@ -750,15 +815,10 @@ function renderHome(acts, now) {
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.openDayOrImport");
 
-  const recovery = (() => {
-    const block = typeof recoveryBlock === "function" ? recoveryBlock(ymd(now), planFor(ymd(now))) : "";
-    return block ? `<section class="card recovery-home">${block}</section>` : "";
-  })();
-
   const todayZone = `
     <div class="home-zone home-zone-today">
       ${todaySessionCard(acts, now)}
-      ${recovery}
+      ${recoveryHomeCard(now)}
       ${raceWeekChecklistCard(now)}
     </div>`;
 
@@ -769,25 +829,30 @@ function renderHome(acts, now) {
         ${viewingPast ? `<button class="button ghost small" type="button" data-action="home-week-today">${tt("home.thisWeek")}</button>` : ""}
         <button class="button ghost small" type="button" data-action="home-week-next"${wk >= WEEKS.length ? " disabled" : ""} aria-label="${esc(tt("common.next"))}">${tt("home.nextWeek")}</button>
       </div>
-      ${weekCard(current, acts, now, homeWeekCardTitle(wk, calendarWk, 0))}
-      ${reviewCard(acts, now)}
-      ${eventsCard(now, upcoming, { acts })}
+      <div class="week-stack">
+        ${reviewCard(acts, now, { includePlanNote: true })}
+        ${weekCard(current, acts, now, homeWeekCardTitle(wk, calendarWk, 0), {
+          hideNote: reviewWeek(acts, now)?.wk === current.wk,
+        })}
+      </div>
       <div class="cta"><a class="button ghost" href="/plan">${tt("home.seeFullPlan")}</a></div>
     </div>`;
 
   return `
-    <section class="hero morning-hero">
-      <div>
-        <div class="eyebrow">${zone === "today"
-          ? tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })
-          : (viewingPast ? tt("home.viewingWeekLabel", { week: wk }) : phase.name)}</div>
-        <h1>${tt("home.weekOf", { week: wk, total: WEEKS.length })} <span class="muted">· ${phase.name}</span></h1>
-        <p class="muted">${esc(phase.focus)}</p>
-        ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
+    <section class="hero morning-hero hero-compact">
+      <div class="eyebrow">${zone === "today"
+        ? tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })
+        : (viewingPast ? tt("home.viewingWeekLabel", { week: wk }) : tt("home.zoneWeek"))}</div>
+      <div class="hero-row">
+        <div class="hero-week">
+          <h1>${tt("home.weekOf", { week: wk, total: WEEKS.length })} <span class="hero-phase-inline muted">· ${esc(phase.name)}</span></h1>
+          <p class="hero-phase-below">${esc(phase.name)}</p>
+        </div>
+        <button type="button" class="countdown" data-action="open-day" data-date="${ymd(RACE)}" title="${esc(tt("home.viewEvent", { event: eventLabel() }))}">
+          <strong>${daysToRace}</strong><span>${tt("home.daysTo", { event: eventLabel() })}</span>
+        </button>
       </div>
-      <button type="button" class="countdown" data-action="open-day" data-date="${ymd(RACE)}" title="${esc(tt("home.viewEvent", { event: eventLabel() }))}">
-        <strong>${daysToRace}</strong><span>${tt("home.daysTo", { event: eventLabel() })}</span>
-      </button>
+      ${window.CURRENT_PLAN?.notes ? `<p class="plan-notes">${esc(window.CURRENT_PLAN.notes)}</p>` : ""}
     </section>
 
     ${homeZoneToggle(zone)}
