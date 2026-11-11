@@ -342,9 +342,25 @@ function mapStravaToRow(
   const activityType = displayTypeName(typeKey);
   const title = String(src.name || activityType);
   const id = Number(src.id);
+  const workoutType = src.workout_type;
   const distDisplay = distance == null
     ? ""
     : String(cat === "swim" ? Math.round(distance) : Number(distance.toFixed(2)));
+
+  const raw: Record<string, unknown> = {
+    "Activity Type": activityType,
+    Date: started,
+    Title: title,
+    Distance: distDisplay,
+    Time: duration || "--",
+    "Avg HR": Number.isFinite(avgHr) ? String(Math.round(avgHr)) : "--",
+    "Max HR": Number.isFinite(maxHr) ? String(Math.round(maxHr)) : "--",
+    "Avg Pace": avgPace || "--",
+    Source: "strava-api",
+    stravaActivityId: Number.isFinite(id) ? id : null,
+    stravaTypeKey: typeKey,
+  };
+  if (workoutType != null && workoutType !== "") raw.stravaWorkoutType = workoutType;
 
   return {
     user_id: userId,
@@ -356,19 +372,7 @@ function mapStravaToRow(
     avg_hr: Number.isFinite(avgHr) ? Math.round(avgHr) : null,
     max_hr: Number.isFinite(maxHr) ? Math.round(maxHr) : null,
     avg_pace: avgPace || null,
-    raw: {
-      "Activity Type": activityType,
-      Date: started,
-      Title: title,
-      Distance: distDisplay,
-      Time: duration || "--",
-      "Avg HR": Number.isFinite(avgHr) ? String(Math.round(avgHr)) : "--",
-      "Max HR": Number.isFinite(maxHr) ? String(Math.round(maxHr)) : "--",
-      "Avg Pace": avgPace || "--",
-      Source: "strava-api",
-      stravaActivityId: Number.isFinite(id) ? id : null,
-      stravaTypeKey: typeKey,
-    },
+    raw,
   };
 }
 

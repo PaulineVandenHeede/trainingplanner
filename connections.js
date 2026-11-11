@@ -65,7 +65,15 @@ async function loadGarminStatus() {
 
 async function loadStravaStatus() {
   if (!CURRENT_USER_ID) {
-    STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+    STRAVA = {
+      connected: false,
+      shareWithCoach: false,
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastError: null,
+      needsReconnectForZones: false,
+      loaded: true,
+    };
     window.STRAVA_STATUS = STRAVA;
     return STRAVA;
   }
@@ -77,6 +85,7 @@ async function loadStravaStatus() {
       lastSyncAt: data.lastSyncAt || null,
       lastSyncStatus: data.lastSyncStatus || null,
       lastError: data.lastError || null,
+      needsReconnectForZones: !!data.needsReconnectForZones,
       loaded: true,
     };
   } catch (err) {
@@ -86,6 +95,7 @@ async function loadStravaStatus() {
       lastSyncAt: null,
       lastSyncStatus: null,
       lastError: err.message || "Could not load Strava status",
+      needsReconnectForZones: false,
       loaded: true,
     };
   }
@@ -409,8 +419,13 @@ function stravaStatusLine() {
   }
   const when = stravaLastSyncLabel();
   if (STRAVA.lastError) return `Last sync failed${when ? ` (${when})` : ""}: ${STRAVA.lastError}`;
-  if (STRAVA.lastSyncStatus) return `${when ? `Last sync ${when} · ` : ""}${STRAVA.lastSyncStatus}`;
-  return "Connected. Sync to pull sessions from Strava.";
+  const zonesHint = STRAVA.needsReconnectForZones
+    ? " Disconnect and connect again to allow heart-rate zones."
+    : "";
+  if (STRAVA.lastSyncStatus) {
+    return `${when ? `Last sync ${when} · ` : ""}${STRAVA.lastSyncStatus}${zonesHint}`;
+  }
+  return `Connected. Sync to pull sessions from Strava.${zonesHint}`;
 }
 
 function navSyncLabel() {
@@ -462,28 +477,40 @@ async function performGarminSync() {
 }
 
 async function performStravaSync() {
-  const data = await invokeStrava({ action: "sync" });
+  // One-time deeper lookback after raising FIRST_SYNC_DAYS (90 → 365), so prior races land.
+  const deepKey = `strava-deep-sync-365:${CURRENT_USER_ID || "anon"}`;
+  const deep = localStorage.getItem(deepKey) !== "done";
+  const data = await invokeStrava({ action: "sync", deep });
+  if (data?.ok) localStorage.setItem(deepKey, "done");
   STRAVA = {
     connected: true,
     shareWithCoach: STRAVA.shareWithCoach,
     lastSyncAt: data.lastSyncAt || null,
     lastSyncStatus: data.lastSyncStatus || null,
     lastError: data.lastError || null,
+    needsReconnectForZones: !!STRAVA.needsReconnectForZones,
     loaded: true,
   };
   window.STRAVA_STATUS = STRAVA;
+  if (data?.metrics && typeof applyGarminContext === "function") {
+    applyGarminContext({ metrics: data.metrics });
+  }
+  try { await loadStravaStatus(); } catch { /* keep sync payload */ }
   ACTS = await loadActivities();
   window._setupActs = ACTS;
   try { GEAR = await loadGear(); } catch {}
+  try { if (typeof loadWellness === "function") await loadWellness(); } catch {}
   const setupForm = document.querySelector(".setup-form");
   if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
     window.fillWeeklyFromSynced(setupForm, { force: true });
   }
   const n = data.added || 0;
   const bits = [];
+  if (data.deep) bits.push("365-day lookback");
   if (data.skippedDup) bits.push(`skipped ${data.skippedDup} already on Garmin`);
   if (data.gearAssigned) bits.push(`linked gear on ${data.gearAssigned}`);
   if (data.gearCreated) bits.push(`added ${data.gearCreated} from Strava`);
+  if (data.metrics?.zones) bits.push("HR zones updated");
   const base = n
     ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
     : (data.total || data.skippedDup

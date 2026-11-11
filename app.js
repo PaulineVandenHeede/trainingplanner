@@ -393,7 +393,11 @@ function categorize(type) {
   const t = type.toLowerCase();
   if (t.includes("run")) return "run";
   if (t.includes("swim")) return "swim";
-  if (t.includes("cycl") || t.includes("bik")) return "bike";
+  // Strava uses "Ride" / "Gravel Ride" / "VirtualRide"; Garmin often "cycling".
+  if (
+    t.includes("cycl") || t.includes("bik") || t.includes("ride") ||
+    t.includes("ebike") || t.includes("gravel")
+  ) return "bike";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
 }
@@ -1556,7 +1560,7 @@ window.unitsChoiceRow = unitsChoiceRow;
 
 
 let GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+let STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: false };
 let STRAVA_CALLBACK_HANDLED = false;
 
 
@@ -3878,7 +3882,7 @@ document.addEventListener("click", async (e) => {
     btn.disabled = true;
     try {
       await invokeStrava({ action: "disconnect" });
-      STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: true };
+      STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: true };
       ACTS = await loadActivities();
       render(true);
       toast("Strava disconnected. Imported activities were removed.");
@@ -4820,7 +4824,7 @@ window.resetApp = function resetApp() {
     localStorage.removeItem(`training-metrics:${CURRENT_USER_ID || "anon"}`);
   } catch { /* ignore */ }
   GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
-  STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
+  STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: false };
   STRAVA_CALLBACK_HANDLED = false;
   PLAN_OPEN_WEEKS = null;
   PLAN_FOCUS_WEEK = null;

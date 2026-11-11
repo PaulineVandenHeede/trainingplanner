@@ -9,8 +9,9 @@ const CORS = {
 const STRAVA_AUTH = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN = "https://www.strava.com/oauth/token";
 const STRAVA_API = "https://www.strava.com/api/v3";
-const STRAVA_SCOPES = "read,activity:read_all";
-const FIRST_SYNC_DAYS = 90;
+const STRAVA_SCOPES = "read,activity:read_all,profile:read_all";
+/** First connect / deep backfill window — long enough to keep prior race evidence (e.g. a spring half). */
+const FIRST_SYNC_DAYS = 365;
 const PAGE_SIZE = 50;
 const DETAIL_BUDGET = 40;
 const STATE_TTL_MS = 15 * 60 * 1000;
@@ -68,6 +69,7 @@ Deno.serve(async (req) => {
     code?: string;
     state?: string;
     full?: boolean;
+    deep?: boolean;
     shareWithCoach?: boolean;
     returnTo?: string;
   } = {};
@@ -93,7 +95,9 @@ Deno.serve(async (req) => {
       return json(await handleExchange(admin, user.id, body.code || "", body.state || "", body.redirectUri || ""));
     }
     if (action === "disconnect") return json(await handleDisconnect(admin, user.id));
-    if (action === "sync") return json(await handleSync(admin, user.id, body.full === true));
+    if (action === "sync") {
+      return json(await handleSync(admin, user.id, body.full === true, body.deep === true));
+    }
     return json({ error: "Unknown action" }, 400);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Strava request failed";
@@ -102,13 +106,18 @@ Deno.serve(async (req) => {
   }
 });
 
+function scopeHasProfileRead(scope: string | null | undefined) {
+  return String(scope || "").split(/[,\s]+/).filter(Boolean).includes("profile:read_all");
+}
+
 async function handleStatus(admin: Sb, userId: string) {
   const { data, error } = await admin
     .from("strava_connections")
-    .select("athlete_id,last_sync_at,last_sync_status,last_error,updated_at,share_with_coach")
+    .select("athlete_id,last_sync_at,last_sync_status,last_error,updated_at,share_with_coach,scope")
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
+  const hasProfileScope = scopeHasProfileRead(data?.scope);
   return {
     connected: !!data,
     athleteId: data?.athlete_id || null,
@@ -117,6 +126,8 @@ async function handleStatus(admin: Sb, userId: string) {
     lastError: data?.last_error || null,
     updatedAt: data?.updated_at || null,
     shareWithCoach: data?.share_with_coach === true,
+    hasProfileScope,
+    needsReconnectForZones: !!data && !hasProfileScope,
     passcodeRequired: true,
   };
 }
@@ -205,13 +216,14 @@ async function handleDisconnect(admin: Sb, userId: string) {
   return { ok: true, connected: false, removed };
 }
 
-async function handleSync(admin: Sb, userId: string, full = false) {
+async function handleSync(admin: Sb, userId: string, full = false, deep = false) {
   const conn = await loadConn(admin, userId);
   if (!conn) throw new Error("Connect Strava first.");
 
   try {
     const access = await ensureAccessToken(admin, userId, conn);
-    const after = full ? null : syncAfterEpoch(conn.last_sync_at);
+    // deep: re-open the first-sync lookback even after an earlier short sync (e.g. 90 → 365 days).
+    const after = full ? null : syncAfterEpoch(deep ? null : conn.last_sync_at);
     const summaries = await listActivities(access, after);
     const index = await loadActivityIndex(admin, userId);
     let added = 0;
@@ -284,11 +296,24 @@ async function handleSync(admin: Sb, userId: string, full = false) {
       gearNote = ` Gear matching skipped: ${message}`;
     }
 
+    let metrics: Record<string, unknown> | null = null;
+    let metricsNote = "";
+    try {
+      const zonesResult = await syncAthleteZones(admin, userId, access, conn);
+      metrics = zonesResult.metrics;
+      metricsNote = zonesResult.note ? ` ${zonesResult.note}` : "";
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Zone sync failed";
+      metricsNote = ` HR zones skipped: ${message}`;
+    }
+
     const now = new Date().toISOString();
     const dupNote = skippedDup ? ` Skipped ${skippedDup} already saved via Garmin.` : "";
     const status = full
-      ? `Full history: ${added} added, ${Math.max(0, total - added - skippedDup)} already saved.${dupNote}${gearNote}`
-      : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}`;
+      ? `Full history: ${added} added, ${Math.max(0, total - added - skippedDup)} already saved.${dupNote}${gearNote}${metricsNote}`
+      : deep
+        ? `Deep sync (${FIRST_SYNC_DAYS}d): ${added} added, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}`
+        : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}`;
     await admin.from("strava_connections").update({
       last_sync_at: now,
       last_sync_status: status,
@@ -306,7 +331,9 @@ async function handleSync(admin: Sb, userId: string, full = false) {
       detailed,
       gearAssigned,
       gearCreated,
+      metrics,
       full,
+      deep,
       lastSyncAt: now,
       lastSyncStatus: status,
       lastError: null,
@@ -323,14 +350,136 @@ async function handleSync(admin: Sb, userId: string, full = false) {
   }
 }
 
-async function loadConn(admin: Sb, userId: string): Promise<Conn | null> {
+async function loadConn(admin: Sb, userId: string): Promise<(Conn & { scope?: string | null }) | null> {
   const { data, error } = await admin
     .from("strava_connections")
-    .select("athlete_id,access_token,refresh_token,expires_at,last_sync_at")
+    .select("athlete_id,access_token,refresh_token,expires_at,last_sync_at,scope")
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
   return data || null;
+}
+
+/** Map Strava /athlete/zones into training_metrics floors + estimated max HR. */
+function metricsFromStravaZones(payload: Record<string, unknown>) {
+  const hr = payload.heart_rate && typeof payload.heart_rate === "object"
+    ? payload.heart_rate as Record<string, unknown>
+    : null;
+  const bands = Array.isArray(hr?.zones) ? hr.zones : [];
+  if (bands.length < 3) return null;
+
+  const floors = bands
+    .map((band) => {
+      if (!band || typeof band !== "object") return null;
+      const min = Number((band as Record<string, unknown>).min);
+      return Number.isFinite(min) && min > 40 ? Math.round(min) : null;
+    })
+    .filter((n): n is number => n != null);
+  if (floors.length < 3) return null;
+
+  const last = bands[bands.length - 1] as Record<string, unknown>;
+  const lastMin = Number(last?.min);
+  const lastMax = Number(last?.max);
+  let maxHr: number | null = null;
+  if (Number.isFinite(lastMax) && lastMax >= 150 && lastMax <= 230) {
+    maxHr = Math.round(lastMax);
+  } else if (Number.isFinite(lastMin) && lastMin >= 140 && lastMin <= 220) {
+    // Default Strava zones: Z5 starts near 97% of max HR when not custom.
+    maxHr = hr?.custom_zones === false
+      ? Math.round(lastMin / 0.97)
+      : Math.round(lastMin + 5);
+    if (maxHr > 230) maxHr = 230;
+  }
+
+  return {
+    zones: floors.slice(0, 5),
+    max_hr: maxHr,
+  };
+}
+
+async function getAthleteZones(accessToken: string) {
+  const res = await fetch(`${STRAVA_API}/athlete/zones`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const text = await res.text();
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("reconnect");
+  }
+  if (!res.ok) throw new Error(stravaError("zones", res.status, text));
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+async function syncAthleteZones(
+  admin: Sb,
+  userId: string,
+  accessToken: string,
+  conn: Conn & { scope?: string | null },
+): Promise<{ metrics: Record<string, unknown> | null; note: string }> {
+  if (!scopeHasProfileRead(conn.scope)) {
+    return {
+      metrics: null,
+      note: "Reconnect Strava to import heart-rate zones (needs profile access).",
+    };
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = await getAthleteZones(accessToken);
+  } catch (err) {
+    if (err instanceof Error && err.message === "reconnect") {
+      return {
+        metrics: null,
+        note: "Reconnect Strava to import heart-rate zones (needs profile access).",
+      };
+    }
+    throw err;
+  }
+  const parsed = metricsFromStravaZones(payload);
+  if (!parsed) {
+    return { metrics: null, note: "No Strava heart-rate zones configured." };
+  }
+
+  const { data: existing } = await admin
+    .from("training_metrics")
+    .select("max_hr,resting_hr,lthr,lt_speed_mps,vo2_run,zones,load")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const row: Record<string, unknown> = {
+    user_id: userId,
+    resting_hr: existing?.resting_hr ?? null,
+    lthr: existing?.lthr ?? null,
+    lt_speed_mps: existing?.lt_speed_mps ?? null,
+    vo2_run: existing?.vo2_run ?? null,
+    load: existing?.load ?? null,
+    zones: parsed.zones,
+    updated_at: new Date().toISOString(),
+  };
+  // Keep a higher Garmin/observed max HR if already present; otherwise use Strava estimate.
+  const prevMax = Number(existing?.max_hr);
+  if (parsed.max_hr && Number.isFinite(parsed.max_hr)) {
+    row.max_hr = Number.isFinite(prevMax) && prevMax >= parsed.max_hr ? Math.round(prevMax) : parsed.max_hr;
+  } else if (Number.isFinite(prevMax)) {
+    row.max_hr = Math.round(prevMax);
+  } else {
+    row.max_hr = null;
+  }
+
+  const { error } = await admin.from("training_metrics").upsert(row);
+  if (error) throw new Error(error.message);
+
+  const { data: saved } = await admin
+    .from("training_metrics")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const zoneCount = parsed.zones.length;
+  const maxBit = row.max_hr ? `, max HR ${row.max_hr}` : "";
+  return {
+    metrics: saved || row,
+    note: `HR zones imported (${zoneCount}${maxBit}).`,
+  };
 }
 
 async function ensureAccessToken(admin: Sb, userId: string, conn: Conn): Promise<string> {
@@ -751,6 +900,7 @@ function mapStravaToRow(
   const ascent = src.total_elevation_gain ?? summary.total_elevation_gain;
   const avgPower = src.average_watts ?? summary.average_watts;
   const cadence = src.average_cadence ?? summary.average_cadence;
+  const workoutType = src.workout_type ?? summary.workout_type;
 
   const distDisplay = distance == null
     ? ""
@@ -774,6 +924,7 @@ function mapStravaToRow(
     stravaActivityId: Number.isFinite(id) ? id : null,
     stravaTypeKey: typeKey,
   };
+  if (workoutType != null && workoutType !== "") raw.stravaWorkoutType = workoutType;
 
   return {
     user_id: userId,
