@@ -6626,11 +6626,18 @@ function showAppLoading() {
 
 window.bootApp = function bootApp() {
   if (currentRoute() === "setup") {
-    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-    if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
-      window.renderOnboarding();
+    // Returning users with a plan must not get stuck on leftover /setup.
+    if (hasPlan()) {
+      history.replaceState(null, "", "/home" + location.search);
+      document.body.classList.remove("onboarding");
+      // Fall through and boot Home.
+    } else {
+      const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+      if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
+        window.renderOnboarding();
+      }
+      return Promise.resolve();
     }
-    return Promise.resolve();
   }
   if (currentRoute() === "create-plan") {
     const hasForm = document.querySelector(".setup-form[data-create-only='1']");
@@ -6758,6 +6765,12 @@ window.resetApp = function resetApp() {
   window.CURRENT_USER_ID = null;
   window.CURRENT_PROFILE = null;
   window.CURRENT_USER_EMAIL = "";
+  document.body.classList.remove("onboarding");
+  // Drop leftover /setup so the next account doesn't inherit onboarding from this one.
+  const pathBase = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+  if (pathBase === "setup" || pathBase === "create-plan") {
+    history.replaceState(null, "", "/" + location.search);
+  }
   const app = document.getElementById("app");
   if (app) {
     app.dataset.route = "";

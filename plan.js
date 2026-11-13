@@ -137,6 +137,11 @@ function clearConnectStepDone() {
 function shouldShowConnectStep() {
   const userId = window.CURRENT_USER_ID;
   if (!userId) return false;
+  // Returning users (password recovery on a new device, etc.) already finished this.
+  if (window.CURRENT_PROFILE?.username || window.CURRENT_PLAN) {
+    try { localStorage.setItem(connectDoneKey(userId), "1"); } catch { /* ignore */ }
+    return false;
+  }
   try {
     if (localStorage.getItem(connectDoneKey(userId)) === "1") return false;
   } catch { /* ignore */ }
@@ -2681,6 +2686,19 @@ async function saveGeneratedPlan(userId, input) {
   return data;
 }
 
+function leaveSetupRouteIfNeeded() {
+  const base = setupRouteBase();
+  if (base !== "setup" && base !== "create-plan") return;
+  document.body.classList.remove("onboarding");
+  const next = "/home" + location.search;
+  if (location.pathname + location.search !== next) {
+    history.replaceState(null, "", next);
+  }
+  const app = document.getElementById("app");
+  if (app) app.dataset.route = "home";
+}
+window.leaveSetupRouteIfNeeded = leaveSetupRouteIfNeeded;
+
 async function loadOrCreatePlan(user) {
   window.CURRENT_USER_ID = user.id;
   const { data, error } = await sb.from("plans").select("*").eq("user_id", user.id).maybeSingle();
@@ -2689,11 +2707,14 @@ async function loadOrCreatePlan(user) {
   if (window.CURRENT_USER_ID !== user.id) return false;
   if (data) {
     applyPlanRow(data);
+    // A previous no-plan account may have left us on /setup — don't reopen onboarding.
+    leaveSetupRouteIfNeeded();
     showAppChrome();
     return true;
   }
   if (hasSkipped(user.id)) {
     window.PLAN_SKIPPED = true;
+    leaveSetupRouteIfNeeded();
     showAppChrome();
     return true;
   }
@@ -2744,21 +2765,15 @@ window.ensurePlan = function ensurePlan(user) {
     showAppChrome();
     return Promise.resolve(true);
   }
-  // Honor skip/remove BEFORE setupRouteOpen(). A leftover body.onboarding class from
-  // create-plan otherwise reopens setup and leaves Home stuck on "Loading…" until refresh.
+  // Honor skip/remove before any leftover /setup UI can reopen onboarding.
   if (!window.CURRENT_PLAN && hasSkipped(user.id)) {
     window.PLAN_SKIPPED = true;
-    document.body.classList.remove("onboarding");
+    leaveSetupRouteIfNeeded();
     showAppChrome();
     return Promise.resolve(true);
   }
-  if (setupRouteOpen() && !window.CURRENT_PLAN) {
-    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-    if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
-      window.renderOnboarding();
-    }
-    return Promise.resolve(false);
-  }
+  // Always fetch this user's plan from the DB — even if the URL is still /setup from a
+  // previous no-plan account. Short-circuiting here used to stick returning users in setup.
   if (ENSURING && ENSURING_USER === user.id) return ENSURING;
   ENSURING_USER = user.id;
   ENSURING = loadOrCreatePlan(user).finally(() => {
