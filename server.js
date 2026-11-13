@@ -27,7 +27,7 @@ const BLOCKED = new Set([
   "/package-lock.json",
 ]);
 const BLOCKED_PREFIXES = ["/data/", "/supabase/", "/.git/", "/.cursor/", "/node_modules/"];
-const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup", "create-plan"]);
+const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "research", "setup", "create-plan"]);
 
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",

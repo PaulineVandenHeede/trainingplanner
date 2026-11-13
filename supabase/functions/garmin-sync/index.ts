@@ -513,6 +513,7 @@ function categorize(type: string) {
   // E-bike before bike: "ebike" / "e_bike" also match the generic "bik" check.
   if (/e[\s_-]*bike|electric[\s_-]*bike|ebiking/.test(t)) return "ebike";
   if (t.includes("cycl") || t.includes("bik") || t.includes("ride") || t.includes("virtual_ride")) return "bike";
+  if (t.includes("ski") || t.includes("snowboard") || t.includes("piste")) return "ski";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
 }

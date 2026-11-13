@@ -385,6 +385,7 @@ function categorize(type: string) {
   if (t.includes("cycl") || t.includes("bik") || t.includes("ride") || t.includes("gravel")) {
     return "bike";
   }
+  if (t.includes("ski") || t.includes("snowboard") || t.includes("piste")) return "ski";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
 }

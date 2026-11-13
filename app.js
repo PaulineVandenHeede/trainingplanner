@@ -9,7 +9,7 @@ function KIND_LABEL(kind) {
   if (typeof window.kindLabel === "function") return window.kindLabel(kind);
   const fallback = {
     run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
-    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", ebike: "E-bike", brick: "Brick",
+    walk: "Walk", ski: "Ski", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", ebike: "E-bike", brick: "Brick",
     rest: "Rest", travel: "Travel",
   };
   return fallback[kind] || kind || "";
@@ -18,10 +18,13 @@ function tt(key, vars) {
   return typeof window.t === "function" ? window.t(key, vars) : key;
 }
 const KIND_MATCH = {
-  run: ["run"], quality: ["run"], long: ["run"], event: ["run"], race: ["run"],
-  walk: ["walk"], swim: ["swim"], walkswim: ["swim"], bike: ["bike"],
+  run: ["run"], quality: ["run"], long: ["run", "walk"], event: ["run", "walk", "bike", "swim", "ski"],
+  race: ["run", "walk", "bike", "swim", "ski"],
+  walk: ["walk"], ski: ["ski"], swim: ["swim"], walkswim: ["swim"], bike: ["bike"],
   brick: ["bike", "run"],
 };
+const AGENDA_EVENT_SPORTS = () => (window.EVENT_SPORTS || ["run", "swim", "bike", "triathlon", "walk", "ski"]);
+const LEG_SPORTS = () => AGENDA_EVENT_SPORTS().filter((s) => s !== "triathlon");
 
 // Activity ↔ planned session matching (sport + distance + soft time-of-day).
 const MATCH_SPORT_SCORE = 40;
@@ -400,6 +403,7 @@ function categorize(type) {
     t.includes("cycl") || t.includes("bik") || t.includes("ride") ||
     t.includes("gravel")
   ) return "bike";
+  if (t.includes("ski") || t.includes("snowboard") || t.includes("piste")) return "ski";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
 }
@@ -586,6 +590,7 @@ function activityLine(a) {
   else if (a.cat === "ebike") bits.push(`E-bike ${fmtDistWithUnit(a.dist)}`);
   else if (a.cat === "bike") bits.push(`Bike ${fmtDistWithUnit(a.dist)}`);
   else if (a.cat === "walk") bits.push(`Walk ${fmtDistWithUnit(a.dist)}`);
+  else if (a.cat === "ski") bits.push(`Ski ${fmtDistWithUnit(a.dist)}`);
   else bits.push(`Run ${fmtDistWithUnit(a.dist)}`);
   if (dur && a.cat !== "walk") bits.push(dur);
   if (a.pace && a.cat === "run") bits.push(fmtRunPace(a.pace));
@@ -602,6 +607,7 @@ const LOG_TYPES = {
   ebike: { type: "E-Bike", title: "E-bike ride", unitKey: "dist" },
   swim: { type: "Pool Swim", title: "Swim", unitKey: "m" },
   walk: { type: "Walking", title: "Walk", unitKey: "dist" },
+  ski: { type: "Ski", title: "Ski", unitKey: "dist" },
 };
 
 function isManualActivity(a) {
@@ -630,6 +636,14 @@ function stravaViewLink(a) {
 
 function plannedLogSport(plan) {
   if (!plan) return "run";
+  if (plan.kind === "ski" || plan.kind === "walk" || plan.kind === "swim" || plan.kind === "bike") {
+    return plan.kind;
+  }
+  const label = String(plan.label || "").toLowerCase();
+  if (/\bski|skiing\b/.test(label)) return "ski";
+  if (/\bwalk|walking\b/.test(label)) return "walk";
+  if (/\bswim\b/.test(label)) return "swim";
+  if (/\bbike|cycl|ride\b/.test(label)) return "bike";
   const wanted = KIND_MATCH[plan.kind] || [];
   return wanted[0] || "run";
 }
@@ -710,6 +724,7 @@ function logSessionFields(sport, { distance = "", duration = "", hr = "", date =
         ${option("ebike", "E-bike")}
         ${option("swim", "Swim")}
         ${option("walk", "Walk")}
+        ${option("ski", "Ski")}
       </select>
     </label>
     <label>Distance (<span data-unit>${unit}</span>)
@@ -787,29 +802,98 @@ function activityPageLogForm() {
 let EVENTS = [];
 let eventFormDraft = null;
 let eventFollowUpId = null;
+let eventEditingId = null;
+let eventPersonalDraft = null;
 
-function captureEventFormDraft() {
-  const form = document.querySelector("#app .event-form");
+function captureEventFormDraft(formEl) {
+  const form = formEl || document.querySelector("#app .event-form");
   if (!form) return;
   if (form.hidden) {
-    eventFormDraft = null;
+    if (!eventEditingId) eventFormDraft = null;
     return;
+  }
+  syncLegsJson(form);
+  const fields = Object.fromEntries(new FormData(form));
+  if (fields.legs_json) {
+    try { fields.legs = JSON.parse(fields.legs_json); } catch { /* keep string */ }
   }
   eventFormDraft = {
     open: true,
     locked: form.classList.contains("from-public"),
-    fields: Object.fromEntries(new FormData(form)),
+    editId: form.dataset.editId || eventEditingId || null,
+    fields,
   };
+  if (form.dataset.editId) eventEditingId = form.dataset.editId;
+}
+function rememberEventForm(form) {
+  captureEventFormDraft(form);
+}
+
+function captureEventPersonalDraft(formEl) {
+  const form = formEl || document.querySelector("#app .event-personal.is-followup");
+  if (!form) return;
+  const id = form.dataset.id;
+  if (!id || (eventFollowUpId && String(id) !== String(eventFollowUpId))) return;
+  eventPersonalDraft = {
+    id: String(id),
+    effort: form.effort?.value || "",
+    note: form.querySelector("[name=note]")?.value || "",
+  };
+}
+function rememberEventPersonal(form) {
+  captureEventPersonalDraft(form);
 }
 
 function restoreEventFormDraft(root) {
   const form = root.querySelector(".event-form");
   if (!form || !eventFormDraft?.open) return;
+  if (eventFormDraft.editId) form.dataset.editId = eventFormDraft.editId;
   if (eventFormDraft.locked) setAgendaEventLocked(form, true);
   const search = form.querySelector("input[name=event_search]");
   if (search && !eventFormDraft.locked && search.value.trim().length >= 2) {
     search.dispatchEvent(new Event("input", { bubbles: true }));
   }
+}
+
+function agendaFieldsFromEvent(ev) {
+  if (!ev) return {};
+  const legs = Array.isArray(ev.legs) ? ev.legs : [];
+  return {
+    date: String(ev.date || "").slice(0, 10),
+    end_date: String(ev.end_date || ev.date || "").slice(0, 10),
+    name: ev.name || "",
+    location: ev.location || "",
+    kind: ev.kind || "race",
+    sport: ev.sport || "run",
+    km: ev.km != null ? String(ev.km) : "",
+    event_note: ev.event_note || "",
+    is_public: ev.is_public ? "yes" : "no",
+    legs,
+    legs_json: JSON.stringify(legs),
+    swim_m: ev.swim_m != null ? String(ev.swim_m) : "",
+    bike_km: ev.bike_km != null ? String(ev.bike_km) : "",
+    source_id: ev.source_id || "",
+    preset: "custom",
+  };
+}
+
+function eventSharesPublicly(ev) {
+  return !!(ev && (ev.is_public || ev.source_id));
+}
+
+function openEventFormForEdit(ev) {
+  if (!ev?.id) return;
+  captureEventPersonalDraft();
+  eventFollowUpId = null;
+  eventEditingId = String(ev.id);
+  eventFormDraft = {
+    open: true,
+    locked: !!ev.source_id,
+    editId: String(ev.id),
+    fields: agendaFieldsFromEvent(ev),
+  };
+  render(true);
+  document.getElementById("events")?.scrollIntoView({ block: "start" });
 }
 const EFFORT_LABEL = { easy: "easy", steady: "steady", race: "race pace", other: "something else" };
 
@@ -840,19 +924,34 @@ async function loadEvents() {
   return data || [];
 }
 window.loadEvents = loadEvents;
+window.peekEvents = () => EVENTS;
 
 function ownsEvent(ev) {
   return !!(ev && !ev.source_id);
 }
 
-const eventsOn = (dateStr) => EVENTS.filter((e) => eventDay(e) === String(dateStr || "").slice(0, 10));
+const eventsOn = (dateStr) => {
+  const ds = String(dateStr || "").slice(0, 10);
+  return EVENTS.filter((e) => (
+    typeof window.eventCoversDate === "function"
+      ? window.eventCoversDate(e, ds)
+      : eventDay(e) === ds
+  ));
+};
 
 function isGoalRace(ev) {
   if (!ev) return false;
   if (ev.race) return true;
   const plan = window.CURRENT_PLAN;
   if (!plan) return false;
-  return plan.event_date === ev.date && (!plan.event_name || plan.event_name === ev.name);
+  const sameName = !plan.event_name || plan.event_name === ev.name;
+  if (plan.event_date === ev.date && sameName) return true;
+  if (plan.event_end_date && sameName) {
+    const start = String(ev.date || "").slice(0, 10);
+    const end = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : start;
+    return plan.event_date === start && plan.event_end_date === end;
+  }
+  return false;
 }
 
 // An added event that the plan doesn't account for yet: flag when the same week already has a long run.
@@ -865,17 +964,17 @@ function eventConflict(week, dayIndex, ev) {
 }
 
 function eventLines(week, dayIndex, ds) {
-  const [kind] = week.days[dayIndex];
+  const [kind, label = ""] = week.days[dayIndex] || [];
   return eventsOn(ds).map((ev) => {
-    if (kind === "event" || kind === "race") {
-      const extra = [];
-      if (ev.effort && ev.effort !== "race") extra.push(effortLabel(ev.effort));
-      if (ev.note) extra.push(esc(ev.note));
-      return extra.length ? `<div class="event-note">★ ${extra.join(" — ")}</div>` : "";
-    }
+    const name = String(ev?.name || "");
+    // Day/session already names this event (or is the woven event day) — week ★ badge is enough.
+    if (kind === "event" || kind === "race") return "";
+    if (name && String(label).includes(name)) return "";
     const conflict = eventConflict(week, dayIndex, ev);
+    const multi = !!(ev.end_date && ev.end_date > ev.date);
+    const distBit = multi || !(Number(ev.km) >= 1) ? "" : ` · ${fmtDistWithUnit(ev.km)}`;
     return `
-      <div class="event-note">★ ${esc(ev.name)} · ${fmtDistWithUnit(ev.km)} · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
+      <div class="event-note">★ ${esc(ev.name)}${distBit} · ${effortLabel(ev.effort)}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>
       ${conflict ? `<div class="event-warn">${conflict}</div>` : ""}`;
   }).join("");
 }
@@ -1096,20 +1195,33 @@ function effortChoices(selected) {
 
 function eventPersonalForm(ev, { lead = false } = {}) {
   const goal = isGoalRace(ev);
-  const selected = lead ? "" : (ev.effort === "steady" ? "other" : (ev.effort || ""));
+  const shared = eventSharesPublicly(ev);
+  // Private create already has a note on step 1 — don't ask again on follow-up.
+  const showNote = !lead || shared;
+  const draft = lead && eventPersonalDraft && String(eventPersonalDraft.id) === String(ev.id)
+    ? eventPersonalDraft
+    : null;
+  const selectedRaw = draft?.effort
+    || (lead ? "" : (ev.effort === "steady" ? "other" : (ev.effort || "")));
+  const selected = selectedRaw === "steady" ? "other" : selectedRaw;
   const known = selected === "easy" || selected === "race" || selected === "other";
+  const noteValue = draft?.note != null ? draft.note : (lead ? "" : (ev.note || ""));
+  const privacyLine = shared
+    ? `<p class="muted small-text">Your effort${showNote ? " and note" : ""} stay private — they aren’t shared with the public listing.</p>`
+    : "";
   return `
     <form class="event-personal${lead ? " is-followup" : " in-dialog"}" data-id="${esc(ev.id)}">
       ${lead ? `<p class="personal-lead">How hard is ${esc(ev.name)} for you?</p>` : `<div class="eyebrow">Just for you</div>`}
-      <p class="muted small-text">Effort and your personal note stay on your agenda. They are not part of the public event.</p>
+      ${privacyLine}
       <fieldset class="effort-field">
         <legend>Your effort</legend>
         <div class="choice-row">${effortChoices(known ? selected : "")}</div>
       </fieldset>
       <input type="hidden" name="effort" value="${known ? esc(selected) : ""}" />
+      ${showNote ? `
       <label class="full">Personal note <span class="muted">(optional, only you)</span>
-        <input type="text" name="note" maxlength="140" placeholder="${selected === "other" ? "What kind of effort? Only you see this." : "e.g. wave B, jog it with friends"}" value="${lead ? "" : esc(ev.note || "")}" />
-      </label>
+        <input type="text" name="note" maxlength="140" placeholder="${selected === "other" ? "What kind of effort? Only you see this." : "e.g. wave B, jog it with friends"}" value="${esc(noteValue)}" />
+      </label>` : ""}
       <div class="plan-offer">
         ${goal
           ? `<p class="muted small-text">This event is already your plan.</p>`
@@ -1118,6 +1230,7 @@ function eventPersonalForm(ev, { lead = false } = {}) {
       </div>
       <div class="form-actions">
         <span class="form-error"></span>
+        ${lead ? `<button class="button ghost" type="button" data-action="back-event-personal">Back</button>` : ""}
         ${lead ? `<button class="button ghost" type="button" data-action="skip-event-personal">Not now</button>` : ""}
         <button class="button${lead ? "" : " small"}" type="submit">Save</button>
       </div>
@@ -1842,19 +1955,39 @@ window.renderProfile = renderProfile;
 function eventSportCats(ev) {
   const sport = String(ev?.sport || "run").toLowerCase();
   if (sport === "triathlon" || sport === "tri") return ["run", "swim", "bike"];
-  if (sport === "swim" || sport === "bike" || sport === "run") return [sport];
+  if (["swim", "bike", "run", "walk", "ski"].includes(sport)) return [sport];
+  if (Array.isArray(ev?.legs)) {
+    const cats = new Set();
+    ev.legs.forEach((leg) => (leg.items || []).forEach((it) => {
+      if (["swim", "bike", "run", "walk", "ski"].includes(it.sport)) cats.add(it.sport);
+    }));
+    if (cats.size) return [...cats];
+  }
   return ["run"];
 }
 
 function eventIsDone(ev, acts = ACTS) {
-  const ds = eventDay(ev);
-  if (!ds) return false;
+  const start = eventDay(ev);
+  if (!start) return false;
+  const end = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : start;
   const wanted = eventSportCats(ev);
-  return acts.some((a) => a.date === ds && wanted.includes(a.cat));
+  // Multi-day: done when every active leg day has a matching activity (rest days ignored).
+  const days = typeof window.expandEventToDayEntries === "function"
+    ? window.expandEventToDayEntries(ev)
+    : [{ date: start, items: [{ sport: ev.sport, km: ev.km }] }];
+  const active = days.filter((d) => (d.items || []).length);
+  if (!active.length) {
+    return acts.some((a) => a.date >= start && a.date <= end && wanted.includes(a.cat));
+  }
+  return active.every((d) => {
+    const want = (d.items || []).map((it) => it.sport);
+    return acts.some((a) => a.date === d.date && want.includes(a.cat));
+  });
 }
 
 function eventIsPast(ev, now, acts = ACTS) {
-  const d = parseDate(eventDay(ev));
+  const endStr = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : eventDay(ev);
+  const d = parseDate(endStr);
   if (Number.isNaN(d.getTime())) return false;
   if (d < now) return true;
   return d.getTime() === now.getTime() && eventIsDone(ev, acts);
@@ -1873,17 +2006,29 @@ function upcomingEventsList(now, acts = ACTS) {
 function eventListItem(e, now, { past = false } = {}) {
   const ds = eventDay(e);
   const d = parseDate(ds);
+  const endStr = typeof window.eventEndYmd === "function" ? window.eventEndYmd(e) : ds;
+  const multi = endStr && endStr !== ds;
   const wk = hasPlan() ? weekOf(d) : 0;
   const weekBit = wk >= 1 && wk <= WEEKS.length ? ` · week ${wk}` : "";
-  const n = past ? daysBetween(d, now) : daysBetween(now, d);
+  const anchor = past ? parseDate(endStr) : d;
+  const n = past ? daysBetween(anchor, now) : daysBetween(now, d);
   const when = past
     ? (n === 0 ? "today" : `${n} day${n === 1 ? "" : "s"} ago`)
     : (n === 0 ? "today" : `in ${n} days`);
-  return `<li class="event-item ${e.race ? "race" : ""}${past ? " past" : ""}">
+  const rangeBit = multi && typeof window.eventRangeSummary === "function"
+    ? window.eventRangeSummary(e)
+    : "";
+  const distBit = multi && rangeBit
+    ? rangeBit
+    : fmtDistWithUnit(e.km);
+  const dateLabel = multi
+    ? `<strong>${fmt(d, { day: "numeric" })}–${fmt(parseDate(endStr), { day: "numeric" })}</strong><span>${fmt(d, { month: "short" })}</span>`
+    : `<strong>${fmt(d, { day: "numeric" })}</strong><span>${fmt(d, { month: "short" })}</span>`;
+  return `<li class="event-item ${e.race ? "race" : ""}${past ? " past" : ""}${multi ? " multi-day" : ""}">
     <button type="button" class="ev-open" data-action="open-day" data-date="${esc(ds)}" title="View ${esc(e.name)}">
-      <span class="ev-date"><strong>${fmt(d, { day: "numeric" })}</strong><span>${fmt(d, { month: "short" })}</span></span>
+      <span class="ev-date">${dateLabel}</span>
       <span class="ev-main">
-        <span class="ev-name">${esc(e.name)} · ${fmtDistWithUnit(e.km)} <span class="muted">· ${effortLabel(e.effort)}${weekBit} · ${when}${e.location ? ` · ${esc(e.location)}` : ""}${e.is_public ? " · public" : ""}</span></span>
+        <span class="ev-name">${esc(e.name)} · ${esc(distBit)} <span class="muted">· ${effortLabel(e.effort)}${e.kind && e.kind !== "race" ? ` · ${esc(e.kind)}` : ""}${weekBit} · ${when}${e.location ? ` · ${esc(e.location)}` : ""}${e.is_public ? " · public" : ""}</span></span>
         ${e.note ? `<span class="ev-personal">${esc(e.note)}</span>` : ""}
       </span>
       <span class="day-open" aria-hidden="true">›</span>
@@ -1896,6 +2041,239 @@ function followUpEvent() {
   if (!eventFollowUpId) return null;
   return EVENTS.find((e) => String(e.id) === String(eventFollowUpId)) || null;
 }
+
+
+function parseJsonSafe(raw, fallback) {
+  try {
+    const v = JSON.parse(raw || "");
+    return v == null ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+
+function agendaLegsFromFields(fields = {}) {
+  const start = String(fields.date || "").slice(0, 10);
+  const end = String(fields.end_date || start).slice(0, 10);
+  const legs = Array.isArray(fields.legs) ? fields.legs : parseJsonSafe(fields.legs_json, []);
+  if (!start) return [];
+  return typeof window.normalizeEventLegs === "function"
+    ? window.normalizeEventLegs(start, end || start, legs)
+    : [{ date: start, items: [] }];
+}
+
+function eventKindChoicesHtml(selected = "race") {
+  const kinds = window.EVENT_KINDS || ["race", "stage", "camp", "holiday"];
+  const label = {
+    race: tt("events.kindRace"),
+    stage: tt("events.kindStage"),
+    camp: tt("events.kindCamp"),
+    holiday: tt("events.kindHoliday"),
+  };
+  return kinds.map((k) => `
+    <button class="choice-btn${k === selected ? " active" : ""}" type="button" data-event-kind="${k}">${esc(label[k] || k)}</button>`).join("");
+}
+
+function legDistUnit(sport) {
+  return sport === "swim" ? "m" : distUnit();
+}
+
+function legDistDisplay(sport, km) {
+  const n = Number(km);
+  if (!(n > 0)) return "";
+  if (sport === "swim") return String(Math.round(n * 1000));
+  return displayDistValue(n, 1);
+}
+
+function legDistParse(sport, raw) {
+  if (sport === "swim") {
+    const m = Number(raw);
+    return m > 0 ? m / 1000 : 0;
+  }
+  return typeof parseDistInput === "function" ? parseDistInput(raw) : Number(raw);
+}
+
+function defaultLegItem(form) {
+  return { sport: defaultLegSport(form) };
+}
+
+function legDayHeading(dateStr) {
+  const d = typeof parseDate === "function" ? parseDate(dateStr) : new Date(`${dateStr}T12:00:00`);
+  if (!d || Number.isNaN(d.getTime())) return String(dateStr || "");
+  return fmt(d, { weekday: "long", day: "numeric", month: "long" });
+}
+
+window.eventLegsEditorHtml = function eventLegsEditorHtml(legs, { locked = false } = {}) {
+  if (!legs.length || legs.length < 2) return "";
+  const sports = LEG_SPORTS();
+  const rows = legs.map((leg, idx) => {
+    const items = Array.isArray(leg.items) ? leg.items : [];
+    const rest = !items.length;
+    const itemRows = (rest ? [] : items).map((it, j) => {
+      const sport = it.sport || "run";
+      const swim = sport === "swim";
+      return `
+      <div class="event-leg-item" data-leg="${idx}" data-item="${j}" data-sport="${esc(sport)}">
+        <select name="leg_sport_${idx}_${j}" ${locked ? "disabled" : ""}>
+          ${sports.map((s) => `<option value="${s}"${s === sport ? " selected" : ""}>${esc(typeof window.sportLabel === "function" ? window.sportLabel(s) : s)}</option>`).join("")}
+        </select>
+        <input type="number" name="leg_km_${idx}_${j}" min="${swim ? "25" : "0.1"}" step="${swim ? "25" : "0.1"}" value="${esc(legDistDisplay(sport, it.km))}" placeholder="${esc(tt("events.distanceOptional"))}" ${locked ? "readonly" : ""} aria-label="${esc(tt("events.distanceOptional"))}" />
+        <span class="event-leg-unit" data-leg-unit>${esc(legDistUnit(sport))}</span>
+        ${locked ? "" : `<button class="button ghost small" type="button" data-action="leg-remove-sport" data-leg="${idx}" data-item="${j}">×</button>`}
+      </div>`;
+    }).join("");
+    return `
+      <div class="event-leg-day" data-leg="${idx}" data-date="${esc(leg.date)}">
+        <div class="event-leg-day-head">
+          <strong>${esc(legDayHeading(leg.date))}</strong>
+          <label class="event-leg-rest"><input type="checkbox" data-action="leg-rest" data-leg="${idx}" ${rest ? "checked" : ""} ${locked ? "disabled" : ""} /> ${esc(tt("events.restDay"))}</label>
+          ${locked || idx === 0 ? "" : `<button class="button ghost small" type="button" data-action="leg-copy-prev" data-leg="${idx}">${esc(tt("events.copyPrevDay"))}</button>`}
+        </div>
+        <div class="event-leg-items"${rest ? " hidden" : ""}>${itemRows}</div>
+        ${locked || rest ? "" : `<button class="button ghost small" type="button" data-action="leg-add-sport" data-leg="${idx}">${esc(tt("events.addSport"))}</button>`}
+      </div>`;
+  }).join("");
+  return `
+    <fieldset class="full event-legs-field">
+      <legend>${esc(tt("events.dayLegs"))}</legend>
+      <div class="event-legs-editor">${rows}</div>
+      <input type="hidden" name="legs_json" value="${esc(JSON.stringify(legs))}" />
+    </fieldset>`;
+}
+
+function eventFormRange(form) {
+  const start = form?.date?.value
+    || form?.querySelector?.("[name=date], [name=event_date]")?.value
+    || "";
+  const end = form?.end_date?.value
+    || form?.querySelector?.("[name=end_date], [name=event_end_date]")?.value
+    || start;
+  return { start, end };
+}
+
+function legsJsonInput(form) {
+  return form?.querySelector?.("[name=legs_json], [name=event_legs_json]") || null;
+}
+
+function defaultLegSport(form) {
+  const sport = form?.sport?.value || form?.querySelector?.("[name=sport]")?.value || "run";
+  return sport && sport !== "triathlon" ? sport : "run";
+}
+
+window.readLegsFromEditor = function readLegsFromEditor(form) {
+  const { start, end } = eventFormRange(form);
+  if (!start) return [];
+  const days = [];
+  form.querySelectorAll(".event-leg-day").forEach((row) => {
+    const date = row.dataset.date || "";
+    const rest = row.querySelector("[data-action=leg-rest]")?.checked;
+    const items = [];
+    if (!rest) {
+      row.querySelectorAll(".event-leg-item").forEach((item) => {
+        const sport = item.querySelector("select")?.value || "run";
+        const raw = item.querySelector("input[type=number]")?.value;
+        const km = legDistParse(sport, raw);
+        if (km > 0) items.push({ sport, km });
+        else items.push({ sport });
+      });
+    }
+    days.push({ date, items });
+  });
+  if (!days.length) {
+    return typeof window.normalizeEventLegs === "function"
+      ? window.normalizeEventLegs(start, end, [])
+      : [];
+  }
+  return typeof window.normalizeEventLegs === "function"
+    ? window.normalizeEventLegs(start, end, days)
+    : days;
+}
+
+function syncLegsJson(form) {
+  const hidden = legsJsonInput(form);
+  if (!hidden) return;
+  const legs = readLegsFromEditor(form);
+  hidden.value = JSON.stringify(legs);
+  if (form.classList.contains("setup-form")) form.dataset.eventLegsJson = hidden.value;
+  return legs;
+}
+
+function syncEventKmConstraint(form, multi) {
+  const kmInput = form?.km;
+  if (!kmInput) return;
+  const preset = form.preset?.value || "";
+  const isCustom = !preset || preset === "custom";
+  // Hidden required fields block submit with no visible browser error.
+  kmInput.required = !multi && isCustom;
+  kmInput.disabled = !!multi;
+}
+
+function rebuildEventLegsEditor(form, legsOverride = null) {
+  if (!form || form.classList.contains("from-public")) return;
+  if (form.classList.contains("setup-form")) {
+    if (legsOverride) {
+      form.dataset.eventLegsJson = JSON.stringify(legsOverride);
+      const hidden = legsJsonInput(form);
+      if (hidden) hidden.value = JSON.stringify(legsOverride);
+    } else {
+      syncLegsJson(form);
+    }
+    if (typeof window.paintSetupEventLegs === "function") window.paintSetupEventLegs(form);
+    return;
+  }
+  const { start, end } = eventFormRange(form);
+  let host = form.querySelector(".event-legs-field");
+  const multi = !!(start && end && end > start);
+  form.querySelector(".event-single-distance")?.toggleAttribute("hidden", multi);
+  syncEventKmConstraint(form, multi);
+  if (!multi) {
+    if (host) host.remove();
+    const legsInput = legsJsonInput(form);
+    if (legsInput) legsInput.value = "[]";
+    return;
+  }
+  // Prefer an explicit override (just-mutated legs). Do not re-read the DOM first —
+  // that would wipe add-sport / uncheck-rest updates that only live in legs_json yet.
+  const existing = Array.isArray(legsOverride)
+    ? legsOverride
+    : parseJsonSafe(legsJsonInput(form)?.value, []);
+  let legs = typeof window.normalizeEventLegs === "function"
+    ? window.normalizeEventLegs(start, end, existing)
+    : existing;
+  // Auto end-date makes multi-day the default; seed day 1 so Save isn't blocked by all-rest.
+  if (!Array.isArray(legsOverride) && legs.length > 1 && !legs.some((leg) => (leg.items || []).length)) {
+    legs = legs.map((leg, i) => (i === 0 ? { date: leg.date, items: [defaultLegItem(form)] } : leg));
+  }
+  const html = eventLegsEditorHtml(legs, { locked: false });
+  if (host) host.outerHTML = html;
+  else {
+    const note = form.querySelector(".event-note-field");
+    note?.insertAdjacentHTML("beforebegin", html);
+  }
+  const legsInput = legsJsonInput(form);
+  if (legsInput) legsInput.value = JSON.stringify(legs);
+}
+
+function deriveEventSummaryFromForm(form, data) {
+  const start = data.date;
+  const end = data.end_date || start;
+  const multi = end && start && end > start;
+  if (!multi) return data;
+  const legs = Array.isArray(data.legs) ? data.legs : parseJsonSafe(data.legs_json, []);
+  const normalized = typeof window.normalizeEventLegs === "function"
+    ? window.normalizeEventLegs(start, end, legs)
+    : legs;
+  const sum = typeof window.summarizeEventLegs === "function"
+    ? window.summarizeEventLegs(normalized)
+    : { sport: data.sport || "run", km: Number(data.km) || 0.1, swim_m: null, bike_km: null };
+  data.legs = normalized;
+  data.sport = sum.sport || data.sport || "run";
+  data.km = sum.km || 0.1;
+  data.swim_m = sum.swim_m;
+  data.bike_km = sum.bike_km;
+  return data;
+}
+
 
 function eventDistanceChoicesHtml(sport, selectedPreset = "") {
   const presets = (window.EVENT_PRESETS && window.EVENT_PRESETS[sport]) || [];
@@ -1911,44 +2289,64 @@ function eventsCard(now, upcoming, opts = {}) {
   const fields = eventFormDraft?.fields || {};
   const open = !!eventFormDraft?.open && !follow;
   const locked = !!eventFormDraft?.locked;
+  const editId = eventFormDraft?.editId || eventEditingId || "";
   const sport = fields.sport || "run";
+  const kind = (window.EVENT_KINDS || []).includes(fields.kind) ? fields.kind : (fields.kind || "race");
   const isPublic = fields.is_public === "yes" ? "yes" : "no";
   const preset = fields.preset || "";
   const field = (name) => esc(fields[name] || "");
   const customOpen = preset === "custom" || (!preset && !!fields.km);
+  const endDate = fields.end_date || fields.date || "";
+  const multiDay = !!(fields.date && endDate && endDate > fields.date);
+  const draftLegs = agendaLegsFromFields(fields);
+  const noteLabel = isPublic === "yes"
+    ? `Event note <span class="muted">(optional, public if you share)</span>`
+    : `Note <span class="muted">(optional)</span>`;
+  const nextStepHint = isPublic === "yes"
+    ? `Next: your effort and a private note — those stay only on your agenda.`
+    : `Next: how hard this is for you.`;
   return `
     <section class="card" id="events">
       <div class="card-head">
         <h2>${tt("home.upcomingEvents")}</h2>
         <button class="button small" type="button" data-action="toggle-form">${tt("home.addEvent")}</button>
       </div>
-      <form class="event-form${locked ? " from-public" : ""}"${open ? "" : " hidden"}>
+      <form class="event-form${locked ? " from-public" : ""}"${open ? "" : " hidden"}${editId ? ` data-edit-id="${esc(editId)}"` : ""}>
         <label class="full">Search public events
           <input type="search" name="event_search" placeholder="e.g. Gent Marathon, Samson 10K" autocomplete="off" value="${field("event_search")}" />
         </label>
         <ul class="search-results full" hidden></ul>
         <label>Date<input type="date" name="date" required value="${field("date")}" /></label>
+        <label>${tt("events.endDate")}<input type="date" name="end_date" value="${esc(endDate)}" /></label>
         <label class="grow">Name<input type="text" name="name" required placeholder="e.g. Kerstcorrida Gent" value="${field("name")}" /></label>
         <label class="full">Location
           <input type="text" name="location" maxlength="80" placeholder="e.g. Gent, Belgium" value="${field("location")}" />
         </label>
+        <fieldset class="full event-kind-field">
+          <legend>${tt("events.kind")}</legend>
+          <div class="choice-row">${eventKindChoicesHtml(kind)}</div>
+          <input type="hidden" name="kind" value="${esc(kind)}" />
+        </fieldset>
         <fieldset class="full event-sport-field">
           <legend>${tt("setup.eventType")}</legend>
           <div class="choice-row" id="event-sport-choices">
-            ${["run", "swim", "bike", "triathlon"].map((s) => `
+            ${AGENDA_EVENT_SPORTS().map((s) => `
               <button class="choice-btn${sport === s ? " active" : ""}" type="button" data-event-sport="${s}">${esc((typeof window.sportLabel === "function" ? window.sportLabel(s) : (window.SPORT_LABEL && window.SPORT_LABEL[s]) || s))}</button>`).join("")}
           </div>
           <input type="hidden" name="sport" value="${esc(sport)}" />
         </fieldset>
-        <fieldset class="full event-distance-field">
-          <legend>Distance</legend>
-          <div class="choice-row" id="event-distance-choices">${eventDistanceChoicesHtml(sport, preset)}</div>
-          <input type="hidden" name="preset" value="${esc(preset)}" />
-        </fieldset>
-        <label class="full event-custom-km"${customOpen ? "" : " hidden"}>Distance (${distUnit()})
-          <input type="number" name="km" ${customOpen ? "required" : ""} min="0.1" step="0.1" placeholder="${isImperial() ? "6.2" : "10"}" value="${field("km") ? esc(displayDistValue(field("km"))) : ""}" />
-        </label>
-        <label class="full event-note-field">Event note <span class="muted">(optional, can be public)</span>
+        <div class="event-single-distance"${multiDay ? " hidden" : ""}>
+          <fieldset class="full event-distance-field">
+            <legend>Distance</legend>
+            <div class="choice-row" id="event-distance-choices">${eventDistanceChoicesHtml(sport, preset)}</div>
+            <input type="hidden" name="preset" value="${esc(preset)}" />
+          </fieldset>
+          <label class="full event-custom-km"${customOpen ? "" : " hidden"}>Distance (${distUnit()})
+            <input type="number" name="km" ${customOpen && !multiDay ? "required" : ""} min="0.1" step="0.1" placeholder="${isImperial() ? "6.2" : "10"}" value="${field("km") ? esc(displayDistValue(field("km"))) : ""}" />
+          </label>
+        </div>
+        ${multiDay ? eventLegsEditorHtml(draftLegs, { locked }) : `<input type="hidden" name="legs_json" value="${esc(JSON.stringify(draftLegs))}" />`}
+        <label class="full event-note-field">${noteLabel}
           <input type="text" name="event_note" maxlength="140" placeholder="e.g. chip start 9:30, city centre" value="${field("event_note")}" />
         </label>
         <fieldset class="full">
@@ -1961,7 +2359,7 @@ function eventsCard(now, upcoming, opts = {}) {
           <p class="muted small-text">Public shares name, date, distance and location only.</p>
         </fieldset>
         <div class="similar-event full" hidden></div>
-        <p class="muted small-text full">Nothing personal goes on this step. Effort and your own note come next, and stay private.</p>
+        <p class="muted small-text full event-next-hint">${nextStepHint}</p>
         <input type="hidden" name="source_id" value="${field("source_id")}" />
         <input type="hidden" name="swim_m" value="${field("swim_m")}" />
         <input type="hidden" name="bike_km" value="${field("bike_km")}" />
@@ -2011,7 +2409,7 @@ function eventPresetKm(sport, presetId) {
   const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
   if (!preset || presetId === "custom") return null;
   if (sport === "swim") return (preset.swim || 0) / 1000;
-  if (sport === "bike") return preset.bike || null;
+  if (sport === "bike" || sport === "ski") return preset.bike || null;
   if (sport === "triathlon") return preset.run || null;
   return preset.run || null;
 }
@@ -2037,9 +2435,11 @@ function applyAgendaPreset(form, presetId) {
   const kmInput = form.km;
   const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
   const isCustom = !presetId || presetId === "custom";
+  const { start, end } = eventFormRange(form);
+  const multi = !!(start && end && end > start);
   if (customWrap) customWrap.hidden = !isCustom;
   if (kmInput) {
-    kmInput.required = isCustom;
+    syncEventKmConstraint(form, multi);
     if (!isCustom && preset) {
       const km = eventPresetKm(sport, presetId);
       kmInput.value = km != null ? displayDistValue(km) : "";
@@ -2058,6 +2458,21 @@ function setAgendaPublic(form, value) {
   form.querySelectorAll("[data-event-public]").forEach((b) => {
     b.classList.toggle("active", b.dataset.eventPublic === next);
   });
+  const noteField = form.querySelector(".event-note-field");
+  if (noteField) {
+    const input = noteField.querySelector("input");
+    noteField.innerHTML = next === "yes"
+      ? `Event note <span class="muted">(optional, public if you share)</span>`
+      : `Note <span class="muted">(optional)</span>`;
+    if (input) noteField.appendChild(input);
+  }
+  const hint = form.querySelector(".event-next-hint");
+  if (hint) {
+    hint.textContent = next === "yes"
+      ? "Next: your effort and a private note — those stay only on your agenda."
+      : "Next: how hard this is for you.";
+  }
+  rememberEventForm(form);
 }
 
 window.applyPublicEventToAgenda = function applyPublicEventToAgenda(form, ev) {
@@ -2271,11 +2686,22 @@ function isPlanWeekOpen(wk, curWk) {
   return wk === curWk || wk === curWk + 1;
 }
 
+function eventsOverlappingWeek(weekStartDate, weekEndDate) {
+  const ws = ymd(weekStartDate);
+  const we = ymd(weekEndDate);
+  return EVENTS.filter((ev) => {
+    const start = String(ev?.date || "").slice(0, 10);
+    if (!start) return false;
+    const end = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : start;
+    return start <= we && end >= ws;
+  });
+}
+
 function renderPlan(acts, now) {
   const curWk = weekOf(now);
   const weeks = WEEKS.map((w) => {
     const s = weekStart(w.wk), e = addDays(s, 6);
-    const evs = EVENTS.filter((ev) => ev.date >= ymd(s) && ev.date <= ymd(e));
+    const evs = eventsOverlappingWeek(s, e);
     return `
       <details id="plan-w${w.wk}" class="week ${w.wk === curWk ? "cur" : ""} ${e < now ? "done" : ""}" ${isPlanWeekOpen(w.wk, curWk) ? "open" : ""}>
         <summary>
@@ -2284,7 +2710,7 @@ function renderPlan(acts, now) {
           <span class="pill p-${w.phase}">${w.phase}</span>
           ${weekKmSummary(w, acts, now)}
           <span class="focus">${w.focus}</span>
-          ${evs.map((ev) => `<span class="ev-badge ${ev.race ? "race" : ""}">★ ${ev.name}</span>`).join("")}
+          ${evs.map((ev) => `<span class="ev-badge ${ev.race ? "race" : ""}">★ ${esc(ev.name)}</span>`).join("")}
           ${w.wk === curWk ? `<span class="you">${tt("plan.youAreHere")}</span>` : ""}
         </summary>
         <div class="week-body">
@@ -2338,14 +2764,101 @@ function renderPlan(acts, now) {
         <div class="card-head"><h2>${roadmapHeading()}</h2></div>
         <ul class="roadmap">${ROADMAP_703.map((r) => `<li><strong>${esc(r[0])}</strong><span>${esc(r[1])}</span></li>`).join("")}</ul>
       </section>` : ""}
-      ${(window.CURRENT_PLAN?.sources || []).length ? `
-      <section class="card">
-        <div class="card-head"><h2>${tt("plan.research")}</h2></div>
-        <ul class="roadmap">${(window.CURRENT_PLAN.sources || []).map((s) => `
-          <li><strong><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></strong><span>${esc(s.used_for || "")}</span></li>`).join("")}</ul>
-      </section>` : ""}
     </div>
+    ${planResearchFootnote()}
   `;
+}
+
+function planResearchSources(plan = window.CURRENT_PLAN) {
+  if (Array.isArray(plan?.sources) && plan.sources.length) return plan.sources;
+  if (typeof window.researchForSport === "function") {
+    return window.researchForSport(plan?.sport || "run", plan?.goal_type || "race");
+  }
+  return [];
+}
+
+function planResearchTags(plan = window.CURRENT_PLAN) {
+  const tags = [];
+  const sport = plan?.sport || "run";
+  const sportBit = typeof window.sportLabel === "function"
+    ? window.sportLabel(sport)
+    : (window.SPORT_LABEL && window.SPORT_LABEL[sport]) || sport;
+  if (sportBit) tags.push(sportBit);
+
+  const preset = String(plan?.distance_preset || "").toLowerCase();
+  const presetLabel = {
+    "5k": "5K",
+    "10k": "10K",
+    half: "Half marathon",
+    marathon: "Marathon",
+    "750": "750 m",
+    "1500": "1500 m",
+    "1900": "1900 m",
+    "40": "40 km",
+    "90": "90 km",
+    "180": "180 km",
+    kwart: "Olympic triathlon",
+    halve: "70.3",
+    volledige: "Ironman",
+  }[preset];
+  if (presetLabel) tags.push(presetLabel);
+  else if (Number(plan?.run_km) >= 40) tags.push("Marathon");
+  else if (Number(plan?.run_km) >= 20) tags.push("Half marathon");
+  else if (Number(plan?.run_km) >= 15 && sport === "run") tags.push("10 miles");
+
+  const sources = planResearchSources(plan);
+  const blob = sources.map((s) => `${s.title || ""} ${s.used_for || ""}`).join(" ");
+  if (/periodiz/i.test(blob)) tags.push("Periodization");
+  if (sources.some((s) => s.race_only) || /taper/i.test(blob)) tags.push("Taper");
+  if (sport === "triathlon" || /brick/i.test(blob)) tags.push("Bricks");
+  if (/volume|load|10%/i.test(blob)) tags.push("Volume");
+  return [...new Set(tags.filter(Boolean))];
+}
+
+function planResearchTagsHtml(plan = window.CURRENT_PLAN) {
+  const tags = planResearchTags(plan);
+  if (!tags.length) return "";
+  return `<span class="research-tags">${tags.map((t) => `<span class="research-tag">${esc(t)}</span>`).join("")}</span>`;
+}
+
+function planResearchFootnote(plan = window.CURRENT_PLAN) {
+  const sources = planResearchSources(plan);
+  if (!sources.length) return "";
+  return `
+    <p class="footnote plan-research-foot">
+      ${tt("plan.researchFoot")}
+      <a href="/research">${tt("plan.seeResearch")}</a>
+    </p>`;
+}
+
+function renderResearch() {
+  const plan = window.CURRENT_PLAN;
+  const sources = planResearchSources(plan);
+  const tags = planResearchTagsHtml(plan);
+  const back = hasPlan()
+    ? `<a href="/plan">${tt("nav.plan")}</a>`
+    : `<a href="/home">${tt("nav.home")}</a>`;
+  return `
+    <section class="hero compact">
+      <div>
+        <div class="eyebrow">${back} · ${tt("plan.research")}</div>
+        <h1>${tt("plan.research")}</h1>
+        <p class="muted">${tt("plan.researchLead")}</p>
+        ${tags}
+      </div>
+    </section>
+    <section class="card">
+      ${sources.length ? `
+        <ul class="roadmap research-list">${sources.map((s) => `
+          <li>
+            <strong><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a></strong>
+            <span>${esc(s.used_for || "")}${Array.isArray(s.sports) && s.sports.length
+              ? ` · ${s.sports.map((sp) => esc(typeof window.sportLabel === "function" ? window.sportLabel(sp) : sp)).join(", ")}`
+              : ""}</span>
+          </li>`).join("")}</ul>`
+        : `<p class="muted" style="margin:0">${tt("plan.researchEmpty")}</p>`}
+    </section>
+    <p class="footnote"><a href="${hasPlan() ? "/plan" : "/home"}">${tt("plan.researchBack")}</a></p>`;
 }
 
 // ---------- Plan changes for the AI coach ----------
@@ -3219,7 +3732,7 @@ function renderActivities(acts, now) {
     </section>`;
 }
 
-const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "setup", "create-plan"]);
+const APP_ROUTES = new Set(["home", "plan", "activities", "events", "gear", "profile", "connections", "settings", "progress", "research", "setup", "create-plan"]);
 
 function pathParts() {
   return location.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
@@ -3286,6 +3799,7 @@ function renderView(route, acts, now) {
   if (route === "activities") return renderActivities(acts, now);
   if (route === "events") return renderPastEvents(now);
   if (route === "gear") return renderGear();
+  if (route === "research") return renderResearch();
   if (!hasPlan()) return renderNoPlanHome(acts, now);
   if (route === "plan") return renderPlan(acts, now);
   if (route === "progress") return renderProgress(acts, now);
@@ -3296,6 +3810,7 @@ function render(force = false) {
   syncStandaloneClass();
   closeAccountMenu();
   captureEventFormDraft();
+  captureEventPersonalDraft();
   captureActivityLogDraft();
   if (currentRoute() === "setup") {
     const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step");
@@ -3398,22 +3913,55 @@ async function cloudRequest(method, url, body) {
       return data;
     }
     if (method === "POST") {
+      const sports = window.EVENT_SPORTS || ["run", "swim", "bike", "triathlon", "walk", "ski"];
+      const kinds = window.EVENT_KINDS || ["race", "stage", "camp", "holiday"];
+      let endDate = String(body.end_date || body.date || "").slice(0, 10);
+      const startDate = String(body.date || "").slice(0, 10);
+      if (!endDate || endDate < startDate) endDate = startDate;
+      const maxEnd = (() => {
+        const d = parseDate(startDate);
+        if (Number.isNaN(d.getTime())) return startDate;
+        d.setDate(d.getDate() + ((window.EVENT_MAX_DAYS || 21) - 1));
+        return ymd(d);
+      })();
+      if (endDate > maxEnd) endDate = maxEnd;
+      let legs = Array.isArray(body.legs) ? body.legs : [];
+      if (typeof window.normalizeEventLegs === "function") {
+        legs = window.normalizeEventLegs(startDate, endDate, legs);
+      }
+      const multi = endDate > startDate;
+      let sport = sports.includes(body.sport) ? body.sport : "run";
+      let km = Number(body.km);
+      let swim_m = body.swim_m ? Number(body.swim_m) : null;
+      let bike_km = body.bike_km ? Number(body.bike_km) : null;
+      if (multi && typeof window.summarizeEventLegs === "function") {
+        const sum = window.summarizeEventLegs(legs);
+        sport = sum.sport || sport;
+        km = sum.km || km || 0.1;
+        swim_m = sum.swim_m;
+        bike_km = sum.bike_km;
+      }
+      if (!(km > 0)) km = 0.1;
+      const kind = kinds.includes(body.kind) ? body.kind : "race";
       const row = {
         user_id: uid,
         id: `${body.date}-${String(body.name || "event").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${newId()}`,
-        date: body.date,
+        date: startDate,
+        end_date: multi ? endDate : null,
         name: body.name,
-        km: Number(body.km),
+        km,
         effort: "easy",
         note: "",
         event_note: clipText(body.event_note, 140),
         location: clipText(body.location, 80),
         race: false,
         is_public: body.is_public === "yes" || body.is_public === true,
-        sport: ["run", "swim", "bike", "triathlon"].includes(body.sport) ? body.sport : "run",
+        sport,
+        kind,
+        legs: multi ? legs : [],
         source_id: body.source_id || null,
-        swim_m: body.swim_m ? Number(body.swim_m) : null,
-        bike_km: body.bike_km ? Number(body.bike_km) : null,
+        swim_m,
+        bike_km,
       };
       let { data, error } = await sb.from("events").insert(row).select("*").single();
       if (error && columnMissing(error, "event_note")) {
@@ -3423,6 +3971,12 @@ async function cloudRequest(method, url, body) {
       }
       if (error && columnMissing(error, "location")) {
         delete row.location;
+        ({ data, error } = await sb.from("events").insert(row).select("*").single());
+      }
+      if (error && (columnMissing(error, "end_date") || columnMissing(error, "legs") || columnMissing(error, "kind"))) {
+        delete row.end_date;
+        delete row.legs;
+        delete row.kind;
         ({ data, error } = await sb.from("events").insert(row).select("*").single());
       }
       if (error) throw error;
@@ -3450,18 +4004,50 @@ async function cloudRequest(method, url, body) {
       if (findErr) throw findErr;
       if (!existing) throw new Error("Event not found");
       const patch = {};
-      const editingPublic = body.name != null || body.km != null || body.event_note != null;
+      const sports = window.EVENT_SPORTS || ["run", "swim", "bike", "triathlon", "walk", "ski"];
+      const kinds = window.EVENT_KINDS || ["race", "stage", "camp", "holiday"];
+      const fullEdit = body.date != null || body.sport != null || body.kind != null
+        || body.end_date != null || body.legs != null || body.location != null
+        || body.is_public != null;
+      const editingPublic = fullEdit || body.name != null || body.km != null || body.event_note != null;
       if (editingPublic) {
         if (existing.source_id) throw new Error("You can only edit events you created.");
-        if (body.name != null || body.km != null) {
-          const name = String(body.name || "").trim();
-          const km = Number(body.km);
+        if (body.name != null || body.km != null || fullEdit) {
+          const name = String(body.name != null ? body.name : existing.name || "").trim();
+          let km = Number(body.km != null ? body.km : existing.km);
           if (!name) throw new Error("Name is required");
-          if (!(km > 0 && km < 500)) throw new Error("Distance must be a positive number");
+          if (!(km > 0 && km < 5000)) throw new Error("Distance must be a positive number");
           patch.name = name;
           patch.km = km;
         }
         if (body.event_note != null) patch.event_note = clipText(body.event_note, 140);
+        if (body.location != null) patch.location = clipText(body.location, 80);
+        if (body.is_public != null) patch.is_public = body.is_public === "yes" || body.is_public === true;
+        if (body.date != null) patch.date = String(body.date).slice(0, 10);
+        if (body.sport != null) patch.sport = sports.includes(body.sport) ? body.sport : (existing.sport || "run");
+        if (body.kind != null) patch.kind = kinds.includes(body.kind) ? body.kind : (existing.kind || "race");
+        if (body.swim_m != null) patch.swim_m = body.swim_m ? Number(body.swim_m) : null;
+        if (body.bike_km != null) patch.bike_km = body.bike_km ? Number(body.bike_km) : null;
+        if (body.end_date != null || body.legs != null || body.date != null) {
+          const startDate = String(patch.date || existing.date || "").slice(0, 10);
+          let endDate = String(body.end_date != null ? body.end_date : (existing.end_date || startDate)).slice(0, 10);
+          if (!endDate || endDate < startDate) endDate = startDate;
+          const multi = endDate > startDate;
+          let legs = Array.isArray(body.legs) ? body.legs : (existing.legs || []);
+          if (typeof window.normalizeEventLegs === "function") {
+            legs = window.normalizeEventLegs(startDate, endDate, legs);
+          }
+          if (multi && typeof window.summarizeEventLegs === "function") {
+            const sum = window.summarizeEventLegs(legs);
+            if (sum.sport) patch.sport = sum.sport;
+            if (sum.km) patch.km = sum.km;
+            patch.swim_m = sum.swim_m;
+            patch.bike_km = sum.bike_km;
+          }
+          patch.end_date = multi ? endDate : null;
+          patch.legs = multi ? legs : [];
+          if (!(Number(patch.km) > 0)) patch.km = Number(existing.km) || 0.1;
+        }
       }
       if (body.effort != null) {
         const effort = String(body.effort);
@@ -3475,6 +4061,16 @@ async function cloudRequest(method, url, body) {
         delete patch.event_note;
         ({ data, error } = await sb.from("events").update(patch).eq("user_id", uid).eq("id", id).select("*").single());
         if (!error) data.event_note_skipped = true;
+      }
+      if (error && (columnMissing(error, "end_date") || columnMissing(error, "legs") || columnMissing(error, "kind"))) {
+        delete patch.end_date;
+        delete patch.legs;
+        delete patch.kind;
+        ({ data, error } = await sb.from("events").update(patch).eq("user_id", uid).eq("id", id).select("*").single());
+      }
+      if (error && columnMissing(error, "location")) {
+        delete patch.location;
+        ({ data, error } = await sb.from("events").update(patch).eq("user_id", uid).eq("id", id).select("*").single());
       }
       if (error) throw error;
       if (patch.name && isGoalRace(existing) && window.CURRENT_PLAN) {
@@ -3702,8 +4298,73 @@ async function apiRequest(method, url, body) {
   return cloudRequest(method, url, body);
 }
 
+async function clearBusyCoveredByEvents(events = EVENTS) {
+  if (!CURRENT_USER_ID) return false;
+  const covered = new Set();
+  (events || []).forEach((ev) => {
+    if (!ev?.date) return;
+    const start = String(ev.date).slice(0, 10);
+    const end = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : start;
+    let cur = parseDate(start);
+    const last = parseDate(end);
+    if (Number.isNaN(cur.getTime()) || Number.isNaN(last.getTime())) return;
+    while (cur <= last) {
+      covered.add(ymd(cur));
+      cur = addDays(cur, 1);
+    }
+  });
+  if (!covered.size) return false;
+  const stale = Object.keys(BUSY || {}).filter((ds) => covered.has(ds));
+  if (!stale.length) return false;
+  await Promise.all(stale.map((ds) => sb.from("busy_days").delete().eq("user_id", CURRENT_USER_ID).eq("date", ds)));
+  stale.forEach((ds) => { delete BUSY[ds]; });
+  return true;
+}
+
+async function syncPlanWithAgendaEvents(events = EVENTS) {
+  if (!CURRENT_USER_ID || !hasPlan() || !Array.isArray(window.WEEKS) || !window.WEEKS.length) return false;
+  if (typeof window.applyAgendaEventToWeeks !== "function") return false;
+  const planStart = PLAN_START || window.CURRENT_PLAN?.start_date;
+  const goalDate = MARATHON_DATE || window.CURRENT_PLAN?.event_date;
+  if (!planStart) return false;
+  let weeks = typeof window.clonePlanWeeks === "function"
+    ? window.clonePlanWeeks(window.WEEKS)
+    : window.WEEKS.map((w) => ({ ...w, days: (w.days || []).map((d) => (Array.isArray(d) ? d.slice() : d)) }));
+  let changed = false;
+  const agenda = (events || [])
+    .filter((ev) => ev && ev.date && ev.name && !isGoalRace(ev))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  agenda.forEach((ev) => {
+    const multi = !!(ev.end_date && ev.end_date > ev.date)
+      || (Array.isArray(ev.legs) && ev.legs.length > 1)
+      || (typeof window.eventIsSoftKind === "function" && window.eventIsSoftKind(ev.kind));
+    if (!multi && !(Number(ev.km) >= 8)) return;
+    const result = window.applyAgendaEventToWeeks(weeks, planStart, ev, { goalDate });
+    weeks = result.weeks;
+    if (result.changed) changed = true;
+  });
+  try {
+    if (await clearBusyCoveredByEvents(agenda)) changed = true;
+  } catch (err) {
+    console.warn("Could not clear busy days under agenda events", err);
+  }
+  if (!changed) return false;
+  if (JSON.stringify(weeks) === JSON.stringify(window.WEEKS)) return true;
+  const { error } = await sb.from("plans").update({ weeks }).eq("user_id", CURRENT_USER_ID);
+  if (error) throw error;
+  window.WEEKS = weeks;
+  if (window.CURRENT_PLAN) window.CURRENT_PLAN.weeks = weeks;
+  return true;
+}
+window.syncPlanWithAgendaEvents = syncPlanWithAgendaEvents;
+
 async function refreshEvents() {
   [EVENTS, CHANGES] = await Promise.all([loadEvents(), loadChanges()]);
+  try {
+    await syncPlanWithAgendaEvents(EVENTS);
+  } catch (err) {
+    console.warn("Could not weave agenda events into plan", err);
+  }
   render(true);
 }
 
@@ -3813,6 +4474,19 @@ document.addEventListener("click", async (e) => {
   if (eventPublicBtn) {
     const form = eventPublicBtn.closest(".event-form");
     if (form) setAgendaPublic(form, eventPublicBtn.dataset.eventPublic);
+    return;
+  }
+  const eventKindBtn = e.target.closest("[data-event-kind]");
+  if (eventKindBtn) {
+    const form = eventKindBtn.closest(".event-form");
+    if (form) {
+      e.preventDefault();
+      if (form.kind) form.kind.value = eventKindBtn.dataset.eventKind || "race";
+      form.querySelectorAll("[data-event-kind]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.eventKind === form.kind.value);
+      });
+      rememberEventForm(form);
+    }
     return;
   }
   const btn = e.target.closest("[data-action]");
@@ -4107,13 +4781,47 @@ document.addEventListener("click", async (e) => {
     document.querySelector(".log-form-page [name=date]")?.focus();
     return;
   }
+
+  if (btn?.dataset?.action === "leg-add-sport" || btn?.dataset?.action === "leg-remove-sport"
+    || btn?.dataset?.action === "leg-copy-prev") {
+    const form = btn.closest(".event-form, .setup-form");
+    if (!form || form.classList.contains("from-public") || form.dataset.pickedEvent) return;
+    e.preventDefault();
+    const legIdx = Number(btn.dataset.leg);
+    const legs = readLegsFromEditor(form);
+    const leg = legs[legIdx];
+    if (!leg) return;
+    if (btn.dataset.action === "leg-add-sport") {
+      leg.items = [...(leg.items || []), defaultLegItem(form)];
+    } else if (btn.dataset.action === "leg-remove-sport") {
+      const itemIdx = Number(btn.dataset.item);
+      leg.items = (leg.items || []).filter((_, i) => i !== itemIdx);
+    } else if (btn.dataset.action === "leg-copy-prev" && legIdx > 0) {
+      const prev = legs[legIdx - 1];
+      leg.items = JSON.parse(JSON.stringify(prev.items || []));
+    }
+    const hidden = legsJsonInput(form);
+    if (hidden) hidden.value = JSON.stringify(legs);
+    if (form.classList.contains("setup-form")) form.dataset.eventLegsJson = JSON.stringify(legs);
+    rebuildEventLegsEditor(form, legs);
+    if (form.classList.contains("event-form")) rememberEventForm(form);
+    return;
+  }
+  if (btn?.dataset?.action === "leg-rest") {
+    return; // checkbox change handler
+  }
+  if (!btn) return;
+
   if (btn.dataset.action === "toggle-form") {
     const form = document.querySelector(".event-form");
     if (!form) return;
     const opening = form.hidden;
     eventFollowUpId = null;
+    eventPersonalDraft = null;
     if (!opening) {
       eventFormDraft = null;
+      eventEditingId = null;
+      delete form.dataset.editId;
       render(true);
       return;
     }
@@ -4156,10 +4864,20 @@ document.addEventListener("click", async (e) => {
         : "e.g. wave B, jog it with friends";
       if (btn.dataset.effort === "other") note.focus();
     }
+    if (form.classList.contains("is-followup")) rememberEventPersonal(form);
+    return;
+  }
+  if (btn.dataset.action === "back-event-personal") {
+    const form = btn.closest(".event-personal");
+    const ev = EVENTS.find((x) => String(x.id) === String(form?.dataset.id)) || followUpEvent();
+    if (!ev) return;
+    openEventFormForEdit(ev);
     return;
   }
   if (btn.dataset.action === "skip-event-personal") {
     eventFollowUpId = null;
+    eventPersonalDraft = null;
+    eventEditingId = null;
     render(true);
     return;
   }
@@ -4179,6 +4897,8 @@ document.addEventListener("click", async (e) => {
       const payload = personalPayload(form, false);
       if (payload) await apiRequest("PATCH", `/api/events/${encodeURIComponent(ev.id)}`, payload);
       eventFollowUpId = null;
+      eventPersonalDraft = null;
+      eventEditingId = null;
       document.getElementById("day-dialog")?.close();
       if (typeof window.startPlanForAgendaEvent !== "function") throw new Error("Plan setup is not available.");
       await window.startPlanForAgendaEvent(ev, { replace: !!window.CURRENT_PLAN });
@@ -4572,6 +5292,8 @@ document.addEventListener("submit", async (e) => {
       const saved = await apiRequest("PATCH", `/api/events/${encodeURIComponent(personalForm.dataset.id)}`, payload);
       const date = saved?.date;
       if (eventFollowUpId === personalForm.dataset.id) eventFollowUpId = null;
+      eventPersonalDraft = null;
+      eventEditingId = null;
       await refreshEvents();
       if (date && document.getElementById("day-dialog")?.open) openDay(date);
       toast("Saved for you.");
@@ -4586,25 +5308,57 @@ document.addEventListener("submit", async (e) => {
   const form = e.target.closest(".event-form");
   if (!form) return;
   e.preventDefault();
+  const errorEl = form.querySelector(".form-error");
+  if (errorEl) errorEl.textContent = "";
+  // Multi-day hides the single-distance field; make sure it can't block HTML5 submit.
+  const { start: rangeStart, end: rangeEnd } = eventFormRange(form);
+  syncEventKmConstraint(form, !!(rangeStart && rangeEnd && rangeEnd > rangeStart));
   const data = Object.fromEntries(new FormData(form));
   const presetId = data.preset || "";
-  const sport = ["run", "swim", "bike", "triathlon"].includes(data.sport) ? data.sport : "run";
+  const sports = window.EVENT_SPORTS || ["run", "swim", "bike", "triathlon", "walk", "ski"];
+  const sport = sports.includes(data.sport) ? data.sport : "run";
   data.sport = sport;
-  if (presetId && presetId !== "custom") {
+  data.kind = (window.EVENT_KINDS || []).includes(data.kind) ? data.kind : "race";
+  data.end_date = String(data.end_date || data.date || "").slice(0, 10);
+  const setEventFormError = (msg) => {
+    if (errorEl) errorEl.textContent = msg;
+    else toast(msg, true);
+  };
+  if (data.end_date && data.date && data.end_date < data.date) {
+    setEventFormError("End date must be on or after the start date.");
+    return;
+  }
+  const multi = data.end_date && data.date && data.end_date > data.date;
+  if (multi) {
+    data.legs = readLegsFromEditor(form);
+    const active = data.legs.some((leg) => (leg.items || []).length);
+    if (!active) {
+      setEventFormError("Add at least one sport day (or shorten to a single day).");
+      return;
+    }
+    deriveEventSummaryFromForm(form, data);
+  } else if (presetId && presetId !== "custom") {
     const km = eventPresetKm(sport, presetId);
     if (km != null) data.km = km;
     const preset = ((window.EVENT_PRESETS || {})[sport] || []).find((p) => p.id === presetId);
     if (preset?.swim) data.swim_m = preset.swim;
     if (preset?.bike) data.bike_km = preset.bike;
+    data.legs = [];
+    data.end_date = data.date;
   } else {
     data.km = parseDistInput(data.km);
+    data.legs = [];
+    data.end_date = data.date;
   }
   data.location = clipText(data.location, 80);
   data.is_public = data.is_public === "yes";
   if (form.classList.contains("from-public")) data.event_note = "";
   if (!(Number(data.km) > 0)) {
-    form.querySelector(".form-error").textContent = "Pick a distance.";
-    return;
+    if (multi) data.km = 0.1;
+    else {
+      setEventFormError("Pick a distance.");
+      return;
+    }
   }
   const submit = form.querySelector("button[type=submit]");
   if (submit) submit.disabled = true;
@@ -4622,18 +5376,24 @@ document.addEventListener("submit", async (e) => {
       }
     }
     delete form.dataset.skipSimilar;
-    const saved = await apiRequest("POST", "/api/events", data);
+    const editId = form.dataset.editId || eventEditingId || "";
+    const saved = editId
+      ? await apiRequest("PATCH", `/api/events/${encodeURIComponent(editId)}`, data)
+      : await apiRequest("POST", "/api/events", data);
     form.reset();
     form.hidden = true;
+    delete form.dataset.editId;
     setAgendaEventLocked(form, false);
     hideSimilarEventPrompt(form);
     eventFormDraft = null;
-    eventFollowUpId = saved?.id || null;
+    eventEditingId = null;
+    eventFollowUpId = saved?.id || editId || null;
     await refreshEvents();
     document.querySelector(".event-personal.is-followup")?.scrollIntoView({ block: "nearest" });
     if (saved?.event_note_skipped) toast("Event saved. The public event note needs a database update before it can be stored.", true);
+    else toast(editId ? "Event updated." : "Event saved.");
   } catch (err) {
-    form.querySelector(".form-error").textContent = err.message;
+    setEventFormError(err.message || "Could not save that event.");
   } finally {
     if (submit) submit.disabled = false;
   }
@@ -4645,10 +5405,74 @@ function personalPayload(form, required) {
     if (required) throw new Error("Pick easy, race pace, or something else.");
     return null;
   }
-  return { effort, note: form.note?.value || "" };
+  const payload = { effort };
+  const noteEl = form.querySelector?.("[name=note]") || form.note;
+  if (noteEl) payload.note = noteEl.value || "";
+  return payload;
 }
 
 document.addEventListener("change", async (e) => {
+
+  const legRest = e.target.closest("[data-action=leg-rest]");
+  if (legRest) {
+    const form = legRest.closest(".event-form, .setup-form");
+    if (form && !form.classList.contains("from-public") && !form.dataset.pickedEvent) {
+      const legs = readLegsFromEditor(form);
+      const legIdx = Number(legRest.dataset.leg);
+      if (legs[legIdx]) {
+        legs[legIdx].items = legRest.checked ? [] : [defaultLegItem(form)];
+        const hidden = legsJsonInput(form);
+        if (hidden) hidden.value = JSON.stringify(legs);
+        if (form.classList.contains("setup-form")) form.dataset.eventLegsJson = JSON.stringify(legs);
+        rebuildEventLegsEditor(form, legs);
+        if (form.classList.contains("event-form")) rememberEventForm(form);
+      }
+    }
+    return;
+  }
+  const eventDateField = e.target.closest(".event-form [name=date], .event-form [name=end_date]");
+  if (eventDateField) {
+    const form = eventDateField.closest(".event-form");
+    if (form) {
+      if (eventDateField.name === "date" && eventDateField.value) {
+        const start = String(eventDateField.value).slice(0, 10);
+        const endEl = form.querySelector("[name=end_date]");
+        if (endEl) {
+          endEl.min = start;
+          endEl.value = ymd(addDays(parseDate(start), 1));
+        }
+      }
+      rebuildEventLegsEditor(form);
+      rememberEventForm(form);
+    }
+    return;
+  }
+  const legField = e.target.closest(".event-leg-item select, .event-leg-item input");
+  if (legField) {
+    const form = legField.closest(".event-form, .setup-form");
+    if (form && !form.classList.contains("from-public") && !form.dataset.pickedEvent) {
+      const item = legField.closest(".event-leg-item");
+      if (legField.matches("select") && item) {
+        const prevSport = item.dataset.sport || "run";
+        const sport = legField.value || "run";
+        const input = item.querySelector("input[type=number]");
+        const unitEl = item.querySelector("[data-leg-unit]");
+        const raw = String(input?.value || "").trim();
+        const km = raw ? legDistParse(prevSport, raw) : 0;
+        if (input) {
+          input.value = km > 0 ? legDistDisplay(sport, km) : "";
+          input.min = sport === "swim" ? "25" : "0.1";
+          input.step = sport === "swim" ? "25" : "0.1";
+        }
+        if (unitEl) unitEl.textContent = legDistUnit(sport);
+        item.dataset.sport = sport;
+      }
+      syncLegsJson(form);
+      if (form.classList.contains("event-form")) rememberEventForm(form);
+    }
+    return;
+  }
+
   const typeSel = e.target.closest(".log-form [name=type]");
   if (typeSel) {
     const form = typeSel.form;
@@ -4704,6 +5528,12 @@ document.addEventListener("change", async (e) => {
 });
 
 document.addEventListener("input", (e) => {
+  const personal = e.target.closest?.(".event-personal.is-followup");
+  if (personal && (e.target.name === "note" || e.target.name === "effort")) {
+    rememberEventPersonal(personal);
+  }
+  const eventForm = e.target.closest?.(".event-form");
+  if (eventForm && !eventForm.hidden) rememberEventForm(eventForm);
   const form = e.target.closest?.(".settings-form[data-settings=password]");
   if (!form || !["password", "confirm", "current"].includes(e.target.name)) return;
   if (typeof window.paintPasswordRules === "function") window.paintPasswordRules(form);
@@ -4779,7 +5609,13 @@ window.bootApp = function bootApp() {
     if (hasPlan() && typeof window.syncPlanDates === "function") window.syncPlanDates();
     render(true);
     if (hasPlan()) {
-      return loadEvents().then((events) => { EVENTS = events; render(true); }).catch(() => {});
+      return loadEvents()
+        .then(async (events) => {
+          EVENTS = events;
+          try { await syncPlanWithAgendaEvents(EVENTS); } catch { /* best-effort */ }
+          render(true);
+        })
+        .catch(() => {});
     }
     return Promise.resolve();
   }
@@ -4804,6 +5640,11 @@ window.bootApp = function bootApp() {
     BUSY = busy;
     CHANGES = changes;
     GEAR = gear;
+    try {
+      if (hasPlan()) await syncPlanWithAgendaEvents(EVENTS);
+    } catch (err) {
+      console.warn("Could not weave agenda events into plan", err);
+    }
     await loadWellness();
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     if (hasPlan() && typeof window.refreshFitnessPaces === "function") {
@@ -4830,6 +5671,10 @@ window.bootApp = function bootApp() {
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     render(true);
     maybeToastShoeWear();
+    // After first paint: pull Garmin/Strava if they haven't synced today.
+    if (typeof maybeAutoSyncConnections === "function") {
+      maybeAutoSyncConnections().catch(() => {});
+    }
   })().finally(() => {
     if (gen === APP_BOOT_GEN) APP_BOOTING = null;
   });
@@ -4854,6 +5699,7 @@ window.resetApp = function resetApp() {
   } catch { /* ignore */ }
   GARMIN = { connected: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, loaded: false };
   STRAVA = { connected: false, shareWithCoach: false, lastSyncAt: null, lastSyncStatus: null, lastError: null, needsReconnectForZones: false, loaded: false };
+  window.AUTO_SYNC_TRIED = false;
   STRAVA_CALLBACK_HANDLED = false;
   PLAN_OPEN_WEEKS = null;
   PLAN_FOCUS_WEEK = null;

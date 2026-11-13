@@ -38,7 +38,9 @@ function dayRow(week, i, acts, now) {
   const dayMatch = matchPlanDay(plan, dayActs);
   const wanted = plannedSportCats(kind);
   const done = dayMatch.done;
-  const busy = BUSY[ds];
+  // Agenda events own the day — don't let an older busy mark cover them.
+  const hasAgendaEvent = typeof eventsOn === "function" && eventsOn(ds).length > 0;
+  const busy = hasAgendaEvent ? null : BUSY[ds];
   let status = "";
   if (done) {
     const conf = dayMatch.match?.confidence || "low";
@@ -198,6 +200,8 @@ function isEventDay(plan, ds) {
 }
 
 function busyBlock(plan, ds) {
+  // Event windows replace busy marks — no busy UI on agenda event days.
+  if (typeof eventsOn === "function" && eventsOn(ds).length) return "";
   const busy = BUSY[ds];
   if (busy) {
     return `
@@ -219,6 +223,7 @@ function busyBlock(plan, ds) {
 function eventDay(ev) {
   return String(ev?.date || "").slice(0, 10);
 }
+window.eventDay = eventDay;
 
 function openDay(ds) {
   const day = String(ds || "").slice(0, 10);

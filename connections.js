@@ -570,6 +570,64 @@ async function runNavSync() {
   }
 }
 
+/** Once per app open: sync connected Garmin/Strava if they haven't synced today. */
+window.AUTO_SYNC_TRIED = false;
+
+function connectionNeedsTodaySync(status) {
+  if (!status?.connected) return false;
+  const last = status.lastSyncAt ? String(status.lastSyncAt).slice(0, 10) : "";
+  return last !== ymd(today());
+}
+
+async function maybeAutoSyncConnections() {
+  if (window.AUTO_SYNC_TRIED) return false;
+  const route = typeof currentRoute === "function" ? currentRoute() : "";
+  if (route === "setup" || route === "create-plan") return false;
+  window.AUTO_SYNC_TRIED = true;
+
+  if (!GARMIN.loaded || !STRAVA.loaded) {
+    await Promise.all([
+      GARMIN.loaded ? Promise.resolve() : loadGarminStatus(),
+      STRAVA.loaded ? Promise.resolve() : loadStravaStatus(),
+    ]);
+  }
+  const needGarmin = connectionNeedsTodaySync(GARMIN);
+  const needStrava = connectionNeedsTodaySync(STRAVA);
+  if (!needGarmin && !needStrava) return false;
+
+  setSyncButtonsDisabled(true);
+  if (typeof updateNavSyncButton === "function") updateNavSyncButton();
+  const messages = [];
+  try {
+    if (needGarmin) {
+      try {
+        messages.push(await performGarminSync());
+      } catch (err) {
+        GARMIN.lastError = err?.message || "Garmin sync failed.";
+      }
+    }
+    if (needStrava) {
+      try {
+        messages.push(await performStravaSync());
+      } catch (err) {
+        STRAVA.lastError = err?.message || "Strava sync failed.";
+      }
+    }
+    try {
+      if (typeof window.refreshFitnessPaces === "function") await window.refreshFitnessPaces(ACTS);
+    } catch { /* keep existing paces */ }
+    if (typeof render === "function") render(true);
+    // Quiet unless something new came in.
+    const news = messages.filter((m) => /Synced \d+ new/i.test(m));
+    if (news.length && typeof toast === "function") toast(news.join(" "));
+  } finally {
+    setSyncButtonsDisabled(false);
+    if (typeof updateNavSyncButton === "function") updateNavSyncButton();
+  }
+  return true;
+}
+window.maybeAutoSyncConnections = maybeAutoSyncConnections;
+
 function syncIconSvg() {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-15.5-6.4"/><path d="M3 4.5v5h5"/><path d="M3 12a9 9 0 0 0 15.5 6.4"/><path d="M21 19.5v-5h-5"/></svg>`;
 }

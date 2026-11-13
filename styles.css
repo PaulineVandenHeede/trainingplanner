@@ -566,6 +566,55 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 .event-form input:focus, .event-form select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .event-form.from-public .event-note-field { display: none; }
 .event-form .event-custom-km[hidden] { display: none; }
+.event-form .event-single-distance[hidden] { display: none; }
+.event-legs-editor { display: flex; flex-direction: column; gap: 10px; }
+.event-leg-day {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.event-leg-day-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.event-leg-rest {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.event-leg-items { display: flex; flex-direction: column; gap: 6px; }
+.event-leg-items[hidden] { display: none; }
+.event-leg-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(4.5rem, 0.7fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.event-leg-item select,
+.event-leg-item input {
+  width: 100%;
+}
+.event-leg-unit {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  min-width: 1.5rem;
+}
+.chip.k-ski { background: #5b8fa8; }
+.activity.k-ski { border-left-color: #5b8fa8; }
+.year-stat.k-ski { border-left-color: #5b8fa8; }
+.year-stat.active.k-ski { box-shadow: 0 0 0 2px #5b8fa8; }
+.month-chart.k-ski .mbar { fill: #5b8fa8; }
+.lg-ski { background: #5b8fa8; }
+.week-vol-chart .b-ski { fill: #5b8fa8; }
 .similar-event-card {
   padding: 12px;
   border: 1px solid var(--line);
@@ -731,6 +780,19 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 }
 .button:hover { opacity: 0.85; }
 .footnote { text-align: center; color: var(--muted); font-size: 12px; }
+.plan-research-foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 8px 10px; margin: 18px 0 8px; line-height: 1.45;
+}
+.plan-research-foot a { white-space: nowrap; }
+.research-tags { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.research-tag {
+  display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 8px; background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.research-list { margin-top: 0; }
+.hero .research-tags { margin-top: 10px; justify-content: flex-start; }
 .plan-actions {
   display: flex;
   flex-wrap: wrap;

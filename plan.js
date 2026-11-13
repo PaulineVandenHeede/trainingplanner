@@ -75,9 +75,9 @@ async function removeCurrentPlan() {
 window.removeCurrentPlan = removeCurrentPlan;
 
 function setupFields(sport, preset) {
-  const run = sport === "run" || sport === "triathlon";
+  const run = sport === "run" || sport === "walk" || sport === "triathlon";
   const swim = sport === "swim" || sport === "triathlon";
-  const bike = sport === "bike" || sport === "triathlon";
+  const bike = sport === "bike" || sport === "ski" || sport === "triathlon";
   const custom = preset === "custom";
   return { run: run && custom, swim: swim && custom, bike: bike && custom };
 }
@@ -327,7 +327,7 @@ function renderSetupPlanForm(message = "", opts = {}) {
         <fieldset data-for-goal="race,fitness,time" data-setup-sport>
           <legend id="sport-legend">${tt("setup.eventType")}</legend>
           <div class="choice-row" id="sport-choices">
-            ${["run", "swim", "bike", "triathlon"].map((s) => `
+            ${(window.EVENT_SPORTS || ["run", "swim", "bike", "triathlon", "walk", "ski"]).map((s) => `
               <button class="choice-btn" type="button" data-sport="${s}">${tt(`sport.${s}Full`)}</button>`).join("")}
           </div>
           <input type="hidden" name="sport" />
@@ -348,6 +348,21 @@ function renderSetupPlanForm(message = "", opts = {}) {
           <span class="date-label">Event date</span>
           <input type="date" name="event_date" required min="${min}" />
         </div>
+        <div class="setup-date-field" data-own-event data-for-goal="race" id="event-end-wrap" data-setup-end-date>
+          <span class="date-label">${typeof window.t === "function" ? window.t("events.endDate") : "End date"} <span class="muted">(optional, multi-day)</span></span>
+          <input type="date" name="event_end_date" min="${min}" />
+        </div>
+        <fieldset data-own-event data-for-goal="race" class="event-kind-setup">
+          <legend>${typeof window.t === "function" ? window.t("events.kind") : "Event kind"}</legend>
+          <div class="choice-row">
+            <button class="choice-btn active" type="button" data-event-kind="race">${typeof window.t === "function" ? window.t("events.kindRace") : "Race"}</button>
+            <button class="choice-btn" type="button" data-event-kind="stage">${typeof window.t === "function" ? window.t("events.kindStage") : "Stage"}</button>
+            <button class="choice-btn" type="button" data-event-kind="camp">${typeof window.t === "function" ? window.t("events.kindCamp") : "Camp"}</button>
+            <button class="choice-btn" type="button" data-event-kind="holiday">${typeof window.t === "function" ? window.t("events.kindHoliday") : "Holiday"}</button>
+          </div>
+          <input type="hidden" name="event_kind" value="race" />
+        </fieldset>
+        <div data-own-event data-for-goal="race" id="setup-event-legs" class="setup-event-legs" hidden></div>
         <fieldset data-for-goal="time" data-setup-time-goal>
           <legend>Time goal</legend>
           <div class="choice-row" id="time-goal-choices"><p class="muted">Pick a distance first.</p></div>
@@ -748,8 +763,8 @@ function bindSetupForm(form) {
 function primaryDisciplines(sport) {
   if (sport === "triathlon") return ["run", "swim", "bike"];
   if (sport === "swim") return ["swim"];
-  if (sport === "bike") return ["bike"];
-  if (sport === "run") return ["run"];
+  if (sport === "bike" || sport === "ski") return ["bike"];
+  if (sport === "run" || sport === "walk") return ["run"];
   return [];
 }
 
@@ -853,7 +868,8 @@ function applySetupSeed(form, draft) {
     form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === draft.preset));
     toggleCustom(draft.sport, draft.preset);
   }
-  ["custom_run", "custom_swim", "custom_bike", "event_name", "event_location", "event_date", "weekly_km",
+  ["custom_run", "custom_swim", "custom_bike", "event_name", "event_location", "event_date", "event_end_date",
+    "event_kind", "event_legs_json", "weekly_km",
     "run_days", "run_weekdays", "strength_weekdays", "swim_weekdays", "bike_weekdays", "busy_weekdays",
     "long_weekday", "time_goal", "time_custom", "fitness_weeks", "fitness_weeks_custom",
     "goal_type", "is_public", "experience", "strength"].forEach((name) => {
@@ -867,9 +883,12 @@ function applySetupSeed(form, draft) {
   syncChoiceButtons(form, "data-is-public", fieldValue(form, "is_public") || "no");
   syncChoiceButtons(form, "data-experience", fieldValue(form, "experience") || "intermediate");
   syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
+  syncChoiceButtons(form, "data-event-kind", fieldValue(form, "event_kind") || "race");
+  if (draft.event_legs_json) form.dataset.eventLegsJson = draft.event_legs_json;
   if (draft.run_days) setRunDays(form, draft.run_days);
   if (draft.extraDisciplines) form.dataset.extraDisciplines = draft.extraDisciplines;
   if (draft.ownEvent) form.dataset.ownEvent = draft.ownEvent;
+  paintSetupEventLegs(form);
   if (draft.pickedEvent && draft.event_name) {
     form.dataset.pickedEvent = "1";
     if (draft.sourceEvent) form.dataset.sourceEvent = draft.sourceEvent;
@@ -1449,7 +1468,7 @@ function trainingDayPressure(form, sport) {
   };
   const advice = typeof window.trainingAdvice === "function"
     ? window.trainingAdvice(sport, preset, custom, experience)
-    : { minDays: 3, showRunDays: sport === "run" || sport === "triathlon" };
+    : { minDays: 3, showRunDays: sport === "run" || sport === "walk" || sport === "triathlon" };
   const minDays = Math.max(2, Number(advice.minDays) || 3);
   const sportDays = new Set();
   ["run", "swim", "bike", "strength"].forEach((k) => {
@@ -2053,6 +2072,61 @@ async function finishSetupWithPlan(row) {
 }
 window.finishSetupWithPlan = finishSetupWithPlan;
 
+
+function collectAgendaOtherEvents(goalStart, goalEnd, agendaEventId) {
+  const events = typeof window.peekEvents === "function"
+    ? window.peekEvents()
+    : (typeof EVENTS !== "undefined" ? EVENTS : []);
+  const start = String(goalStart || "").slice(0, 10);
+  const end = String(goalEnd || start).slice(0, 10);
+  if (!start || !Array.isArray(events)) return [];
+  return events.filter((ev) => {
+    if (!ev || !ev.date || !ev.name) return false;
+    if (agendaEventId && String(ev.id) === String(agendaEventId)) return false;
+    if (ev.race) return false;
+    const evStart = String(ev.date).slice(0, 10);
+    const evEnd = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : evStart;
+    // Overlap with plan window up to goal end (generator also filters by plan start).
+    return evStart <= end && evEnd >= start;
+  }).map((ev) => ({
+    ...ev,
+    existing: true,
+  }));
+}
+
+function paintSetupEventLegs(form) {
+  const box = form?.querySelector("#setup-event-legs");
+  if (!box) return;
+  const start = fieldValue(form, "event_date");
+  const end = fieldValue(form, "event_end_date") || start;
+  const multi = !!(start && end && end > start);
+  box.hidden = !multi;
+  if (!multi) {
+    box.innerHTML = "";
+    delete form.dataset.eventLegsJson;
+    const hidden = form.querySelector("[name=event_legs_json]");
+    if (hidden) hidden.value = "[]";
+    return;
+  }
+  let legs = [];
+  try {
+    legs = JSON.parse(form.dataset.eventLegsJson || fieldValue(form, "event_legs_json") || "[]");
+  } catch { legs = []; }
+  if (typeof window.normalizeEventLegs === "function") {
+    legs = window.normalizeEventLegs(start, end, legs);
+  }
+  // eventLegsEditorHtml already embeds legs_json; rewrite that name for setup drafts.
+  if (typeof window.eventLegsEditorHtml === "function") {
+    box.innerHTML = window.eventLegsEditorHtml(legs, { locked: !!form.dataset.pickedEvent })
+      .replace(/name="legs_json"/g, 'name="event_legs_json"');
+  } else {
+    box.innerHTML = `<p class="muted small-text">${legs.length} day(s) · edit distances on the Events page if needed.</p>
+      <input type="hidden" name="event_legs_json" value='${JSON.stringify(legs).replace(/'/g, "&#39;")}' />`;
+  }
+  form.dataset.eventLegsJson = JSON.stringify(legs);
+}
+window.paintSetupEventLegs = paintSetupEventLegs;
+
 async function saveGeneratedPlan(userId, input) {
   const generated = generateTrainingPlan(input);
   const acts = typeof window.peekActivities === "function" ? window.peekActivities() : [];
@@ -2060,7 +2134,11 @@ async function saveGeneratedPlan(userId, input) {
     generated.paces = window.personalizePlanPaces(generated.paces, acts, generated);
   }
   // Client-only / optional fields — strip before insert in case DB columns aren't there yet.
-  const { sources, long_weekday, goal_type, ...persisted } = generated;
+  const {
+    sources, long_weekday, goal_type,
+    event_end_date, event_kind, event_legs,
+    ...persisted
+  } = generated;
   const row = { user_id: userId, ...persisted };
   const { data, error } = await sb.from("plans").insert(row).select("*").single();
   if (error) throw error;
@@ -2070,12 +2148,17 @@ async function saveGeneratedPlan(userId, input) {
     if (long_weekday != null) data.long_weekday = long_weekday;
   }
   const raceKm = generated.run_km || generated.bike_km || (generated.swim_m ? generated.swim_m / 1000 : 0);
+  const raceEnd = generated.event_end_date || generated.event_date;
+  const multi = raceEnd && raceEnd > generated.event_date;
   const raceRow = {
     date: generated.event_date,
+    end_date: multi ? raceEnd : null,
     name: generated.event_name,
     km: raceKm || 0,
     race: true,
     sport: generated.sport,
+    kind: generated.event_kind || input.eventKind || "race",
+    legs: multi ? (generated.event_legs || input.legs || []) : [],
     swim_m: generated.swim_m,
     bike_km: generated.bike_km,
     location: String(input.eventLocation || "").trim().slice(0, 80),
@@ -2356,11 +2439,16 @@ function clearAgendaLink(form) {
 
 function customFromAgenda(sport, preset, ev) {
   if (preset !== "custom") return { custom_run: "", custom_swim: "", custom_bike: "" };
+  const hardest = Array.isArray(ev.legs) && typeof window.summarizeEventLegs === "function"
+    ? window.summarizeEventLegs(ev.legs).hardest
+    : 0;
   return {
-    custom_run: (sport === "run" || sport === "triathlon") && ev.km ? String(ev.km) : "",
+    custom_run: (sport === "run" || sport === "walk" || sport === "triathlon") && (ev.km || hardest)
+      ? String(hardest || ev.km)
+      : "",
     custom_swim: (sport === "swim" || sport === "triathlon") && ev.swim_m ? String(ev.swim_m) : "",
-    custom_bike: sport === "bike"
-      ? String(ev.bike_km || ev.km || "")
+    custom_bike: sport === "bike" || sport === "ski"
+      ? String(ev.bike_km || hardest || ev.km || "")
       : (sport === "triathlon" && ev.bike_km ? String(ev.bike_km) : ""),
   };
 }
@@ -2381,6 +2469,7 @@ window.startPlanForAgendaEvent = async function startPlanForAgendaEvent(ev, { re
   const preset = window.inferPresetFromEvent(sport, ev);
   const custom = customFromAgenda(sport, preset, ev);
   const date = String(ev.date).slice(0, 10);
+  const endDate = typeof window.eventEndYmd === "function" ? window.eventEndYmd(ev) : date;
   const draft = {
     goal_type: "race",
     sport,
@@ -2390,6 +2479,9 @@ window.startPlanForAgendaEvent = async function startPlanForAgendaEvent(ev, { re
     custom_bike: custom.custom_bike,
     event_name: ev.name,
     event_date: date,
+    event_end_date: endDate && endDate !== date ? endDate : "",
+    event_kind: (window.EVENT_KINDS || []).includes(ev.kind) ? ev.kind : "race",
+    event_legs_json: Array.isArray(ev.legs) ? JSON.stringify(ev.legs) : "[]",
     is_public: ev.is_public ? "yes" : "no",
     experience: "intermediate",
     run_days: "",
@@ -2673,11 +2765,22 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const form = e.target.closest?.(".setup-form");
   if (!form) return;
-  if (e.target.matches?.("input[name=custom_run], input[name=custom_swim], input[name=custom_bike], input[name=event_date]")) {
+  if (e.target.matches?.("input[name=custom_run], input[name=custom_swim], input[name=custom_bike], input[name=event_date], input[name=event_end_date]")) {
     if (e.target.matches?.("input[name=event_date]")) {
       form.dataset.timeChrome = "1";
       shieldTimeChrome(1200);
       keepTimeDistanceChrome(form);
+      const start = String(e.target.value || "").slice(0, 10);
+      const endEl = form.querySelector("input[name=event_end_date]");
+      if (start && endEl) {
+        endEl.min = start;
+        const d = new Date(`${start}T12:00:00`);
+        d.setDate(d.getDate() + 1);
+        endEl.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      }
+    }
+    if (e.target.matches?.("input[name=event_date], input[name=event_end_date]")) {
+      paintSetupEventLegs(form);
     }
     updateTrainingAdvice();
   }
@@ -2926,6 +3029,13 @@ document.addEventListener("click", (e) => {
     }
     return;
   }
+  const kindBtn = e.target.closest("[data-event-kind]");
+  if (kindBtn && form && form.classList.contains("setup-form")) {
+    e.preventDefault();
+    setChoice(form, "event_kind", kindBtn.dataset.eventKind || "race", "data-event-kind");
+    saveSetupDraft(form);
+    return;
+  }
   const daysBtn = e.target.closest("#run-day-choices [data-run-days]");
   if (daysBtn && form) {
     e.preventDefault();
@@ -2977,6 +3087,13 @@ document.addEventListener("submit", async (e) => {
     errorEl.textContent = "Search for a race or add your own event.";
     return;
   }
+  const setupEnd = fieldValue(form, "event_end_date");
+  const setupStart = fieldValue(form, "event_date");
+  const setupMulti = !!(setupStart && setupEnd && setupEnd > setupStart);
+  if (setupMulti && !fieldValue(form, "preset")) {
+    const presetEl = fieldOf(form, "preset");
+    if (presetEl) presetEl.value = "custom";
+  }
   if (goalType === "race" && !fieldValue(form, "preset") && !form.dataset.pickedEvent) { errorEl.textContent = "Choose a distance."; return; }
   if (goalType === "time" && !fieldValue(form, "preset")) { errorEl.textContent = "Choose a distance."; return; }
   if (goalType === "time") {
@@ -2984,16 +3101,18 @@ document.addEventListener("submit", async (e) => {
     const timeGoalId = fieldValue(form, "time_goal");
     const customTime = fieldValue(form, "time_custom").trim();
     if (presetChoice === "custom") {
-      if (sport === "run" && !(Number(fieldValue(form, "custom_run")) > 0)) {
-        errorEl.textContent = `Enter the run distance in ${distLabel()}.`;
+      if ((sport === "run" || sport === "walk") && !(Number(fieldValue(form, "custom_run")) > 0)) {
+        errorEl.textContent = sport === "walk"
+          ? `Enter the walk distance in ${distLabel()}.`
+          : `Enter the run distance in ${distLabel()}.`;
         return;
       }
       if (sport === "swim" && !(Number(fieldValue(form, "custom_swim")) > 0)) {
         errorEl.textContent = "Enter the swim distance in metres.";
         return;
       }
-      if (sport === "bike" && !(Number(fieldValue(form, "custom_bike")) > 0)) {
-        errorEl.textContent = "Enter the bike distance in km.";
+      if ((sport === "bike" || sport === "ski") && !(Number(fieldValue(form, "custom_bike")) > 0)) {
+        errorEl.textContent = sport === "ski" ? "Enter the ski distance in km." : "Enter the bike distance in km.";
         return;
       }
       if (sport === "triathlon" && (!(Number(fieldValue(form, "custom_run")) > 0)
@@ -3013,7 +3132,7 @@ document.addEventListener("submit", async (e) => {
   if (goalType === "time" && !form.event_date.value) { errorEl.textContent = "Pick a target date."; return; }
   if (goalType === "race" && !form.dataset.pickedEvent && !form.event_name.value) { errorEl.textContent = "Enter the event name."; return; }
   if (goalType === "race" && !form.dataset.pickedEvent && !form.event_date.value) { errorEl.textContent = "Pick an event date."; return; }
-  const wantsRunDays = sport === "run" || sport === "triathlon" || visibleWeekdays(form, "run").length;
+  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon" || visibleWeekdays(form, "run").length;
   if (wantsRunDays && !visibleWeekdays(form, "run").length && !form.run_days.value) {
     errorEl.textContent = "Choose which days you want to run.";
     return;
@@ -3079,10 +3198,33 @@ document.addEventListener("submit", async (e) => {
   }
   if (goalType === "fitness") {
     eventName = "General fitness";
-    preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
+    preset = sport === "run" || sport === "walk"
+      ? (sport === "walk" ? "20" : "10k")
+      : sport === "swim" ? "1500"
+        : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
+          : "halve";
     const end = new Date();
     end.setDate(end.getDate() + fitnessWeeks * 7);
     eventDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  }
+  if (goalType === "race" && typeof window.readLegsFromEditor === "function" && form.querySelector(".event-leg-day")) {
+    const liveLegs = window.readLegsFromEditor(form);
+    form.dataset.eventLegsJson = JSON.stringify(liveLegs);
+    const hiddenLegs = form.querySelector("[name=event_legs_json]");
+    if (hiddenLegs) hiddenLegs.value = JSON.stringify(liveLegs);
+    if (typeof window.summarizeEventLegs === "function" && liveLegs.length) {
+      const sum = window.summarizeEventLegs(liveLegs);
+      if (sum.hardest > 0) {
+        if ((sport === "run" || sport === "walk") && !(Number(fieldValue(form, "custom_run")) > 0)) {
+          const el = fieldOf(form, "custom_run");
+          if (el) el.value = String(sum.hardest);
+        }
+        if ((sport === "bike" || sport === "ski") && !(Number(fieldValue(form, "custom_bike")) > 0)) {
+          const el = fieldOf(form, "custom_bike");
+          if (el) el.value = String(sum.hardest);
+        }
+      }
+    }
   }
   const planInput = {
     goalType,
@@ -3108,7 +3250,16 @@ document.addEventListener("submit", async (e) => {
     agendaEventId: form.dataset.agendaEventId || "",
     notes: "",
     experience: fieldValue(form, "experience") || "intermediate",
-    otherEvents: [],
+    eventEndDate: fieldValue(form, "event_end_date") || eventDate,
+    eventKind: fieldValue(form, "event_kind") || "race",
+    legs: (() => {
+      try {
+        const raw = fieldValue(form, "event_legs_json") || form.dataset.eventLegsJson || "[]";
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    })(),
+    otherEvents: collectAgendaOtherEvents(eventDate, fieldValue(form, "event_end_date") || eventDate, form.dataset.agendaEventId || ""),
     custom: {
       run: fieldValue(form, "custom_run") && typeof window.parseDistInput === "function"
         ? window.parseDistInput(fieldValue(form, "custom_run"))

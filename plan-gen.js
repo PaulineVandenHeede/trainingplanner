@@ -26,7 +26,22 @@ window.EVENT_PRESETS = {
     { id: "volledige", label: "Volledige tri", swim: 3800, bike: 180, run: 42.2 },
     { id: "custom", label: "Custom" },
   ],
+  walk: [
+    { id: "10", label: "10 km", run: 10 },
+    { id: "20", label: "20 km", run: 20 },
+    { id: "30", label: "30 km", run: 30 },
+    { id: "custom", label: "Custom" },
+  ],
+  ski: [
+    { id: "half", label: "Half day (~15 km)", bike: 15 },
+    { id: "full", label: "Full day (~30 km)", bike: 30 },
+    { id: "custom", label: "Custom" },
+  ],
 };
+
+window.EVENT_SPORTS = ["run", "swim", "bike", "triathlon", "walk", "ski"];
+window.EVENT_KINDS = ["race", "stage", "camp", "holiday"];
+window.EVENT_MAX_DAYS = 21;
 
 window.sportLabel = function sportLabel(s) {
   const key = `sport.${s}Full`;
@@ -34,7 +49,14 @@ window.sportLabel = function sportLabel(s) {
     const value = window.t(key);
     if (value !== key) return value;
   }
-  return ({ run: "Running", swim: "Swimming", bike: "Cycling", triathlon: "Triathlon" })[s] || s;
+  return ({
+    run: "Running",
+    swim: "Swimming",
+    bike: "Cycling",
+    triathlon: "Triathlon",
+    walk: "Walking",
+    ski: "Skiing",
+  })[s] || s;
 };
 window.SPORT_LABEL = new Proxy({}, {
   get(_target, prop) {
@@ -43,11 +65,195 @@ window.SPORT_LABEL = new Proxy({}, {
   },
 });
 
+/** Periodization template sport for walk/ski (and unknown). */
+window.planTemplateSport = function planTemplateSport(sport) {
+  if (sport === "walk") return "run";
+  if (sport === "ski") return "bike";
+  if (["run", "swim", "bike", "triathlon"].includes(sport)) return sport;
+  return "run";
+};
+
+window.eventEndYmd = function eventEndYmd(ev) {
+  const start = String(ev?.date || "").slice(0, 10);
+  const end = String(ev?.end_date || "").slice(0, 10);
+  if (start && end && end >= start) return end;
+  return start;
+};
+
+window.eventCoversDate = function eventCoversDate(ev, dateStr) {
+  const d = String(dateStr || "").slice(0, 10);
+  const start = String(ev?.date || "").slice(0, 10);
+  if (!d || !start) return false;
+  return d >= start && d <= window.eventEndYmd(ev);
+};
+
+window.eventIsSoftKind = function eventIsSoftKind(kind) {
+  return kind === "camp" || kind === "holiday";
+};
+
+function pgEachYmd(startYmd, endYmd) {
+  const out = [];
+  const start = String(startYmd || "").slice(0, 10);
+  const end = String(endYmd || start).slice(0, 10);
+  let cur = pgParse(start);
+  const last = pgParse(end);
+  if (Number.isNaN(cur.getTime()) || Number.isNaN(last.getTime()) || last < cur) return out;
+  while (cur <= last) {
+    out.push(pgYmd(cur));
+    cur = pgAdd(cur, 1);
+  }
+  return out;
+}
+
+function normalizeLegItem(raw) {
+  const sport = String(raw?.sport || "").toLowerCase();
+  if (!window.EVENT_SPORTS.includes(sport) || sport === "triathlon") return null;
+  const km = Number(raw?.km);
+  // Distance is optional — sport-only means "I'll do this, distance TBD".
+  if (Number.isFinite(km) && km > 0 && km < 500) {
+    return { sport, km: Math.round(km * 10) / 10 };
+  }
+  return { sport };
+}
+
+/** Build a full day list for [start, end], merging provided legs. Cap EVENT_MAX_DAYS. */
+window.normalizeEventLegs = function normalizeEventLegs(startYmd, endYmd, legs) {
+  const start = String(startYmd || "").slice(0, 10);
+  let end = String(endYmd || start).slice(0, 10);
+  if (!start) return [];
+  if (!end || end < start) end = start;
+  const maxEnd = pgYmd(pgAdd(pgParse(start), (window.EVENT_MAX_DAYS || 21) - 1));
+  if (end > maxEnd) end = maxEnd;
+  const byDate = new Map();
+  (Array.isArray(legs) ? legs : []).forEach((leg) => {
+    const d = String(leg?.date || "").slice(0, 10);
+    if (!d || d < start || d > end) return;
+    const items = (Array.isArray(leg.items) ? leg.items : [])
+      .map(normalizeLegItem)
+      .filter(Boolean);
+    byDate.set(d, { date: d, items });
+  });
+  return pgEachYmd(start, end).map((d) => byDate.get(d) || { date: d, items: [] });
+};
+
+window.legDayLoadKm = function legDayLoadKm(leg) {
+  return (leg?.items || []).reduce((s, it) => s + (Number(it.km) || 0), 0);
+};
+
+window.legDayLabel = function legDayLabel(leg, eventName, stageNum) {
+  const items = leg?.items || [];
+  if (!items.length) {
+    const rest = "Rest / transfer";
+    return stageNum != null
+      ? `${eventName || "Event"} · day ${stageNum} · ${rest}`
+      : `${eventName || "Event"} · ${rest}`;
+  }
+  const bits = items.map((it) => {
+    const label = window.sportLabel ? window.sportLabel(it.sport) : it.sport;
+    if (!(Number(it.km) > 0)) return label;
+    if (it.sport === "swim") return `${label} ${Math.round(it.km * 1000)} m`;
+    return `${label} ${fmtKmLabel(it.km)} km`;
+  });
+  const body = bits.join(" + ");
+  if (stageNum != null) return `${eventName || "Event"} · day ${stageNum}: ${body}`;
+  return eventName ? `${eventName}: ${body}` : body;
+};
+
+/**
+ * Derive summary sport/km/swim_m/bike_km from legs.
+ * Dominant sport = highest total km (swim stored as km = m/1000 in legs).
+ */
+window.summarizeEventLegs = function summarizeEventLegs(legs) {
+  const totals = {};
+  let dayCount = 0;
+  let activeDays = 0;
+  (legs || []).forEach((leg) => {
+    dayCount += 1;
+    const items = leg?.items || [];
+    if (items.length) activeDays += 1;
+    items.forEach((it) => {
+      totals[it.sport] = (totals[it.sport] || 0) + (Number(it.km) || 0);
+    });
+  });
+  const ranked = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const sport = ranked[0]?.[0] || "run";
+  const km = Math.round((totals[sport] || 0) * 10) / 10 || 0.1;
+  const swim_m = totals.swim ? Math.round(totals.swim * 1000) : null;
+  const bike_km = totals.bike ? Math.round(totals.bike * 10) / 10 : null;
+  const totalKm = Math.round(Object.values(totals).reduce((s, n) => s + n, 0) * 10) / 10;
+  const hardest = Math.max(0, ...(legs || []).map((leg) => window.legDayLoadKm(leg)));
+  return { sport, km, swim_m, bike_km, totalKm, dayCount, activeDays, hardest, totals };
+};
+
+window.expandEventToDayEntries = function expandEventToDayEntries(ev) {
+  if (!ev?.date || !ev?.name) return [];
+  const start = String(ev.date).slice(0, 10);
+  const end = window.eventEndYmd(ev);
+  const kind = window.EVENT_KINDS.includes(ev.kind) ? ev.kind : "race";
+  const soft = window.eventIsSoftKind(kind);
+  let legs = window.normalizeEventLegs(start, end, ev.legs);
+  const hasItems = legs.some((leg) => (leg.items || []).length);
+  if (!hasItems) {
+    const sport = window.EVENT_SPORTS.includes(ev.sport) ? ev.sport : "run";
+    const items = [];
+    if (sport === "triathlon") {
+      if (Number(ev.swim_m) > 0) items.push({ sport: "swim", km: Number(ev.swim_m) / 1000 });
+      if (Number(ev.bike_km) > 0) items.push({ sport: "bike", km: Number(ev.bike_km) });
+      if (Number(ev.km) > 0) items.push({ sport: "run", km: Number(ev.km) });
+    } else if (sport === "swim" && Number(ev.swim_m) > 0) {
+      items.push({ sport: "swim", km: Number(ev.swim_m) / 1000 });
+    } else {
+      const km = Number(
+        sport === "bike" || sport === "ski" ? (ev.bike_km || ev.km) : ev.km
+      ) || 0.1;
+      items.push({ sport: sport === "triathlon" ? "run" : sport, km });
+    }
+    legs = legs.map((leg, i) => (i === 0
+      ? { date: leg.date, items }
+      : { date: leg.date, items: [] }));
+  }
+  const multi = legs.length > 1;
+  return legs.map((leg, i) => {
+    const load = window.legDayLoadKm(leg);
+    const primary = (leg.items || [])[0];
+    return {
+      date: leg.date,
+      name: ev.name,
+      km: load || Number(ev.km) || 0,
+      sport: primary?.sport || ev.sport || "run",
+      items: leg.items || [],
+      kind,
+      soft,
+      effort: ev.effort || (soft ? "easy" : "race"),
+      note: ev.note || "",
+      stageNum: multi ? i + 1 : null,
+      parentId: ev.id || null,
+      existing: true,
+    };
+  });
+};
+
+window.eventRangeSummary = function eventRangeSummary(ev) {
+  const start = String(ev?.date || "").slice(0, 10);
+  const end = window.eventEndYmd(ev);
+  if (!start) return "";
+  if (!end || end === start) return start;
+  const legs = window.normalizeEventLegs(start, end, ev.legs);
+  const sum = window.summarizeEventLegs(legs);
+  const days = sum.dayCount || 1;
+  const sportBit = sum.activeDays
+    ? ` · ${window.sportLabel(sum.sport)} ${fmtKmLabel(sum.totalKm)} km`
+    : "";
+  return `${days} days · ${start} → ${end}${sportBit}`;
+};
+
 window.TIME_PRESETS = {
   run: ["5k", "10k", "half", "marathon", "custom"],
   swim: ["750", "1500", "1900", "5k", "custom"],
   bike: ["40", "90", "180", "custom"],
   triathlon: ["kwart", "halve", "volledige", "custom"],
+  walk: ["10", "20", "30", "custom"],
+  ski: ["half", "full", "custom"],
 };
 window.TIME_GOALS = [
   { id: "5k-20", label: "Sub-20", preset: "5k", sport: "run" },
@@ -119,6 +325,8 @@ window.FITNESS_WEEKS_BY_SPORT = {
   swim: { options: [6, 8, 12], default: 8, hint: "Swim fitness blocks are often shorter — 6–12 weeks with technique focus." },
   bike: { options: [8, 12, 16], default: 12, hint: "Cycling base blocks commonly run 8–16 weeks." },
   triathlon: { options: [8, 12, 16], default: 12, hint: "Triathlon fitness / base blocks are most often 8–16 weeks." },
+  walk: { options: [8, 12, 16], default: 12, hint: "Walking fitness blocks are usually 8–16 weeks." },
+  ski: { options: [8, 12, 16], default: 12, hint: "Ski fitness blocks commonly run 8–16 weeks." },
 };
 
 // Research links returned on generated plans. Each entry lists which sports it applies to;
@@ -279,34 +487,47 @@ const pgMonday = (d) => pgAdd(d, -((d.getDay() + 6) % 7));
 function resolveDistances(sport, presetId, custom) {
   const preset = (EVENT_PRESETS[sport] || []).find((p) => p.id === presetId);
   if (!preset) throw new Error("Choose a distance.");
-  if (preset.id !== "custom") return { swim: preset.swim || null, bike: preset.bike || null, run: preset.run || null, label: preset.label };
+  if (preset.id !== "custom") {
+    return {
+      swim: preset.swim || null,
+      bike: preset.bike || null,
+      run: preset.run || null,
+      label: preset.label,
+    };
+  }
   const swim = custom.swim ? Number(custom.swim) : null;
   const bike = custom.bike ? Number(custom.bike) : null;
   const run = custom.run ? Number(custom.run) : null;
-  if (sport === "run" && !(run > 0)) throw new Error("Enter the run distance in km.");
+  if ((sport === "run" || sport === "walk") && !(run > 0)) {
+    throw new Error(sport === "walk" ? "Enter the walk distance in km." : "Enter the run distance in km.");
+  }
   if (sport === "swim" && !(swim > 0)) throw new Error("Enter the swim distance in metres.");
-  if (sport === "bike" && !(bike > 0)) throw new Error("Enter the bike distance in km.");
-  if (sport === "triathlon" && (!(swim > 0) || !(bike > 0) || !(run > 0))) throw new Error("Enter swim, bike and run distances.");
+  if ((sport === "bike" || sport === "ski") && !(bike > 0)) {
+    throw new Error(sport === "ski" ? "Enter the ski distance in km." : "Enter the bike distance in km.");
+  }
+  if (sport === "triathlon" && (!(swim > 0) || !(bike > 0) || !(run > 0))) {
+    throw new Error("Enter swim, bike and run distances.");
+  }
   return { swim, bike, run, label: "Custom" };
 }
 
 function peakVolume(sport, weekly, runKm) {
   const start = Math.max(4, Number(weekly) || 8);
   let cap = start + 12;
-  if (sport === "run") {
+  if (sport === "run" || sport === "walk") {
     if (runKm <= 5) cap = 35;
     else if (runKm <= 10) cap = 45;
     else if (runKm <= 16.2) cap = 50;
     else if (runKm <= 21.2) cap = 55;
-    else cap = 65;
+    else cap = sport === "walk" ? 70 : 65;
   } else if (sport === "triathlon") {
     if (runKm <= 10) cap = 40;
     else if (runKm <= 21.2) cap = 48;
     else cap = 55;
   } else if (sport === "swim") {
     cap = Math.max(start + 2, start * 1.4);
-  } else if (sport === "bike") {
-    cap = Math.min(250, Math.max(start + 20, start * 1.5));
+  } else if (sport === "bike" || sport === "ski") {
+    cap = Math.min(sport === "ski" ? 200 : 250, Math.max(start + 20, start * 1.5));
   }
   const built = start * (1.1 ** 12);
   return Math.round(Math.min(cap, Math.max(start, Math.min(built, start * 2.2 + 6))));
@@ -314,7 +535,7 @@ function peakVolume(sport, weekly, runKm) {
 
 function longCap(sport, runKm, weekly) {
   if (sport === "swim") return Math.max(1, Math.round((weekly || 2) * 0.4 * 10) / 10);
-  if (sport === "bike") return Math.min(180, Math.round(weekly * 0.45));
+  if (sport === "bike" || sport === "ski") return Math.min(180, Math.round(weekly * 0.45));
   if (runKm >= 42) return 32;
   if (runKm >= 21) return 21;
   if (runKm >= 16) return 18;
@@ -807,20 +1028,32 @@ window.experienceFromWeeklyKm = function experienceFromWeeklyKm(km, sport = "run
     if (n < 6) return "intermediate";
     return "advanced";
   }
-  // run + triathlon (run leg volume)
+  if (sport === "ski") {
+    if (n < 80) return "beginner";
+    if (n < 150) return "intermediate";
+    return "advanced";
+  }
+  // run + walk + triathlon (run leg volume)
   if (n < 25) return "beginner";
   if (n < 50) return "intermediate";
   return "advanced";
 };
 
 window.experienceThresholds = function experienceThresholds(sport = "run") {
-  if (sport === "bike") return { beginner: 100, intermediate: 180, unit: "km/week on the bike" };
+  if (sport === "bike" || sport === "ski") {
+    return {
+      beginner: sport === "ski" ? 80 : 100,
+      intermediate: sport === "ski" ? 150 : 180,
+      unit: sport === "ski" ? "km/week on skis" : "km/week on the bike",
+    };
+  }
   if (sport === "swim") return { beginner: 3, intermediate: 6, unit: "km/week in the pool" };
+  if (sport === "walk") return { beginner: 20, intermediate: 40, unit: "km/week of walking" };
   return { beginner: 25, intermediate: 50, unit: "km/week of running" };
 };
 
 window.needsDedicatedLongDay = function needsDedicatedLongDay(sport, presetId, custom) {
-  if (!presetId || !(sport === "run" || sport === "triathlon")) return false;
+  if (!presetId || !(sport === "run" || sport === "walk" || sport === "triathlon")) return false;
   try {
     const d = resolveDistances(sport, presetId, custom || {});
     return (d.run || 0) >= 16;
@@ -947,8 +1180,9 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
   if (isRaceWeek) {
     const name = distances.label || "Race";
     if (sport === "swim") set(raceDay, "race", `${name} ${distances.swim} m`);
-    else if (sport === "bike") set(raceDay, "race", `${name} ${fmtKmLabel(distances.bike)} km`);
-    else if (sport === "triathlon") set(raceDay, "race", `${name}`, distances.run);
+    else if (sport === "bike" || sport === "ski") {
+      set(raceDay, "race", `${name} ${fmtKmLabel(distances.bike)} km`);
+    } else if (sport === "triathlon") set(raceDay, "race", `${name}`, distances.run);
     else set(raceDay, "race", `${name} ${fmtKmLabel(distances.run)} km`, distances.run);
 
     if (sport === "triathlon") {
@@ -977,12 +1211,14 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
         else set(i, "rest", "Rest");
       }
     } else {
+      const foot = sport === "run" || sport === "walk";
+      const kindEasy = sport === "walk" ? "walk" : "run";
       for (let i = 0; i < 7; i++) {
         if (i === raceDay) continue;
-        if (i === Math.max(0, raceDay - 3) && sport !== "swim" && sport !== "bike") {
-          set(i, "run", "Shakeout 4–6 easy", 5);
-        } else if (i < raceDay && sport !== "swim" && sport !== "bike" && i % 2 === 0) {
-          set(i, "run", "Easy 4–5", 4);
+        if (i === Math.max(0, raceDay - 3) && foot) {
+          set(i, kindEasy, sport === "walk" ? "Easy walk 4–6" : "Shakeout 4–6 easy", 5);
+        } else if (i < raceDay && foot && i % 2 === 0) {
+          set(i, kindEasy, sport === "walk" ? "Easy walk 4–5" : "Easy 4–5", 4);
         } else {
           set(i, "rest", i === raceDay - 1 ? "Rest / 20' shakeout" : "Rest");
         }
@@ -999,11 +1235,37 @@ function daysFor(sport, phase, km, longKm, raceDay, isRaceWeek, distances, opts 
     return days;
   }
 
-  if (sport === "bike") {
-    set(0, "bike", "Easy spin 45–60'");
-    set(2, hasQuality ? "bike" : "bike", hasQuality ? "Quality ride" : "Steady ride");
-    set(5, "bike", `Long ride ~${fmtKmLabel(longKm)} km`);
-    if (km > 40) set(3, "bike", "Easy recovery spin");
+  if (sport === "bike" || sport === "ski") {
+    const easy = sport === "ski" ? "Easy ski 45–60'" : "Easy spin 45–60'";
+    const quality = sport === "ski" ? "Quality ski session" : "Quality ride";
+    const steady = sport === "ski" ? "Steady ski" : "Steady ride";
+    const longLabel = sport === "ski"
+      ? `Long ski ~${fmtKmLabel(longKm)} km`
+      : `Long ride ~${fmtKmLabel(longKm)} km`;
+    const recovery = sport === "ski" ? "Easy recovery ski" : "Easy recovery spin";
+    const kind = sport === "ski" ? "ski" : "bike";
+    set(0, kind, easy);
+    set(2, kind, hasQuality ? quality : steady);
+    set(5, kind, longLabel);
+    if (km > 40) set(3, kind, recovery);
+    return days;
+  }
+
+  if (sport === "walk") {
+    const busySetWalk = new Set(normalizeWeekdays(opts.busyWeekdays, []));
+    const freeWalk = (list, fallback) => normalizeWeekdays(list, fallback).filter((d) => !busySetWalk.has(d));
+    const walkIdx = freeWalk(opts.runWeekdays, runDaySlots(nDays));
+    const preferredLongW = Number.isInteger(Number(opts.longWeekday)) ? Number(opts.longWeekday) : null;
+    const longIdxW = preferredLongW != null && walkIdx.includes(preferredLongW)
+      ? preferredLongW
+      : (walkIdx.includes(5) ? 5 : (walkIdx[walkIdx.length - 1] ?? 5));
+    const easyIdxW = walkIdx.filter((i) => i !== longIdxW);
+    const splitW = splitRunKm(km, longKm, false, walkIdx.length, phase);
+    easyIdxW.forEach((i, n) => {
+      const easyKm = Math.max(3, splitW.easies[n] || 4);
+      set(i, "walk", `Walk ${fmtKmLabel(easyKm)} easy`, easyKm);
+    });
+    set(longIdxW, "long", `Long walk ${fmtKmLabel(longKm)}`, longKm);
     return days;
   }
 
@@ -1225,37 +1487,316 @@ function monthSpan(from, days) {
   return `${monthLabel(from)} – ${monthLabel(end)}`;
 }
 
+const AGENDA_IMPORTANT_KINDS = new Set(["long", "quality", "brick", "race"]);
+
+function clonePlanWeeks(weeks) {
+  return (weeks || []).map((w) => ({
+    ...w,
+    days: (w.days || []).map((d) => (Array.isArray(d) ? d.slice() : d)),
+  }));
+}
+window.clonePlanWeeks = clonePlanWeeks;
+
+function dayReplaceCost(day) {
+  const k = day?.[0];
+  if (!k || k === "rest") return 0;
+  if (k === "walk") return 1;
+  if (k === "bike" || k === "swim" || k === "walkswim") return 2;
+  if (k === "run") return 3;
+  return 99;
+}
+
+function findSlotForImportant(week, kind, blocked) {
+  const order = (kind === "long" || kind === "race")
+    ? [4, 3, 6, 2, 0, 1, 5] // Fri first — protect weekend event windows
+    : [2, 1, 0, 3, 4, 6, 5];
+  let best = -1;
+  let bestCost = 99;
+  for (const i of order) {
+    if (blocked.has(i)) continue;
+    const day = week.days[i];
+    if (!day) continue;
+    if (AGENDA_IMPORTANT_KINDS.has(day[0])) continue;
+    const cost = dayReplaceCost(day);
+    if (cost < bestCost) {
+      best = i;
+      bestCost = cost;
+      if (cost === 0) break;
+    }
+  }
+  return best;
+}
+
+function dayShowsEvent(day, eventName) {
+  return !!(day && (day[0] === "event" || day[0] === "rest" || day[0] === "race")
+    && String(day[1] || "").includes(eventName));
+}
+
+/**
+ * Mark every day of an agenda event on the plan and relocate long/quality/brick
+ * off the window (Friday preferred for longs). Safe to re-run (idempotent).
+ */
+window.applyAgendaEventToWeeks = function applyAgendaEventToWeeks(weeks, planStartYmd, ev, opts = {}) {
+  if (!ev?.date || !ev?.name || !Array.isArray(weeks) || !weeks.length) {
+    return { weeks, changed: false, moves: [] };
+  }
+  const goalDate = opts.goalDate ? String(opts.goalDate).slice(0, 10) : "";
+  const start = String(ev.date).slice(0, 10);
+  const end = window.eventEndYmd(ev);
+  if (goalDate && start === goalDate) return { weeks, changed: false, moves: [] };
+
+  const planStart = pgParse(planStartYmd);
+  if (Number.isNaN(planStart.getTime())) return { weeks, changed: false, moves: [] };
+  const entries = window.expandEventToDayEntries(ev);
+  if (!entries.length) return { weeks, changed: false, moves: [] };
+
+  const soft = !!(ev.soft || window.eventIsSoftKind(ev.kind));
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const blockedByWeek = new Map();
+  const displaced = [];
+  let changed = false;
+
+  entries.forEach((entry) => {
+    const date = pgParse(entry.date);
+    if (Number.isNaN(date.getTime())) return;
+    const wk = Math.floor(pgDays(planStart, date) / 7) + 1;
+    const weekIdx = wk - 1;
+    const week = weeks[weekIdx];
+    if (!week?.days) return;
+    const dayIdx = (date.getDay() + 6) % 7;
+    if (!blockedByWeek.has(weekIdx)) blockedByWeek.set(weekIdx, new Set());
+    blockedByWeek.get(weekIdx).add(dayIdx);
+
+    const prev = week.days[dayIdx];
+    const already = dayShowsEvent(prev, ev.name);
+    const items = entry.items || [];
+    // Use leg distance only — don't inherit the event's summary km (often 0.1 placeholder).
+    const load = window.legDayLoadKm({ items }) || 0;
+    const label = items.length
+      ? window.legDayLabel({ items }, ev.name, entry.stageNum)
+      : (soft ? `${ev.name} · travel / easy` : ev.name);
+    let next;
+    if (!items.length) {
+      next = ["rest", soft ? `${ev.name} · travel / easy` : `${ev.name}`];
+    } else if (!(load > 0) && soft) {
+      next = ["event", label];
+    } else {
+      next = load > 0 ? ["event", label, load] : ["event", label];
+    }
+
+    if (!already && prev && AGENDA_IMPORTANT_KINDS.has(prev[0])) {
+      displaced.push({ weekIdx, day: prev.slice(), kind: prev[0] });
+    }
+    if (!already && JSON.stringify(prev) !== JSON.stringify(next)) {
+      week.days[dayIdx] = next;
+      changed = true;
+    } else if (!already) {
+      week.days[dayIdx] = next;
+    }
+    if (load > 0) week.long = Math.max(Number(week.long) || 0, load);
+  });
+
+  // Hard races: drop a same-week long that isn't the event day (race is the key session).
+  if (!soft) {
+    blockedByWeek.forEach((daySet, weekIdx) => {
+      const week = weeks[weekIdx];
+      if (!week?.days) return;
+      week.days.forEach((d, i) => {
+        if (daySet.has(i)) return;
+        if (d?.[0] !== "long") return;
+        week.days[i] = ["rest", "Rest / easy walk"];
+        const bit = `The planned long comes out so you don't stack it with ${ev.name}.`;
+        if (!String(week.note || "").includes(bit)) {
+          week.note = [week.note, bit].filter(Boolean).join(" ");
+        }
+        changed = true;
+      });
+    });
+    // Don't relocate a long that landed under a hard race day — the race replaces it.
+    for (let i = displaced.length - 1; i >= 0; i--) {
+      if (displaced[i].kind === "long") displaced.splice(i, 1);
+    }
+  }
+
+  displaced.sort((a, b) => {
+    const rank = (k) => (k === "long" ? 0 : k === "quality" ? 1 : 2);
+    return rank(a.kind) - rank(b.kind);
+  });
+
+  const moves = [];
+  const tryPlace = (weekIdx) => {
+    if (weekIdx < 0 || weekIdx >= weeks.length) return -1;
+    const week = weeks[weekIdx];
+    const blocked = new Set(blockedByWeek.get(weekIdx) || []);
+    week.days.forEach((d, i) => {
+      if (AGENDA_IMPORTANT_KINDS.has(d?.[0])) blocked.add(i);
+    });
+    return findSlotForImportant(week, "long", blocked);
+  };
+
+  displaced.forEach((item) => {
+    let targetWeekIdx = item.weekIdx;
+    let slot = tryPlace(item.weekIdx);
+    if (slot < 0 && soft) {
+      // Prefer before the window for longs (e.g. Friday pre-holiday), else after.
+      const neighbors = item.kind === "long"
+        ? [item.weekIdx - 1, item.weekIdx + 1]
+        : [item.weekIdx + 1, item.weekIdx - 1];
+      for (const wi of neighbors) {
+        slot = tryPlace(wi);
+        if (slot >= 0) {
+          targetWeekIdx = wi;
+          break;
+        }
+      }
+    }
+    if (slot < 0) {
+      const week = weeks[item.weekIdx];
+      const miss = `Could not place “${item.day[1]}” around ${ev.name} — shorten it when you return.`;
+      if (!String(week.note || "").includes(miss)) {
+        week.note = [week.note, miss].filter(Boolean).join(" ");
+        changed = true;
+      }
+      return;
+    }
+    const target = weeks[targetWeekIdx];
+    target.days[slot] = item.day;
+    const bit = `Moved “${item.day[1]}” to ${names[slot]} for ${ev.name}.`;
+    if (!String(target.note || "").includes(bit)) {
+      target.note = [target.note, bit].filter(Boolean).join(" ");
+    }
+    if (targetWeekIdx !== item.weekIdx) {
+      const origin = weeks[item.weekIdx];
+      const shift = `Key session moved out of the ${ev.name} window.`;
+      if (!String(origin.note || "").includes(shift)) {
+        origin.note = [origin.note, shift].filter(Boolean).join(" ");
+      }
+    }
+    moves.push({
+      session: item.day[1],
+      kind: item.kind,
+      toWeek: target.wk,
+      toDay: names[slot],
+    });
+    changed = true;
+  });
+
+  blockedByWeek.forEach((_, weekIdx) => {
+    const week = weeks[weekIdx];
+    if (!week) return;
+    const range = start === end ? start : `${start} → ${end}`;
+    const mark = soft
+      ? `${ev.name} (${range}): training yields to this window.`
+      : `${ev.name} on ${range} is woven into this week.`;
+    const note = String(week.note || "");
+    const alreadyNoted = note.includes(ev.name) || note.includes(mark)
+      || (soft && /ski(ing)? holiday/i.test(note));
+    if (!alreadyNoted) {
+      week.note = [week.note, mark].filter(Boolean).join(" ");
+      changed = true;
+    }
+  });
+
+  return { weeks, changed, moves };
+};
+
 function weaveEventIntoWeek(weeks, start, ev) {
   const date = pgParse(ev.date);
   if (Number.isNaN(date.getTime())) return;
   const wk = Math.floor(pgDays(start, date) / 7) + 1;
   const week = weeks[wk - 1];
-  if (!week || wk >= weeks.length) return;
+  if (!week || wk > weeks.length) return;
   const dayIdx = (date.getDay() + 6) % 7;
+  const soft = !!(ev.soft || window.eventIsSoftKind(ev.kind));
   const longIdx = week.days.findIndex((d) => d[0] === "long" || d[0] === "event" || d[0] === "race");
-  const evKm = Number(ev.km) || 0;
-  let km = evKm || week.long;
-  let label = `${ev.name}${evKm ? ` ${fmtKmLabel(evKm)} km` : ""}`;
-  if (evKm > 0 && week.long > evKm + 3 && evKm <= 16) {
+  const items = Array.isArray(ev.items) ? ev.items : [];
+  const evKm = Number(ev.km) || window.legDayLoadKm({ items }) || 0;
+  let km = evKm || (soft ? 0 : week.long);
+  let label = items.length
+    ? window.legDayLabel({ items }, ev.name, ev.stageNum)
+    : `${ev.name}${evKm ? ` ${fmtKmLabel(evKm)} km` : ""}`;
+  if (!soft && !items.length && evKm > 0 && week.long > evKm + 3 && evKm <= 16) {
     const extra = week.long - evKm;
     const pre = Math.round(extra / 2);
     const post = extra - pre;
     label = `${ev.name}: ${pre} + ${fmtKmLabel(evKm)} + ${post} = ${fmtKmLabel(week.long)} km`;
     km = week.long;
   }
-  week.days[dayIdx] = ["event", label, km];
-  week.long = Math.max(week.long || 0, km);
+  const prev = week.days[dayIdx] ? week.days[dayIdx].slice() : null;
+  if (!items.length && !(evKm > 0) && soft) {
+    week.days[dayIdx] = ["rest", `${ev.name} · easy / holiday`];
+  } else {
+    week.days[dayIdx] = ["event", label, km || undefined];
+  }
+  if (km > 0) week.long = Math.max(week.long || 0, km);
   week.focus = week.focus && week.focus.includes(ev.name) ? week.focus : ev.name;
   const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const bits = [`${ev.name} on ${names[dayIdx]} is this week's long.`];
-  if (longIdx >= 0 && longIdx !== dayIdx) {
+  const bits = soft
+    ? [`${ev.name} on ${names[dayIdx]} — keep surrounding days easy.`]
+    : [`${ev.name} on ${names[dayIdx]} is this week's key session.`];
+  if (!soft && longIdx >= 0 && longIdx !== dayIdx) {
     week.days[longIdx] = ["rest", longIdx === dayIdx - 1 ? "Rest (protect event)" : "Rest / easy walk"];
     bits.push(`The planned long on ${names[longIdx]} comes out so you don't stack two longs.`);
   }
-  if (dayIdx > 0 && ["long", "quality"].includes(week.days[dayIdx - 1][0])) {
+  if (!soft && dayIdx > 0 && ["long", "quality"].includes(week.days[dayIdx - 1][0])) {
     week.days[dayIdx - 1] = ["rest", "Rest (protect event)"];
   }
+  // Soft events (and hard events that land on the long day): relocate the displaced key session.
+  if (prev && AGENDA_IMPORTANT_KINDS.has(prev[0])) {
+    const blocked = new Set([dayIdx]);
+    week.days.forEach((d, i) => {
+      if (AGENDA_IMPORTANT_KINDS.has(d?.[0])) blocked.add(i);
+    });
+    const slot = findSlotForImportant(week, prev[0], blocked);
+    if (slot >= 0) {
+      week.days[slot] = prev;
+      bits.push(`Moved “${prev[1]}” to ${names[slot]}.`);
+    }
+  }
   week.note = [week.note, bits.join(" ")].filter(Boolean).join(" ");
+}
+
+/** Overwrite every day in [eventStart, eventEnd] with A-goal legs. */
+function applyGoalEventWindow(weeks, planStart, eventStart, eventEnd, legs, eventName, kind) {
+  const start = pgParse(eventStart);
+  const end = pgParse(eventEnd || eventStart);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return;
+  const normalized = window.normalizeEventLegs(eventStart, eventEnd || eventStart, legs);
+  const multi = normalized.length > 1;
+  const soft = window.eventIsSoftKind(kind);
+  normalized.forEach((leg, i) => {
+    const date = pgParse(leg.date);
+    if (Number.isNaN(date.getTime())) return;
+    const wk = Math.floor(pgDays(planStart, date) / 7) + 1;
+    const week = weeks[wk - 1];
+    if (!week) return;
+    const dayIdx = (date.getDay() + 6) % 7;
+    const load = window.legDayLoadKm(leg);
+    const label = window.legDayLabel(leg, eventName, multi ? i + 1 : null);
+    const dayKind = !leg.items.length ? "rest" : (soft ? "event" : "race");
+    week.days[dayIdx] = load > 0 ? [dayKind, label, load] : [dayKind, label];
+    if (load > 0) week.long = Math.max(week.long || 0, load);
+    week.focus = eventName;
+    if (multi && i === 0) {
+      week.note = [week.note, `Event window starts: ${eventName}.`].filter(Boolean).join(" ");
+    }
+  });
+  weeks.forEach((week, wi) => {
+    const weekStart = pgAdd(planStart, wi * 7);
+    let touched = false;
+    for (let d = 0; d < 7; d++) {
+      const ds = pgYmd(pgAdd(weekStart, d));
+      if (ds >= eventStart && ds <= (eventEnd || eventStart)) touched = true;
+    }
+    if (!touched) return;
+    week.days.forEach((day, d) => {
+      const ds = pgYmd(pgAdd(weekStart, d));
+      if (ds >= eventStart && ds <= (eventEnd || eventStart)) return;
+      if (["long", "quality"].includes(day[0])) {
+        week.days[d] = ["rest", "Rest (event window)"];
+      }
+    });
+  });
 }
 
 function buildRoadmap(after, race, eventName) {
@@ -1323,7 +1864,8 @@ function defaultPaces(sport) {
 
 function researchForSport(sport, goalType = "race") {
   const all = window.TRAINING_RESEARCH || [];
-  const key = ["run", "swim", "bike", "triathlon"].includes(sport) ? sport : "run";
+  const mapped = window.planTemplateSport ? window.planTemplateSport(sport) : sport;
+  const key = ["run", "swim", "bike", "triathlon"].includes(mapped) ? mapped : "run";
   const fitness = goalType === "fitness";
   return all.filter((s) => {
     const sports = Array.isArray(s.sports) && s.sports.length ? s.sports : ["triathlon"];
@@ -1371,17 +1913,44 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     }
   }
   if (goalType === "fitness") {
-    if (!["run", "swim", "bike", "triathlon"].includes(sport)) throw new Error("Choose a focus.");
-    preset = sport === "run" ? "10k" : sport === "swim" ? "1500" : sport === "bike" ? "40" : "halve";
+    if (!(window.EVENT_SPORTS || []).includes(sport)) throw new Error("Choose a focus.");
+    preset = sport === "run" || sport === "walk" ? (sport === "walk" ? "20" : "10k")
+      : sport === "swim" ? "1500"
+        : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
+          : "halve";
     eventName = eventName || "General fitness";
     const weeksIn = Number(input.fitnessWeeks);
     const weeks = weeksIn >= 4 && weeksIn <= 32 ? Math.round(weeksIn) : 12;
     if (!eventDate) eventDate = pgYmd(pgAdd(todayDate, weeks * 7));
   }
 
+  if (goalType === "race" && !(window.EVENT_SPORTS || []).includes(sport)) {
+    throw new Error("Choose an event type.");
+  }
+
+  const eventKind = window.EVENT_KINDS.includes(input.eventKind) ? input.eventKind : "race";
+  const eventEndRaw = String(input.eventEndDate || eventDate || "").slice(0, 10);
+  let goalLegs = Array.isArray(input.legs) ? input.legs : [];
+  if (eventDate && eventEndRaw && eventEndRaw >= String(eventDate).slice(0, 10)) {
+    goalLegs = window.normalizeEventLegs(eventDate, eventEndRaw, goalLegs);
+  }
+  const legSummary = goalLegs.length ? window.summarizeEventLegs(goalLegs) : null;
+  if (legSummary?.hardest > 0 && preset === "custom") {
+    if ((sport === "run" || sport === "walk") && !(Number(input.custom?.run) > 0)) {
+      input.custom = { ...(input.custom || {}), run: legSummary.hardest };
+    }
+    if ((sport === "bike" || sport === "ski") && !(Number(input.custom?.bike) > 0)) {
+      input.custom = { ...(input.custom || {}), bike: legSummary.hardest };
+    }
+  }
+
   const distances = resolveDistances(sport, preset, input.custom || {});
+  if (legSummary?.hardest > 0) {
+    if ((sport === "run" || sport === "walk") && !(distances.run > 0)) distances.run = legSummary.hardest;
+    if ((sport === "bike" || sport === "ski") && !(distances.bike > 0)) distances.bike = legSummary.hardest;
+  }
   const weekly = Number(input.weeklyKm);
-  const weeklyMax = sport === "bike" ? 500 : sport === "swim" ? 40 : 200;
+  const weeklyMax = sport === "bike" || sport === "ski" ? 500 : sport === "swim" ? 40 : 200;
   if (!(weekly > 0) || weekly > weeklyMax) {
     throw new Error(`Enter your current weekly kilometres (1–${weeklyMax}).`);
   }
@@ -1389,17 +1958,20 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   const race = pgParse(eventDate);
   if (Number.isNaN(race.getTime())) throw new Error(goalType === "time" ? "Pick a target date." : "Pick an event date.");
   if (race < todayDate) throw new Error(goalType === "time" ? "Target date needs to be in the future." : "Event date needs to be in the future.");
+  const raceEnd = pgParse(eventEndRaw && eventEndRaw >= pgYmd(race) ? eventEndRaw : pgYmd(race));
+  if (Number.isNaN(raceEnd.getTime())) throw new Error("Pick a valid event end date.");
   const isFitness = goalType === "fitness";
+  const multiDayGoal = !isFitness && pgYmd(raceEnd) > pgYmd(race);
 
   let start = pgMonday(todayDate);
-  let n = Math.floor(pgDays(start, pgMonday(race)) / 7) + 1;
+  let n = Math.floor(pgDays(start, pgMonday(raceEnd)) / 7) + 1;
   if (n > 32) {
-    start = pgAdd(pgMonday(race), -31 * 7);
+    start = pgAdd(pgMonday(raceEnd), -31 * 7);
     n = 32;
   }
   if (n < 4) n = Math.max(4, n);
 
-  const wantsRunDays = sport === "run" || sport === "triathlon";
+  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon";
   const experience = EXPERIENCE_LEVELS.includes(input.experience) ? input.experience : "intermediate";
   const busyWeekdays = normalizeWeekdays(input.busyWeekdays, []);
   const busySet = new Set(busyWeekdays);
@@ -1413,40 +1985,53 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   const runDaysN = wantsRunDays
     ? Math.max(2, Math.min(6, runWeekdays.length || Number(input.runDays) || advice.recDays))
     : null;
-  if (wantsRunDays && !runWeekdays.length && !(Number(input.runDays) > 0)) throw new Error("Choose which days you want to run.");
+  if (wantsRunDays && !runWeekdays.length && !(Number(input.runDays) > 0)) {
+    throw new Error(sport === "walk" ? "Choose which days you want to walk." : "Choose which days you want to run.");
+  }
   const needsLong = typeof window.needsDedicatedLongDay === "function"
     && window.needsDedicatedLongDay(sport, preset, input.custom || {});
   let longWeekday = Number.isInteger(Number(input.longWeekday)) ? Number(input.longWeekday) : null;
   if (needsLong) {
     if (longWeekday == null || !runWeekdays.includes(longWeekday)) {
-      throw new Error("Choose a run day for your long run before creating the plan.");
+      throw new Error(sport === "walk"
+        ? "Choose a day for your long walk before creating the plan."
+        : "Choose a run day for your long run before creating the plan.");
     }
   } else if (longWeekday != null && !runWeekdays.includes(longWeekday)) {
     longWeekday = null;
   }
 
-  const peak = peakVolume(sport, weekly, distances.run || 0);
-  const phaseOpts = { sport, experience, distances, fitness: isFitness };
+  const goalLoad = Math.max(
+    distances.run || 0,
+    distances.bike || 0,
+    distances.swim ? distances.swim / 1000 : 0,
+    legSummary?.hardest || 0,
+  );
+  const peak = peakVolume(sport, weekly, goalLoad || distances.run || 0);
+  const templateSport = window.planTemplateSport(sport);
+  const phaseOpts = { sport: templateSport, experience, distances, fitness: isFitness };
   const phases = assignPhases(n, phaseOpts);
   const taper = phases.find((p) => p.name === "Taper");
-  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n + 1, { sport, fitness: isFitness });
-  const cap = longCap(sport, distances.run || 0, weekly);
+  const targets = weekTargets(n, weekly, peak, taper ? taper.from : n + 1, { sport: templateSport, fitness: isFitness });
+  const cap = longCap(sport, goalLoad || distances.run || 0, weekly);
   const raceDay = (race.getDay() + 6) % 7;
+  const raceStartWeek = Math.floor(pgDays(start, pgMonday(race)) / 7) + 1;
   const sources = researchForSport(sport, goalType);
   const band = sport === "triathlon" ? triDistanceBand(distances) : null;
 
   const weeks = targets.map((km, i) => {
     const wk = i + 1;
     const phase = phases.find((p) => wk >= p.from && wk <= p.to) || phases[0];
-    const isRaceWeek = !isFitness && wk === n;
+    const isRaceWeek = !isFitness && wk === raceStartWeek;
     const longKm = isRaceWeek
-      ? (distances.run || distances.bike || Math.round((distances.swim || 1000) / 1000))
+      ? (goalLoad || distances.run || distances.bike || Math.round((distances.swim || 1000) / 1000))
       : Math.min(cap, Math.max(sport === "swim" ? 0.8 : 6, Math.round(km * 0.38)));
     const extras = [];
-    if (wantsRunDays) extras.push(`${runDaysN} run days`);
-    if (strength && wantsRunDays) extras.push("strength after an easy run");
+    if (wantsRunDays) extras.push(`${runDaysN} ${sport === "walk" ? "walk" : "run"} days`);
+    if (strength && wantsRunDays) extras.push("strength after an easy session");
     if (busyWeekdays.length) extras.push(`${busyWeekdays.length} busy day${busyWeekdays.length > 1 ? "s" : ""}/week`);
     if (sport === "triathlon") extras.push("~3 swim / 2–3 bike, bricks in build–peak");
+    if (multiDayGoal) extras.push(`multi-day event through ${pgYmd(raceEnd)}`);
     const dayOpts = {
       runDays: runDaysN || 3,
       strength,
@@ -1478,7 +2063,9 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
       note = `Key transition work this week: ${brick}. Practise fueling on the long ride.`;
     } else if (!isFitness && isRaceWeek && sport === "triathlon") {
       note = "Race week: short openers only, one mini T2 brick, then rest. Use the race-week checklist (bags, nutrition, transitions).";
-    } else if (!isFitness && phase.name === "Taper" && wk === (taper ? taper.from : n - 1)) {
+    } else if (!isFitness && isRaceWeek && multiDayGoal) {
+      note = `Event week: taper into day 1 of ${eventName}, then follow the stage schedule.`;
+    } else if (!isFitness && phase.name === "Taper" && wk === (taper ? taper.from : raceStartWeek - 1)) {
       note = sport === "triathlon"
         ? "Taper starts: cut volume sharply, keep swim/bike/run frequency, short race-pace opens, and practise T1/T2 once."
         : "Taper starts: reduce volume, keep some sharpness.";
@@ -1490,22 +2077,57 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
       long: longKm,
       swim: swimLabel(sport, phase.name, distances.swim),
       bike: bikeLabel(sport, phase.name, distances.bike),
-      focus: isFitness && wk === n ? "Keep the habit and finish the block easy" : isRaceWeek ? "Race week" : phase.focus,
+      focus: isFitness && wk === n
+        ? "Keep the habit and finish the block easy"
+        : isRaceWeek
+          ? (multiDayGoal ? "Event week" : "Race week")
+          : phase.focus,
       note,
       days,
     };
   });
 
-  const otherEvents = (input.otherEvents || []).filter((e) => e && e.date && e.name && e.date !== pgYmd(race));
-  const before = otherEvents.filter((e) => e.date >= pgYmd(start) && e.date < pgYmd(race));
-  const after = otherEvents.filter((e) => e.date > pgYmd(race));
-  before.forEach((ev) => weaveEventIntoWeek(weeks, start, ev));
+  const legsHaveItems = goalLegs.some((leg) => (leg.items || []).length);
+  // Single-day races without explicit legs keep daysFor race-week scheduling.
+  // Multi-day (or legs with items) overwrite the event window from the stage schedule.
+  if (!isFitness && goalLegs.length && (multiDayGoal || legsHaveItems)) {
+    applyGoalEventWindow(weeks, start, pgYmd(race), pgYmd(raceEnd), goalLegs, eventName, eventKind);
+  }
+
+  const raceYmd = pgYmd(race);
+  const raceEndYmd = pgYmd(raceEnd);
+  const planStartYmd = pgYmd(start);
+  const otherEvents = (input.otherEvents || []).filter((e) => {
+    if (!e || !e.name || !e.date) return false;
+    const evStart = String(e.date).slice(0, 10);
+    const evEnd = window.eventEndYmd(e);
+    if (evStart === raceYmd) return false;
+    // Overlap plan window up to goal end (after-race events stay on the roadmap only).
+    return evStart <= raceEndYmd && evEnd >= planStartYmd;
+  });
+  otherEvents
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .forEach((ev) => {
+      const multi = !!(ev.end_date && ev.end_date > ev.date) || (Array.isArray(ev.legs) && ev.legs.length > 1);
+      if (multi || window.eventIsSoftKind(ev.kind)) {
+        window.applyAgendaEventToWeeks(weeks, planStartYmd, ev, { goalDate: raceYmd });
+      } else {
+        weaveEventIntoWeek(weeks, start, ev);
+      }
+    });
+  const after = (input.otherEvents || []).filter((e) => {
+    if (!e?.date || !e?.name) return false;
+    return window.eventEndYmd(e) > raceEndYmd;
+  });
 
   return {
     sport,
     distance_preset: input.preset,
     event_name: eventName,
-    event_date: pgYmd(race),
+    event_date: raceYmd,
+    event_end_date: raceEndYmd,
+    event_kind: eventKind,
+    event_legs: goalLegs,
     start_date: pgYmd(start),
     swim_m: distances.swim,
     bike_km: distances.bike,
@@ -1520,15 +2142,15 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     long_weekday: longWeekday,
     notes: sport === "triathlon"
       ? (isFitness
-        ? "Triathlon fitness block uses researched periodization (base → build → peak, no taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page."
-        : "Triathlon plan uses researched periodization (base → build → peak → taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See sources on the Full plan page.")
-      : "",
+        ? "Triathlon fitness block uses researched periodization (base → build → peak, no taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See Research under the plan."
+        : "Triathlon plan uses researched periodization (base → build → peak → taper), ~15/55/30 swim/bike/run time bias, recovery every 4th week, and bike→run bricks in build/peak. See Research under the plan.")
+      : (multiDayGoal ? `Multi-day event ${raceYmd} → ${raceEndYmd}: plan tapers into day 1 and follows stage legs through the window.` : ""),
     experience,
     goal_type: goalType,
     phases,
     weeks,
-    paces: defaultPaces(sport),
+    paces: defaultPaces(templateSport),
     sources,
-    roadmap: buildRoadmap(after, race, eventName),
+    roadmap: buildRoadmap(after, raceEnd, eventName),
   };
 };

@@ -11,7 +11,7 @@ function yearActs(acts, year) {
   return (acts || []).filter((a) => a.date && a.date.startsWith(String(year)));
 }
 
-const YEAR_SPORTS = ["run", "swim", "bike", "ebike", "walk"];
+const YEAR_SPORTS = ["run", "swim", "bike", "ebike", "walk", "ski"];
 
 function yearSportStats(acts, year) {
   const rows = yearActs(acts, year);
