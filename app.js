@@ -4089,7 +4089,14 @@ function renderView(route, acts, now) {
   if (route === "events") return renderPastEvents(now);
   if (route === "gear") return renderGear();
   if (route === "research") return renderResearch();
-  if (!hasPlan()) return renderNoPlanHome(acts, now);
+  if (!hasPlan()) {
+    if (route === "plan" || route === "progress") {
+      return typeof renderNoPlanPlan === "function"
+        ? renderNoPlanPlan()
+        : `<section class="hero"><h1>${tt("plan.noPlan")}</h1><button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button></section>`;
+    }
+    return renderNoPlanHome(acts, now);
+  }
   if (route === "plan") return renderPlan(acts, now);
   if (route === "progress") return renderProgress(acts, now);
   return renderHome(acts, now);
@@ -4969,10 +4976,16 @@ document.addEventListener("click", async (e) => {
     btn.disabled = true;
     try {
       await window.removeCurrentPlan();
+      toast(tt("plan.removed"));
     } catch (err) {
       btn.disabled = false;
       toast(err.message || "Could not remove the plan.", true);
     }
+    return;
+  }
+  if (btn.dataset.action === "cancel-create-plan" || btn.dataset.action === "skip-setup") {
+    e.preventDefault();
+    if (typeof window.leaveSetupToHome === "function") await window.leaveSetupToHome();
     return;
   }
   if (btn.dataset.action === "unbusy") {

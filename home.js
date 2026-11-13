@@ -158,7 +158,8 @@ function renderDayDetail(ds) {
       </section>`;
   }).join("");
 
-  const guides = plan ? guidesFor(plan.kind, plan.label) : [];
+  // Agenda event cards already include today’s disciplines + game plan — skip duplicate guides.
+  const guides = evs.length ? [] : (plan ? guidesFor(plan.kind, plan.label) : []);
   const showGuidesOpen = !dayActs.length;
   const quietExtra = (a) => a.cat === "walk" || a.cat === "ebike";
   const matchSummary = dayMatch.trainable && dayMatch.done
@@ -177,7 +178,7 @@ function renderDayDetail(ds) {
       <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
     </header>
     ${recoveryBlock(ds, plan)}
-    ${evs.map((ev) => eventDetailBlock(ev)).join("")}
+    ${evs.map((ev) => eventDetailBlock(ev, ds)).join("")}
     ${plan?.week?.focus === "Race week" || /bag check|t2|race week/i.test(plan?.label || "")
       ? raceWeekChecklistCard(parseDate(ds))
       : ""}
@@ -805,6 +806,18 @@ function renderNoPlanHome(acts, now) {
     <p class="footnote">${footnote}</p>`;
 }
 
+function renderNoPlanPlan() {
+  return `
+    <section class="hero morning-hero">
+      <div>
+        <h1>${tt("plan.noPlan")}</h1>
+        <p class="muted">${tt("plan.noPlanLead")}</p>
+      </div>
+      <button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button>
+    </section>`;
+}
+window.renderNoPlanPlan = renderNoPlanPlan;
+
 function renderHome(acts, now) {
   const calendarWk = calendarPlanWeek(now);
   const wk = homeViewWeek(now);
@@ -817,7 +830,6 @@ function renderHome(acts, now) {
   const zone = viewingPast ? "week" : homeZone();
   if (viewingPast && homeZone() !== "week") setHomeZone("week");
 
-  const changesN = pendingChanges().length;
   const footnote = lastSync
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.openDayOrImport");
@@ -864,12 +876,6 @@ function renderHome(acts, now) {
 
     ${homeZoneToggle(zone)}
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
-
-    ${changesN ? `
-      <button class="changes-banner" type="button" data-action="open-coach-chat">
-        <strong>${changesN === 1 ? tt("home.changesOne") : tt("home.changesMany", { count: changesN })}</strong>
-        <span>${tt("home.changesReview")}</span>
-      </button>` : ""}
 
     ${zone === "today" ? todayZone : weekZone}
     <p class="footnote">${footnote}</p>
