@@ -46,8 +46,10 @@ function applyPlanRow(row) {
 }
 
 function clearPlanRow() {
+  const skipped = !!window.CURRENT_USER_ID && (storedSkip(window.CURRENT_USER_ID) || window.PLAN_SKIPPED);
   window.CURRENT_PLAN = null;
-  window.PLAN_SKIPPED = false;
+  // Preserve skip so remove/cancel stay on Home (ensurePlan must not reopen setup).
+  window.PLAN_SKIPPED = skipped;
   window.PLAN_START = null;
   window.MARATHON_DATE = null;
   window.PHASES = [];
@@ -60,13 +62,20 @@ window.clearPlanRow = clearPlanRow;
 async function removeCurrentPlan() {
   const userId = window.CURRENT_USER_ID;
   if (!userId) throw new Error("Sign in required");
-  const { error } = await sb.from("plans").delete().eq("user_id", userId);
+  const { data, error } = await sb.from("plans").delete().eq("user_id", userId).select("user_id");
   if (error) throw error;
-  await sb.from("events").delete().eq("user_id", userId).eq("race", true);
-  clearSkipped(userId);
+  if (!data?.length) {
+    const { data: stillThere, error: checkErr } = await sb.from("plans").select("user_id").eq("user_id", userId).maybeSingle();
+    if (checkErr) throw checkErr;
+    if (stillThere) throw new Error("Could not remove the plan. Try signing out and back in.");
+  }
+  const { error: evErr } = await sb.from("events").delete().eq("user_id", userId).eq("race", true);
+  if (evErr) throw evErr;
+  // Without this, ensurePlan treats "no plan" as first-time setup and reopens onboarding.
+  markSkipped(userId);
   clearPlanRow();
   showAppChrome();
-  if (typeof window.go === "function") window.go("/home", { replace: true });
+  if (typeof window.go === "function") window.go("/home", { replace: true, force: true });
   else {
     history.replaceState(null, "", "/home" + location.search);
     if (typeof window.render === "function") window.render(true);
@@ -75,11 +84,18 @@ async function removeCurrentPlan() {
 window.removeCurrentPlan = removeCurrentPlan;
 
 function setupFields(sport, preset) {
-  const run = sport === "run" || sport === "walk" || sport === "triathlon";
-  const swim = sport === "swim" || sport === "triathlon";
-  const bike = sport === "bike" || sport === "ski" || sport === "triathlon";
+  const run = sport === "run" || sport === "walk" || sport === "triathlon"
+    || sport === "duathlon" || sport === "aquathlon";
+  const swim = sport === "swim" || sport === "triathlon" || sport === "aquathlon";
+  const bike = sport === "bike" || sport === "ski" || sport === "triathlon" || sport === "duathlon";
+  const run2 = sport === "duathlon";
   const custom = preset === "custom";
-  return { run: run && custom, swim: swim && custom, bike: bike && custom };
+  return {
+    run: run && custom,
+    swim: swim && custom,
+    bike: bike && custom,
+    run2: run2 && custom,
+  };
 }
 
 function connectDoneKey(id = window.CURRENT_USER_ID || "anon") {
@@ -222,6 +238,16 @@ function isSetupSyncing() {
   return !!(SETUP_CONNECT_SYNCING.garmin || SETUP_CONNECT_SYNCING.strava);
 }
 
+window.setSetupConnectSyncing = function setSetupConnectSyncing(partial = {}) {
+  SETUP_CONNECT_SYNCING = {
+    garmin: partial.garmin != null ? !!partial.garmin : !!SETUP_CONNECT_SYNCING.garmin,
+    strava: partial.strava != null ? !!partial.strava : !!SETUP_CONNECT_SYNCING.strava,
+  };
+  if (document.getElementById("setup-connect-body")) paintSetupConnect();
+  updateSetupWeeklySyncHint();
+  return SETUP_CONNECT_SYNCING;
+};
+
 function updateSetupWeeklySyncHint() {
   const hint = document.getElementById("weekly-sync-status");
   if (!hint) return;
@@ -249,7 +275,12 @@ function startSetupBackgroundSync() {
   if (window._setupSyncInFlight) return;
   SETUP_CONNECT_SYNCING = { garmin: !!g.connected, strava: !!s.connected };
   updateSetupWeeklySyncHint();
-  window._setupSyncInFlight = window.syncConnectedSourcesForSetup()
+  // If OAuth just queued a Strava sync, reuse it instead of starting a second one.
+  const pendingStrava = window._stravaPostConnectSync;
+  const job = pendingStrava && !g.connected
+    ? Promise.resolve(pendingStrava)
+    : window.syncConnectedSourcesForSetup();
+  window._setupSyncInFlight = job
     .catch(() => null)
     .finally(() => {
       SETUP_CONNECT_SYNCING = { garmin: false, strava: false };
@@ -339,17 +370,26 @@ function renderSetupPlanForm(message = "", opts = {}) {
         </fieldset>
         <div class="custom-dists" hidden data-for-goal="race,time" data-setup-custom-dist>
           <label class="custom-run" hidden>Run (<span data-units-label>${typeof window.distUnit === "function" ? window.distUnit() : "km"}</span>)<input type="number" name="custom_run" min="0.1" step="0.1" /></label>
+          <label class="custom-run2" hidden>2nd run (<span data-units-label>${typeof window.distUnit === "function" ? window.distUnit() : "km"}</span>)<input type="number" name="custom_run2" min="0.1" step="0.1" /></label>
           <label class="custom-swim" hidden>Swim (m)<input type="number" name="custom_swim" min="50" step="50" /></label>
           <label class="custom-bike" hidden>Bike (<span data-units-label>${typeof window.distUnit === "function" ? window.distUnit() : "km"}</span>)<input type="number" name="custom_bike" min="1" step="0.1" /></label>
         </div>
         <label data-own-event data-for-goal="race">Event name<input type="text" name="event_name" required placeholder="e.g. Gent Marathon, Kwart tri Leuven" /></label>
         <label data-own-event data-for-goal="race">Location<input type="text" name="event_location" maxlength="80" placeholder="e.g. Gent, Belgium" /></label>
+        <fieldset data-own-event data-for-goal="race" class="event-duration-setup">
+          <legend>${typeof window.t === "function" ? window.t("events.duration") : "Duration"}</legend>
+          <div class="choice-row">
+            <button class="choice-btn active" type="button" data-event-multi="no">${typeof window.t === "function" ? window.t("events.singleDay") : "Single day"}</button>
+            <button class="choice-btn" type="button" data-event-multi="yes">${typeof window.t === "function" ? window.t("events.multiDay") : "Multi-day"}</button>
+          </div>
+          <input type="hidden" name="multi_day" value="no" />
+        </fieldset>
         <div class="setup-date-field" data-for-goal="race,time" id="event-date-wrap" data-setup-date>
           <span class="date-label">Event date</span>
           <input type="date" name="event_date" required min="${min}" />
         </div>
-        <div class="setup-date-field" data-own-event data-for-goal="race" id="event-end-wrap" data-setup-end-date>
-          <span class="date-label">${typeof window.t === "function" ? window.t("events.endDate") : "End date"} <span class="muted">(optional, multi-day)</span></span>
+        <div class="setup-date-field event-end-wrap" data-own-event data-for-goal="race" id="event-end-wrap" data-setup-end-date hidden>
+          <span class="date-label">${typeof window.t === "function" ? window.t("events.endDate") : "End date"}</span>
           <input type="date" name="event_end_date" min="${min}" />
         </div>
         <fieldset data-own-event data-for-goal="race" class="event-kind-setup">
@@ -392,7 +432,8 @@ function renderSetupPlanForm(message = "", opts = {}) {
           <span class="field-label-row">Current weekly volume (<span data-units-label>${typeof window.distUnit === "function" ? window.distUnit() : "km"}</span>)
             <button class="info-tip" type="button" aria-label="About weekly volume" data-tip="Use your current typical week of training volume.">i</button>
           </span>
-          <input type="number" name="weekly_km" required min="1" max="500" step="0.1" placeholder="e.g. 25" />
+          <input type="number" name="weekly_km" required min="0" max="500" step="0.1" placeholder="e.g. 25" />
+          <p class="setup-hint" id="weekly-hint"></p>
           <p class="setup-hint weekly-sync-status" id="weekly-sync-status" hidden></p>
         </label>
         <fieldset class="level-field">
@@ -406,7 +447,7 @@ function renderSetupPlanForm(message = "", opts = {}) {
           <p class="setup-hint" id="experience-hint">Defaults from your weekly volume — change it if that doesn’t fit.</p>
         </fieldset>
         <fieldset class="run-days-field" hidden>
-          <legend>How many run days?</legend>
+          <legend id="run-days-legend">How many run days?</legend>
           <div class="choice-row" id="run-day-choices">
             ${[3, 4, 5, 6].map((n) => `<button class="choice-btn" type="button" data-run-days="${n}">${n} days</button>`).join("")}
           </div>
@@ -466,10 +507,23 @@ function renderSetupPlanForm(message = "", opts = {}) {
   bindSetupForm(form);
   if (seed) applySetupSeed(form, seed);
   applyGoalType(form, fieldValue(form, "goal_type") || "race", { explicit: true });
+  // Re-apply weekday answers after advice refresh — create-failure restores must keep the week.
+  if (seed && (seed.run_weekdays || seed.swim_weekdays || seed.bike_weekdays || seed.strength_weekdays || seed.busy_weekdays)) {
+    ["run_weekdays", "strength_weekdays", "swim_weekdays", "bike_weekdays", "busy_weekdays", "long_weekday", "run_days"].forEach((name) => {
+      if (seed[name] != null && fieldOf(form, name)) fieldOf(form, name).value = seed[name];
+    });
+    form.dataset.blocksPicked = "1";
+    form.dataset.weekEdited = "1";
+    if (seed.run_days) setRunDays(form, seed.run_days, !!seed.runDaysPicked);
+    paintWeekBlocks(form);
+    const risk = fieldOf(form, "own_risk");
+    if (risk) risk.checked = seed.own_risk === "1" || seed.own_risk === true;
+  }
   syncRestoredChoices(form);
   bindSetupDatePicker(form);
   paintFitnessWeeks(form);
-  fillWeeklyFromSynced(form, { force: true });
+  // Don't overwrite a restored weekly volume after a failed create.
+  if (!seed?.weekly_km) fillWeeklyFromSynced(form, { force: true });
   updateSetupWeeklySyncHint();
   if (typeof window.loadActivities === "function") {
     window.loadActivities().then((acts) => {
@@ -478,7 +532,9 @@ function renderSetupPlanForm(message = "", opts = {}) {
         // Keep peekActivities() from ignoring freshly loaded setup activities.
         try { ACTS = acts; } catch { /* ignore */ }
       }
-      fillWeeklyFromSynced(form, { force: true, acts });
+      if (!form.dataset.weeklyPicked && !fieldValue(form, "weekly_km")) {
+        fillWeeklyFromSynced(form, { force: true, acts });
+      }
     }).catch(() => {});
   }
   // If Continue already kicked off a sync, keep the hint + fill when it lands.
@@ -615,7 +671,17 @@ function hasTrainingWeekdaySelection(form) {
 function bindSetupForm(form) {
   if (!form || form.dataset.bound === "1") return;
   form.dataset.bound = "1";
+  // Keep disclaimer taps local — they sit under the week grid and must not reset it.
+  const riskField = form.querySelector(".own-risk-field");
+  if (riskField && riskField.dataset.riskBound !== "1") {
+    riskField.dataset.riskBound = "1";
+    const keepLocal = (e) => { e.stopPropagation(); };
+    riskField.addEventListener("click", keepLocal);
+    riskField.addEventListener("pointerdown", keepLocal);
+    riskField.addEventListener("change", keepLocal);
+  }
   form.addEventListener("click", (e) => {
+    if (e.target.closest(".own-risk-field, input[name=own_risk]")) return;
     const tip = e.target.closest(".info-tip");
     if (tip && form.contains(tip)) {
       e.preventDefault();
@@ -705,8 +771,13 @@ function bindSetupForm(form) {
     if (sportPick && form.contains(sportPick)) {
       e.preventDefault();
       e.stopPropagation();
-      setChoice(form, "sport", sportPick.dataset.sport, "data-sport");
-      form.dataset.pickedSport = sportPick.dataset.sport;
+      const nextSport = sportPick.dataset.sport;
+      // Re-tapping the active sport must not wipe the week overview.
+      if (setupSport(form) === nextSport && (form.dataset.blocksPicked === "1" || hasTrainingWeekdaySelection(form))) {
+        return;
+      }
+      setChoice(form, "sport", nextSport, "data-sport");
+      form.dataset.pickedSport = nextSport;
       if (setupGoal(form) === "time") {
         form.dataset.timeChrome = "1";
         shieldTimeChrome(1000);
@@ -762,6 +833,8 @@ function bindSetupForm(form) {
 
 function primaryDisciplines(sport) {
   if (sport === "triathlon") return ["run", "swim", "bike"];
+  if (sport === "duathlon") return ["run", "bike"];
+  if (sport === "aquathlon") return ["run", "swim"];
   if (sport === "swim") return ["swim"];
   if (sport === "bike" || sport === "ski") return ["bike"];
   if (sport === "run" || sport === "walk") return ["run"];
@@ -849,6 +922,68 @@ function clearSetupDraft() {
     localStorage.removeItem(draftKey());
     if (window.CURRENT_USER_ID) localStorage.removeItem(draftKey("anon"));
   } catch { /* ignore */ }
+}
+
+/** Capture the live setup form so a failed create can restore the week grid and answers. */
+function snapshotSetupForm(form) {
+  if (!form) return null;
+  const val = (name) => fieldValue(form, name);
+  const risk = fieldOf(form, "own_risk");
+  return {
+    goal_type: val("goal_type") || "race",
+    sport: val("sport") || form.dataset.pickedSport || "",
+    preset: val("preset") || form.dataset.pickedPreset || "",
+    custom_run: val("custom_run"),
+    custom_run2: val("custom_run2"),
+    custom_swim: val("custom_swim"),
+    custom_bike: val("custom_bike"),
+    event_name: val("event_name"),
+    event_location: val("event_location"),
+    event_date: val("event_date"),
+    event_end_date: val("event_end_date"),
+    multi_day: val("multi_day") || "no",
+    event_kind: val("event_kind") || "race",
+    event_legs_json: val("event_legs_json") || form.dataset.eventLegsJson || "",
+    weekly_km: val("weekly_km"),
+    run_days: val("run_days"),
+    run_weekdays: val("run_weekdays"),
+    strength_weekdays: val("strength_weekdays"),
+    swim_weekdays: val("swim_weekdays"),
+    bike_weekdays: val("bike_weekdays"),
+    busy_weekdays: val("busy_weekdays"),
+    long_weekday: val("long_weekday"),
+    time_goal: val("time_goal"),
+    time_custom: val("time_custom"),
+    fitness_weeks: val("fitness_weeks") || "12",
+    fitness_weeks_custom: val("fitness_weeks_custom"),
+    program: val("program") || "",
+    is_public: val("is_public") || "no",
+    experience: val("experience") || "intermediate",
+    strength: val("strength"),
+    own_risk: risk?.checked ? "1" : "",
+    extraDisciplines: form.dataset.extraDisciplines || "",
+    ownEvent: form.dataset.ownEvent || "",
+    pickedEvent: form.dataset.pickedEvent || "",
+    sourceEvent: form.dataset.sourceEvent || "",
+    pickedName: form.querySelector(".picked-name")?.textContent || val("event_name"),
+    pickedMeta: form.querySelector(".picked-meta")?.textContent || "",
+    agendaEventId: form.dataset.agendaEventId || "",
+    agendaEventName: form.dataset.agendaEventName || "",
+    agendaEventDate: form.dataset.agendaEventDate || "",
+    pickedSport: form.dataset.pickedSport || val("sport") || "",
+    pickedPreset: form.dataset.pickedPreset || val("preset") || "",
+    timeChrome: form.dataset.timeChrome || "",
+    strengthMode: form.dataset.strengthMode || "",
+    weekEdited: form.dataset.weekEdited || "",
+    blocksPicked: form.dataset.blocksPicked || "",
+    runDaysPicked: form.dataset.runDaysPicked || "",
+    strengthPicked: form.dataset.strengthPicked || "",
+    experiencePicked: form.dataset.experiencePicked || "",
+    longPicked: form.dataset.longPicked || "",
+    weeklyPicked: form.dataset.weeklyPicked || "",
+    weeklyAuto: form.dataset.weeklyAuto || "",
+    fitnessWeeksPicked: form.dataset.fitnessWeeksPicked || "",
+  };
 }
 
 function applySetupSeed(form, draft) {
@@ -1354,14 +1489,8 @@ function paintWeekBlocks(form) {
   const warn = document.getElementById("overlap-warn");
   const hint = document.getElementById("week-blocks-hint");
   if (hint) {
-    const busyLabel = (blocks.busy || []).map((i) => weekdayLabels[i]).join(", ");
     const longLabel = longDay != null ? weekdayLabels[longDay] : "";
-    const pressure = trainingDayPressure(form, sport || setupSport(form));
-    if (busyLabel) {
-      hint.textContent = pressure.tooBusy || pressure.tooFewSport
-        ? `Busy: ${busyLabel}. Training moves off those days — with only ${pressure.free} free day${pressure.free === 1 ? "" : "s"}, the plan may not have enough sessions.`
-        : `Busy: ${busyLabel}. Training moves off those days automatically.`;
-    } else if (needsLong && primary.includes("run") && !longLabel) {
+    if (needsLong && primary.includes("run") && !longLabel) {
       hint.textContent = "Tap a run day to add it. This distance needs a long run — pick the day under the week.";
     } else {
       hint.textContent = "Tap a day to add or remove it. Mark busy days you can’t train.";
@@ -1564,6 +1693,7 @@ function updateReachability(form) {
     presetId: preset,
     custom: {
       run: parse(fieldValue(form, "custom_run"), true),
+      run2: parse(fieldValue(form, "custom_run2"), true),
       swim: fieldValue(form, "custom_swim"),
       bike: parse(fieldValue(form, "custom_bike"), true),
     },
@@ -1923,10 +2053,13 @@ function paintDistances(sport, opts = {}) {
     delete form.dataset.pickedPreset;
     delete form.dataset.runDaysPicked;
     delete form.dataset.strengthPicked;
-    delete form.dataset.weekEdited;
-    delete form.dataset.blocksPicked;
     delete form.dataset.longPicked;
-    setLongWeekday(form, "");
+    // Sport changes clear the week before paintDistances; don't blank a locked week here.
+    if (!weekEditedByUser(form)) {
+      delete form.dataset.weekEdited;
+      delete form.dataset.blocksPicked;
+      setLongWeekday(form, "");
+    }
     if (opts.resetExtras !== false) form.dataset.extraDisciplines = "";
     toggleCustom(sport, "", { skipAdvice: true });
   } else {
@@ -1960,20 +2093,37 @@ function pickDistancePreset(form, presetId) {
   box?.querySelectorAll("[data-preset]").forEach((b) => {
     b.classList.toggle("active", b.dataset.preset === presetId);
   });
-  delete form.dataset.runDaysPicked;
-  delete form.dataset.weekEdited;
-  delete form.dataset.blocksPicked;
-  delete form.dataset.longPicked;
-  delete form.dataset.strengthPicked;
-  ["run_weekdays", "swim_weekdays", "bike_weekdays", "strength_weekdays"].forEach((name) => {
-    const el = fieldOf(form, name);
-    if (el) el.value = "";
-  });
+  // Distance only changes volume / long-run needs. Never wipe the week grid here —
+  // clearing weekdays first caused the schedule to flash empty (and feel "invalidated").
+  // updateTrainingAdvice reseeds only when the athlete hasn't locked the week.
+  if (!weekEditedByUser(form)) {
+    delete form.dataset.runDaysPicked;
+    delete form.dataset.longPicked;
+  }
   const sport = setupSport(form);
   toggleCustom(sport, presetId, { skipAdvice: true });
   if (setupGoal(form) === "time" || form.dataset.timeChrome === "1") {
     ensureTimeDistanceVisible(form);
     paintTimeTargets(form);
+  }
+  // Own-event sports editor: distance chips seed day 1 the same way as the agenda form.
+  if (form.dataset.ownEvent === "1" && !form.dataset.pickedEvent
+    && typeof window.normalizeEventLegs === "function"
+    && typeof window.presetToLegItems === "function") {
+    const start = fieldValue(form, "event_date");
+    if (start) {
+      const multi = setupIsMultiDay(form);
+      const end = multi ? (fieldValue(form, "event_end_date") || start) : start;
+      let legs = [];
+      try {
+        legs = JSON.parse(form.dataset.eventLegsJson || fieldValue(form, "event_legs_json") || "[]");
+      } catch { legs = []; }
+      legs = window.normalizeEventLegs(start, end, legs);
+      const seed = window.presetToLegItems(sport, presetId);
+      legs = legs.map((leg, i) => (i === 0 ? { date: leg.date, items: seed } : leg));
+      form.dataset.eventLegsJson = JSON.stringify(legs);
+      paintSetupEventLegs(form);
+    }
   }
   updateTrainingAdvice();
   saveSetupDraft(form);
@@ -1983,8 +2133,10 @@ function toggleCustom(sport, preset, opts = {}) {
   const wrap = document.querySelector(".custom-dists");
   if (!wrap) return;
   const fields = setupFields(sport, preset);
-  wrap.hidden = !fields.run && !fields.swim && !fields.bike;
+  wrap.hidden = !fields.run && !fields.swim && !fields.bike && !fields.run2;
   wrap.querySelector(".custom-run").hidden = !fields.run;
+  const run2 = wrap.querySelector(".custom-run2");
+  if (run2) run2.hidden = !fields.run2;
   wrap.querySelector(".custom-swim").hidden = !fields.swim;
   wrap.querySelector(".custom-bike").hidden = !fields.bike;
   if (!opts.skipAdvice) updateTrainingAdvice();
@@ -1996,7 +2148,12 @@ function showAppChrome() {
   if (header) header.hidden = false;
   const hasPlan = !!window.CURRENT_PLAN;
   document.querySelectorAll("[data-route]").forEach((el) => {
-    if (el.dataset.route === "home" || el.dataset.route === "profile" || el.dataset.route === "activities") el.hidden = false;
+    if (
+      el.dataset.route === "home"
+      || el.dataset.route === "plan"
+      || el.dataset.route === "profile"
+      || el.dataset.route === "activities"
+    ) el.hidden = false;
     else el.hidden = !hasPlan;
   });
   const importBtn = document.querySelector(".import-btn");
@@ -2013,12 +2170,23 @@ async function leaveSetupToHome() {
   const app = document.getElementById("app");
   if (app) {
     app.hidden = false;
-    app.dataset.route = "";
+    app.dataset.route = "home";
   }
+  // Drop setup DOM before any concurrent enterApp can treat us as still onboarding.
+  document.body.classList.remove("onboarding");
   showAppChrome();
   history.replaceState(null, "", "/home" + location.search);
   if (!window.CURRENT_PLAN && window.CURRENT_USER_ID) {
     try { await loadOrCreatePlan({ id: window.CURRENT_USER_ID }); } catch { /* still go home */ }
+  }
+  // loadOrCreatePlan may have opened setup if skip was missing — force Home again.
+  if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step, .setup-creating")) {
+    markSkipped(window.CURRENT_USER_ID);
+    document.body.classList.remove("onboarding");
+    if (app) {
+      app.dataset.route = "home";
+      app.innerHTML = "";
+    }
   }
   showAppChrome();
   history.replaceState(null, "", "/home" + location.search);
@@ -2094,26 +2262,59 @@ function collectAgendaOtherEvents(goalStart, goalEnd, agendaEventId) {
   }));
 }
 
+function setupIsMultiDay(form) {
+  const flag = fieldValue(form, "multi_day");
+  if (flag === "yes") return true;
+  if (flag === "no") return false;
+  const start = fieldValue(form, "event_date");
+  const end = fieldValue(form, "event_end_date");
+  return !!(start && end && end > start);
+}
+
 function paintSetupEventLegs(form) {
   const box = form?.querySelector("#setup-event-legs");
   if (!box) return;
   const start = fieldValue(form, "event_date");
-  const end = fieldValue(form, "event_end_date") || start;
-  const multi = !!(start && end && end > start);
-  box.hidden = !multi;
-  if (!multi) {
+  const multi = setupIsMultiDay(form);
+  const multiEl = form.querySelector("[name=multi_day]");
+  if (multiEl) multiEl.value = multi ? "yes" : "no";
+  form.querySelectorAll("[data-event-multi]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.eventMulti === (multi ? "yes" : "no"));
+  });
+  form.querySelectorAll(".event-end-wrap").forEach((el) => {
+    el.toggleAttribute("hidden", !multi);
+  });
+  const endEl = form.querySelector("[name=event_end_date]");
+  if (endEl && start) {
+    endEl.min = start;
+    if (!multi) endEl.value = start;
+    else if (!endEl.value || endEl.value <= start) {
+      const d = new Date(`${start}T12:00:00`);
+      d.setDate(d.getDate() + 1);
+      endEl.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+  }
+  const end = multi ? (fieldValue(form, "event_end_date") || start) : start;
+  if (!start) {
+    box.hidden = true;
     box.innerHTML = "";
     delete form.dataset.eventLegsJson;
     const hidden = form.querySelector("[name=event_legs_json]");
     if (hidden) hidden.value = "[]";
     return;
   }
+  box.hidden = false;
   let legs = [];
   try {
     legs = JSON.parse(form.dataset.eventLegsJson || fieldValue(form, "event_legs_json") || "[]");
   } catch { legs = []; }
   if (typeof window.normalizeEventLegs === "function") {
     legs = window.normalizeEventLegs(start, end, legs);
+  }
+  if (!legs.some((leg) => (leg.items || []).length)) {
+    const sport = fieldValue(form, "sport") || "run";
+    const seedSport = sport === "triathlon" ? "run" : sport;
+    legs = legs.map((leg, i) => (i === 0 ? { date: leg.date, items: [{ sport: seedSport }] } : leg));
   }
   // eventLegsEditorHtml already embeds legs_json; rewrite that name for setup drafts.
   if (typeof window.eventLegsEditorHtml === "function") {
@@ -2135,7 +2336,7 @@ async function saveGeneratedPlan(userId, input) {
   }
   // Client-only / optional fields — strip before insert in case DB columns aren't there yet.
   const {
-    sources, long_weekday, goal_type,
+    sources, long_weekday, goal_type, program,
     event_end_date, event_kind, event_legs,
     ...persisted
   } = generated;
@@ -2145,11 +2346,15 @@ async function saveGeneratedPlan(userId, input) {
   if (data) {
     data.sources = sources || [];
     data.goal_type = goal_type || input.goalType || "race";
+    data.program = program || input.program || "standard";
     if (long_weekday != null) data.long_weekday = long_weekday;
   }
   const raceKm = generated.run_km || generated.bike_km || (generated.swim_m ? generated.swim_m / 1000 : 0);
   const raceEnd = generated.event_end_date || generated.event_date;
   const multi = raceEnd && raceEnd > generated.event_date;
+  const raceLegs = Array.isArray(generated.event_legs) ? generated.event_legs
+    : (Array.isArray(input.legs) ? input.legs : []);
+  const hasRaceLegItems = raceLegs.some((leg) => (leg.items || []).length);
   const raceRow = {
     date: generated.event_date,
     end_date: multi ? raceEnd : null,
@@ -2158,7 +2363,7 @@ async function saveGeneratedPlan(userId, input) {
     race: true,
     sport: generated.sport,
     kind: generated.event_kind || input.eventKind || "race",
-    legs: multi ? (generated.event_legs || input.legs || []) : [],
+    legs: hasRaceLegItems ? raceLegs : [],
     swim_m: generated.swim_m,
     bike_km: generated.bike_km,
     location: String(input.eventLocation || "").trim().slice(0, 80),
@@ -2257,14 +2462,14 @@ window.resetPlanLoad = function resetPlanLoad() {
   clearPlanRow();
 };
 window.ensurePlan = function ensurePlan(user) {
+  const prevId = window.CURRENT_USER_ID;
+  const memorySkip = window.PLAN_SKIPPED && prevId === user.id;
   window.CURRENT_USER_ID = user.id;
   if (window.CURRENT_PLAN && window.CURRENT_PLAN.user_id !== user.id) {
     clearPlanRow();
   }
-  // Global PLAN_SKIPPED can linger from another account — only trust this user.
-  if (window.PLAN_SKIPPED && !hasSkipped(user.id)) {
-    window.PLAN_SKIPPED = false;
-  }
+  // Prefer per-user localStorage; keep same-session in-memory skip (private mode).
+  window.PLAN_SKIPPED = storedSkip(user.id) || memorySkip;
   // Hard refresh on /create-plan must reopen the create form — never bounce to /setup.
   if (setupRouteBase() === "create-plan") {
     const hasForm = document.querySelector(".setup-form[data-create-only='1']");
@@ -2273,21 +2478,24 @@ window.ensurePlan = function ensurePlan(user) {
     }
     return Promise.resolve(false);
   }
+  if (window.CURRENT_PLAN && window.CURRENT_PLAN.user_id === user.id) {
+    showAppChrome();
+    return Promise.resolve(true);
+  }
+  // Honor skip/remove BEFORE setupRouteOpen(). A leftover body.onboarding class from
+  // create-plan otherwise reopens setup and leaves Home stuck on "Loading…" until refresh.
+  if (!window.CURRENT_PLAN && hasSkipped(user.id)) {
+    window.PLAN_SKIPPED = true;
+    document.body.classList.remove("onboarding");
+    showAppChrome();
+    return Promise.resolve(true);
+  }
   if (setupRouteOpen() && !window.CURRENT_PLAN) {
     const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
     if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
       window.renderOnboarding();
     }
     return Promise.resolve(false);
-  }
-  if (window.CURRENT_PLAN && window.CURRENT_PLAN.user_id === user.id) {
-    showAppChrome();
-    return Promise.resolve(true);
-  }
-  if (!window.CURRENT_PLAN && hasSkipped(user.id)) {
-    window.PLAN_SKIPPED = true;
-    showAppChrome();
-    return Promise.resolve(true);
   }
   if (ENSURING && ENSURING_USER === user.id) return ENSURING;
   ENSURING_USER = user.id;
@@ -2480,6 +2688,7 @@ window.startPlanForAgendaEvent = async function startPlanForAgendaEvent(ev, { re
     event_name: ev.name,
     event_date: date,
     event_end_date: endDate && endDate !== date ? endDate : "",
+    multi_day: endDate && endDate > date ? "yes" : "no",
     event_kind: (window.EVENT_KINDS || []).includes(ev.kind) ? ev.kind : "race",
     event_legs_json: Array.isArray(ev.legs) ? JSON.stringify(ev.legs) : "[]",
     is_public: ev.is_public ? "yes" : "no",
@@ -2765,19 +2974,11 @@ document.addEventListener("click", (e) => {
 document.addEventListener("change", (e) => {
   const form = e.target.closest?.(".setup-form");
   if (!form) return;
-  if (e.target.matches?.("input[name=custom_run], input[name=custom_swim], input[name=custom_bike], input[name=event_date], input[name=event_end_date]")) {
+  if (e.target.matches?.("input[name=custom_run], input[name=custom_run2], input[name=custom_swim], input[name=custom_bike], input[name=event_date], input[name=event_end_date]")) {
     if (e.target.matches?.("input[name=event_date]")) {
       form.dataset.timeChrome = "1";
       shieldTimeChrome(1200);
       keepTimeDistanceChrome(form);
-      const start = String(e.target.value || "").slice(0, 10);
-      const endEl = form.querySelector("input[name=event_end_date]");
-      if (start && endEl) {
-        endEl.min = start;
-        const d = new Date(`${start}T12:00:00`);
-        d.setDate(d.getDate() + 1);
-        endEl.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      }
     }
     if (e.target.matches?.("input[name=event_date], input[name=event_end_date]")) {
       paintSetupEventLegs(form);
@@ -2863,10 +3064,13 @@ document.addEventListener("click", (e) => {
   }
   if (e.target.closest("[data-action=skip-setup]") || e.target.closest("[data-action=cancel-create-plan]")) {
     e.preventDefault();
+    e.stopPropagation();
     leaveSetupToHome();
     return;
   }
   const form = e.target.closest(".setup-form");
+  // Disclaimer sits under the week grid — never treat those taps as sport/goal/skip.
+  if (form && e.target.closest(".own-risk-field, input[name=own_risk]")) return;
   const publicBtn = e.target.closest("[data-public-id], [data-public-event]");
   if (publicBtn) {
     e.preventDefault();
@@ -2883,7 +3087,7 @@ document.addEventListener("click", (e) => {
     if (eventForm && typeof window.applyPublicEventToAgenda === "function") window.applyPublicEventToAgenda(eventForm, ev);
     const results = publicBtn.closest(".search-results");
     if (results) results.hidden = true;
-    const search = publicBtn.closest(".event-search")?.querySelector("input[type=search]");
+    const search = publicBtn.closest(".event-search, .event-entry, .event-form")?.querySelector("input[type=search], input[name=event_search]");
     if (search) search.value = "";
     return;
   }
@@ -2913,8 +3117,12 @@ document.addEventListener("click", (e) => {
   }
   const sportBtn = e.target.closest("[data-sport]");
   if (sportBtn && form) {
-    setChoice(form, "sport", sportBtn.dataset.sport, "data-sport");
-    form.dataset.pickedSport = sportBtn.dataset.sport;
+    const nextSport = sportBtn.dataset.sport;
+    if (setupSport(form) === nextSport && (form.dataset.blocksPicked === "1" || hasTrainingWeekdaySelection(form))) {
+      return;
+    }
+    setChoice(form, "sport", nextSport, "data-sport");
+    form.dataset.pickedSport = nextSport;
     if (setupGoal(form) === "time") {
       form.dataset.timeChrome = "1";
       shieldTimeChrome(1000);
@@ -2930,7 +3138,7 @@ document.addEventListener("click", (e) => {
       const el = fieldOf(form, name);
       if (el) el.value = "";
     });
-    paintDistances(sportBtn.dataset.sport, { keepPreset: false, skipAdvice: true });
+    paintDistances(nextSport, { keepPreset: false, skipAdvice: true });
     if (setupGoal(form) === "fitness") paintFitnessWeeks(form);
     fillWeeklyFromSynced(form, { force: true });
     syncExperienceFromWeekly(form);
@@ -3087,10 +3295,18 @@ document.addEventListener("submit", async (e) => {
     errorEl.textContent = "Search for a race or add your own event.";
     return;
   }
-  const setupEnd = fieldValue(form, "event_end_date");
   const setupStart = fieldValue(form, "event_date");
-  const setupMulti = !!(setupStart && setupEnd && setupEnd > setupStart);
-  if (setupMulti && !fieldValue(form, "preset")) {
+  const setupMulti = setupIsMultiDay(form);
+  if (setupMulti && setupStart) {
+    const endEl = fieldOf(form, "event_end_date");
+    const setupEnd = fieldValue(form, "event_end_date");
+    if (!setupEnd || setupEnd <= setupStart) {
+      errorEl.textContent = "Multi-day needs an end date after the start date.";
+      return;
+    }
+    if (endEl) endEl.value = setupEnd;
+  }
+  if ((setupMulti || form.querySelector(".event-leg-day")) && !fieldValue(form, "preset")) {
     const presetEl = fieldOf(form, "preset");
     if (presetEl) presetEl.value = "custom";
   }
@@ -3121,6 +3337,17 @@ document.addEventListener("submit", async (e) => {
         errorEl.textContent = "Enter swim, bike and run distances.";
         return;
       }
+      if (sport === "duathlon" && (!(Number(fieldValue(form, "custom_run")) > 0)
+        || !(Number(fieldValue(form, "custom_bike")) > 0)
+        || !(Number(fieldValue(form, "custom_run2")) > 0))) {
+        errorEl.textContent = "Enter first run, bike and second run distances.";
+        return;
+      }
+      if (sport === "aquathlon" && (!(Number(fieldValue(form, "custom_swim")) > 0)
+        || !(Number(fieldValue(form, "custom_run")) > 0))) {
+        errorEl.textContent = "Enter swim and run distances.";
+        return;
+      }
     }
     if (presetChoice === "custom" || timeGoalId === "custom") {
       if (!customTime) { errorEl.textContent = "Enter a target time."; return; }
@@ -3132,7 +3359,9 @@ document.addEventListener("submit", async (e) => {
   if (goalType === "time" && !form.event_date.value) { errorEl.textContent = "Pick a target date."; return; }
   if (goalType === "race" && !form.dataset.pickedEvent && !form.event_name.value) { errorEl.textContent = "Enter the event name."; return; }
   if (goalType === "race" && !form.dataset.pickedEvent && !form.event_date.value) { errorEl.textContent = "Pick an event date."; return; }
-  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon" || visibleWeekdays(form, "run").length;
+  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon"
+    || sport === "duathlon" || sport === "aquathlon"
+    || visibleWeekdays(form, "run").length;
   if (wantsRunDays && !visibleWeekdays(form, "run").length && !form.run_days.value) {
     errorEl.textContent = "Choose which days you want to run.";
     return;
@@ -3250,7 +3479,9 @@ document.addEventListener("submit", async (e) => {
     agendaEventId: form.dataset.agendaEventId || "",
     notes: "",
     experience: fieldValue(form, "experience") || "intermediate",
-    eventEndDate: fieldValue(form, "event_end_date") || eventDate,
+    eventEndDate: setupIsMultiDay(form)
+      ? (fieldValue(form, "event_end_date") || eventDate)
+      : eventDate,
     eventKind: fieldValue(form, "event_kind") || "race",
     legs: (() => {
       try {
@@ -3259,22 +3490,32 @@ document.addEventListener("submit", async (e) => {
         return Array.isArray(parsed) ? parsed : [];
       } catch { return []; }
     })(),
-    otherEvents: collectAgendaOtherEvents(eventDate, fieldValue(form, "event_end_date") || eventDate, form.dataset.agendaEventId || ""),
+    otherEvents: collectAgendaOtherEvents(
+      eventDate,
+      setupIsMultiDay(form) ? (fieldValue(form, "event_end_date") || eventDate) : eventDate,
+      form.dataset.agendaEventId || ""
+    ),
     custom: {
       run: fieldValue(form, "custom_run") && typeof window.parseDistInput === "function"
         ? window.parseDistInput(fieldValue(form, "custom_run"))
         : fieldValue(form, "custom_run"),
+      run2: fieldValue(form, "custom_run2") && typeof window.parseDistInput === "function"
+        ? window.parseDistInput(fieldValue(form, "custom_run2"))
+        : fieldValue(form, "custom_run2"),
       swim: fieldValue(form, "custom_swim"),
       bike: fieldValue(form, "custom_bike") && typeof window.parseDistInput === "function"
         ? window.parseDistInput(fieldValue(form, "custom_bike"))
         : fieldValue(form, "custom_bike"),
     },
   };
+  // Snapshot before the creating screen replaces the form — a failed create must restore the week.
+  const resumeSeed = snapshotSetupForm(form);
   showSetupCreatingPlan();
   try {
     const row = await saveGeneratedPlan(window.CURRENT_USER_ID, planInput);
     await finishSetupWithPlan(row);
   } catch (err) {
+    window._setupSeed = resumeSeed;
     renderSetupPlanForm(err.message || "Could not create the plan.", { createOnly: isCreatePlanOnly() });
   }
 });
