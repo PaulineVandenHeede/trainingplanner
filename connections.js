@@ -181,6 +181,38 @@ async function returnAfterStrava(returnTo) {
   else render(true);
 }
 
+function queueStravaPostConnectSync(returnTo) {
+  if (window._stravaPostConnectSync) return window._stravaPostConnectSync;
+  window._stravaPostConnectSync = (async () => {
+    try {
+      if (returnTo === "/setup" && typeof window.setSetupConnectSyncing === "function") {
+        window.setSetupConnectSyncing({ strava: true });
+      }
+      const message = await performStravaSync();
+      toast(message || "Strava connected and synced.");
+    } catch (err) {
+      toast(err?.message || "Strava connected, but sync failed.", true);
+    } finally {
+      window._stravaPostConnectSync = null;
+      if (returnTo === "/setup") {
+        if (typeof window.setSetupConnectSyncing === "function") {
+          window.setSetupConnectSyncing({ strava: false });
+        }
+        try {
+          if (typeof window.refreshSetupConnections === "function") {
+            await window.refreshSetupConnections();
+          }
+        } catch { /* keep current status */ }
+        if (typeof window.paintSetupConnect === "function") window.paintSetupConnect();
+      } else if (typeof window.render === "function") {
+        try { render(true); } catch { /* ignore */ }
+      }
+      if (typeof updateNavSyncButton === "function") updateNavSyncButton();
+    }
+  })();
+  return window._stravaPostConnectSync;
+}
+
 async function maybeHandleStravaCallback() {
   if (STRAVA_CALLBACK_HANDLED || !CURRENT_USER_ID) return false;
   const callback = takeStravaOauthCallback();
@@ -211,13 +243,11 @@ async function maybeHandleStravaCallback() {
       redirectUri: stravaRedirectUri(),
     });
     await loadStravaStatus();
-    try {
-      await performStravaSync();
-      toast("Strava connected and synced.");
-    } catch {
-      toast("Strava connected.");
-    }
+    // Paint setup/connections immediately. First sync can take a long time
+    // (deep lookback) and used to leave account creation on "Loading…".
+    toast("Strava connected.");
     await returnAfterStrava(returnTo);
+    queueStravaPostConnectSync(returnTo);
   } catch (err) {
     STRAVA.lastError = err.message || "Could not finish Strava connect";
     STRAVA.loaded = true;
