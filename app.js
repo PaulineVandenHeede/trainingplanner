@@ -1703,6 +1703,28 @@ function toggleAccountMenu() {
   const panel = document.getElementById("account-menu-panel");
   const btn = document.querySelector("[data-action=account-menu]");
   if (!menu || !panel || !btn) return;
+  closeNavMoreMenu();
+  const open = panel.hidden;
+  panel.hidden = !open;
+  menu.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function closeNavMoreMenu() {
+  const menu = document.querySelector(".nav-more");
+  const panel = document.getElementById("nav-more-panel");
+  const btn = document.querySelector("[data-action=nav-more]");
+  if (menu) menu.classList.remove("open");
+  if (panel) panel.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function toggleNavMoreMenu() {
+  const menu = document.querySelector(".nav-more");
+  const panel = document.getElementById("nav-more-panel");
+  const btn = document.querySelector("[data-action=nav-more]");
+  if (!menu || !panel || !btn) return;
+  closeAccountMenu();
   const open = panel.hidden;
   panel.hidden = !open;
   menu.classList.toggle("open", open);
@@ -2741,8 +2763,6 @@ function renderPlan(acts, now) {
       <button class="button ghost small" type="button" data-action="remove-plan">${tt("plan.remove")}</button>
     </section>
 
-    ${changesCard()}
-
     ${renderVolumeCard(acts, now)}
 
     <div class="weeks">${weeks}</div>
@@ -3082,6 +3102,313 @@ let COACH_STATUS = "idle";
 let FEEDBACK_POLL = null;
 let FEEDBACK_STATUS = "idle";
 let WEEK_FEEDBACK_STAMP = null;
+let COACH_MESSAGES = [];
+let COACH_CHAT_SHEET_OPEN = false;
+let COACH_CHAT_UNREAD = false;
+const COACH_CHAT_COLLAPSE_KEY = "coach-chat-collapsed";
+
+function isCoachChatMobile() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 700px)").matches;
+}
+
+function coachChatCollapsed() {
+  try { return localStorage.getItem(COACH_CHAT_COLLAPSE_KEY) === "1"; } catch { return false; }
+}
+
+function setCoachChatCollapsed(collapsed) {
+  try { localStorage.setItem(COACH_CHAT_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch { /* ignore */ }
+}
+
+async function loadCoachMessages() {
+  if (!CURRENT_USER_ID) return [];
+  const { data, error } = await sb
+    .from("coach_messages")
+    .select("id, role, content, job_id, created_at")
+    .eq("user_id", CURRENT_USER_ID)
+    .order("created_at", { ascending: true })
+    .limit(100);
+  if (error) return COACH_MESSAGES;
+  return (data || []).map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    jobId: m.job_id,
+    createdAt: m.created_at,
+  }));
+}
+
+function coachChatThreadHtml() {
+  const reviewing = COACH_STATUS === "reviewing";
+  if (!COACH_MESSAGES.length && !reviewing) {
+    return `<p class="coach-chat-empty muted small-text">${esc(tt("coach.chatEmpty"))}</p>`;
+  }
+  const bubbles = COACH_MESSAGES.map((m) => {
+    const when = m.createdAt
+      ? fmt(new Date(m.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+      : "";
+    return `
+      <div class="coach-chat-bubble ${m.role === "user" ? "is-user" : "is-assistant"}">
+        <div class="coach-chat-text">${esc(m.content)}</div>
+        ${when ? `<div class="coach-chat-meta muted">${esc(when)}</div>` : ""}
+      </div>`;
+  }).join("");
+  const typing = reviewing
+    ? `<div class="coach-chat-bubble is-assistant is-typing"><div class="coach-chat-text">${esc(tt("coach.chatThinking"))}</div></div>`
+    : "";
+  return bubbles + typing;
+}
+
+function coachChatComposerHtml() {
+  const reviewing = COACH_STATUS === "reviewing";
+  return `
+    <form class="coach-chat-form">
+      <textarea name="text" rows="2" maxlength="2000" required ${reviewing ? "disabled" : ""}
+        placeholder="${esc(tt("coach.chatPlaceholder"))}"></textarea>
+      <button class="button small" type="submit" ${reviewing ? "disabled" : ""}>${esc(tt("coach.chatSend"))}</button>
+    </form>`;
+}
+
+function coachChatPendingHtml() {
+  const items = pendingChanges();
+  const sendable = coachSendableChanges();
+  const reviewing = COACH_STATUS === "reviewing";
+  if (!items.length && !sendable.length) return "";
+  return `
+    <div class="coach-chat-pending">
+      <ul class="coach-chat-pending-list">
+        ${items.map((c) => `
+          <li class="${c.type === "adapt" ? "is-adapt" : ""}">
+            <div class="coach-chat-pending-body">
+              <span class="change-icon t-${c.type}">${CHANGE_ICON[c.type] || "•"}</span>
+              ${c.type === "adapt" ? adaptChangeBody(c) : `<span class="change-text">${esc(c.summary)}</span>`}
+            </div>
+            <span class="coach-chat-pending-actions">
+              ${c.type === "adapt" ? `<button class="button small" type="button" data-action="accept-adapt" data-id="${esc(c.id)}">${tt("coach.accept")}</button>` : ""}
+              <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="${esc(c.type === "adapt" ? tt("coach.dismiss") : tt("coach.removeFromList"))}">✕</button>
+            </span>
+          </li>`).join("")}
+      </ul>
+      ${sendable.length ? `
+        <button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>
+          ${reviewing ? tt("coach.reviewing") : tt("coach.send")}
+        </button>` : ""}
+      ${items.some((c) => c.type === "adapt") ? `<p class="muted small-text">${esc(tt("coach.adaptHint"))}</p>` : ""}
+    </div>`;
+}
+
+function coachChatPanelInner(variant) {
+  const reviewing = COACH_STATUS === "reviewing";
+  return `
+    <div class="coach-chat-head">
+      <div>
+        <div class="eyebrow">${esc(tt("coach.eyebrow"))}</div>
+        <h2>${esc(tt("coach.chatTitle"))}</h2>
+      </div>
+      <div class="coach-chat-head-actions">
+        <button class="button ghost small" type="button" data-action="niggle-mode" title="${esc(tt("coach.niggle"))}">${esc(tt("coach.niggle"))}</button>
+        ${variant === "rail" ? `<button class="icon-button" type="button" data-action="coach-chat-collapse" title="${esc(tt("coach.chatCollapse"))}" aria-label="${esc(tt("coach.chatCollapse"))}">‹</button>` : ""}
+        ${variant === "sheet" ? `<button class="icon-button" type="button" data-action="coach-chat-close" title="${esc(tt("common.close"))}" aria-label="${esc(tt("common.close"))}">✕</button>` : ""}
+      </div>
+    </div>
+    ${coachChatPendingHtml()}
+    <div class="coach-chat-thread" data-coach-thread>${coachChatThreadHtml()}</div>
+    ${reviewing ? `<p class="muted small-text coach-chat-status">${esc(tt("coach.chatThinking"))}</p>` : ""}
+    ${coachChatComposerHtml()}
+  `;
+}
+
+function ensureCoachChatUi() {
+  const header = document.getElementById("app-header");
+  const nav = header?.querySelector("nav");
+  if (nav && !nav.querySelector("[data-action=coach-chat-toggle]")) {
+    const anchor = nav.querySelector(".nav-more") || nav.querySelector(".account-menu") || nav.querySelector(".nav-sep");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "nav-btn coach-chat-nav";
+    btn.dataset.action = "coach-chat-toggle";
+    btn.title = tt("coach.chatTitle");
+    btn.setAttribute("aria-label", tt("coach.chatTitle"));
+    btn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H12l-4 3.5V15H7.5A2.5 2.5 0 0 1 5 12.5z"/>
+      </svg>
+      <span class="nav-badge coach-chat-badge" hidden></span>`;
+    if (anchor) nav.insertBefore(btn, anchor);
+    else nav.appendChild(btn);
+  }
+
+  if (!document.getElementById("coach-chat-rail")) {
+    const rail = document.createElement("aside");
+    rail.id = "coach-chat-rail";
+    rail.className = "coach-chat-rail";
+    rail.hidden = true;
+    rail.innerHTML = `<div class="coach-chat-panel">${coachChatPanelInner("rail")}</div>`;
+    document.body.appendChild(rail);
+  }
+
+  if (!document.getElementById("coach-chat-sheet")) {
+    const sheet = document.createElement("div");
+    sheet.id = "coach-chat-sheet";
+    sheet.className = "coach-chat-sheet";
+    sheet.hidden = true;
+    sheet.innerHTML = `
+      <button class="coach-chat-backdrop" type="button" data-action="coach-chat-close" aria-label="Close"></button>
+      <div class="coach-chat-panel" role="dialog" aria-modal="true">${coachChatPanelInner("sheet")}</div>`;
+    document.body.appendChild(sheet);
+  }
+
+  if (!document.getElementById("coach-chat-fab")) {
+    const fab = document.createElement("button");
+    fab.type = "button";
+    fab.id = "coach-chat-fab";
+    fab.className = "coach-chat-fab";
+    fab.dataset.action = "coach-chat-expand";
+    fab.hidden = true;
+    fab.setAttribute("aria-label", tt("coach.chatTitle"));
+    fab.innerHTML = `<span>${esc(tt("coach.chatTitle"))}</span>`;
+    document.body.appendChild(fab);
+  }
+}
+
+function refreshCoachChatPanels() {
+  const railPanel = document.querySelector("#coach-chat-rail .coach-chat-panel");
+  if (railPanel) railPanel.innerHTML = coachChatPanelInner("rail");
+  const sheetPanel = document.querySelector("#coach-chat-sheet .coach-chat-panel");
+  if (sheetPanel) sheetPanel.innerHTML = coachChatPanelInner("sheet");
+  for (const thread of document.querySelectorAll("[data-coach-thread]")) {
+    thread.scrollTop = thread.scrollHeight;
+  }
+}
+
+function syncCoachChatUi() {
+  ensureCoachChatUi();
+  const mobile = isCoachChatMobile();
+  const onPlan = currentRoute() === "plan" && hasPlan();
+  const collapsed = coachChatCollapsed();
+  const rail = document.getElementById("coach-chat-rail");
+  const sheet = document.getElementById("coach-chat-sheet");
+  const fab = document.getElementById("coach-chat-fab");
+  const navBtn = document.querySelector("[data-action=coach-chat-toggle]");
+  const badge = navBtn?.querySelector(".coach-chat-badge");
+
+  document.body.classList.toggle("coach-chat-rail-open", !mobile && onPlan && !collapsed);
+  document.body.classList.toggle("coach-chat-sheet-open", mobile && COACH_CHAT_SHEET_OPEN);
+
+  if (rail) {
+    const showRail = !mobile && onPlan && !collapsed;
+    rail.hidden = !showRail;
+  }
+  if (fab) {
+    fab.hidden = !(!mobile && onPlan && collapsed);
+  }
+  if (sheet) {
+    sheet.hidden = !(mobile && COACH_CHAT_SHEET_OPEN);
+  }
+  if (navBtn) {
+    navBtn.classList.toggle("mobile-only-chat", true);
+    navBtn.hidden = !hasPlan();
+    navBtn.classList.toggle("active", mobile && COACH_CHAT_SHEET_OPEN);
+  }
+  if (badge) {
+    const pending = pendingChanges().length;
+    const show = COACH_CHAT_UNREAD || COACH_STATUS === "reviewing" || pending > 0;
+    badge.hidden = !show;
+    badge.textContent = COACH_STATUS === "reviewing" ? "…" : (pending > 0 ? String(pending) : "1");
+  }
+
+  refreshCoachChatPanels();
+}
+
+function focusCoachChatComposer(prefill = "") {
+  const root = !document.getElementById("coach-chat-sheet")?.hidden
+    ? document.getElementById("coach-chat-sheet")
+    : document.getElementById("coach-chat-rail");
+  const input = root?.querySelector(".coach-chat-form textarea, .coach-chat-form input");
+  if (!input || input.disabled) return;
+  if (prefill) {
+    input.value = prefill;
+    try { input.setSelectionRange(prefill.length, prefill.length); } catch { /* ignore */ }
+  }
+  input.focus();
+}
+
+async function openCoachChat(opts = {}) {
+  const mobile = isCoachChatMobile();
+  COACH_CHAT_UNREAD = false;
+  if (mobile) {
+    COACH_CHAT_SHEET_OPEN = true;
+  } else {
+    setCoachChatCollapsed(false);
+    if (currentRoute() !== "plan") go("/plan");
+  }
+  syncCoachChatUi();
+  const prefill = opts.prefill || "";
+  requestAnimationFrame(() => focusCoachChatComposer(prefill));
+}
+
+function closeCoachChatSheet() {
+  COACH_CHAT_SHEET_OPEN = false;
+  COACH_CHAT_UNREAD = false;
+  syncCoachChatUi();
+}
+
+async function sendCoachChat(text, opts = {}) {
+  const content = String(text || "").trim().slice(0, 2000);
+  if (!content) return null;
+  if (!CURRENT_USER_ID) throw new Error("Sign in required");
+  if (!hasPlan()) throw new Error("Create a plan first");
+  if (COACH_STATUS === "reviewing") throw new Error(tt("coach.chatBusy"));
+
+  const { data, error } = await sb.from("coach_messages").insert({
+    user_id: CURRENT_USER_ID,
+    role: "user",
+    content,
+  }).select("id, role, content, job_id, created_at").single();
+  if (error) throw error;
+
+  COACH_MESSAGES = [...COACH_MESSAGES, {
+    id: data.id,
+    role: data.role,
+    content: data.content,
+    jobId: data.job_id,
+    createdAt: data.created_at,
+  }];
+  COACH_STATUS = "reviewing";
+  syncCoachChatUi();
+  if (currentRoute() === "plan") render(true);
+
+  try {
+    const result = await invokeCoach({ action: "chat" });
+    if (result.status === "applied") {
+      COACH_STATUS = "idle";
+      if (!opts.silent) toastCoachResult(result, tt("coach.chatReplied"));
+      const { data: plan } = await sb.from("plans").select("*").eq("user_id", CURRENT_USER_ID).maybeSingle();
+      if (plan) applyPlanRow(plan);
+      const previousNote = currentReviewNote();
+      [CHANGES, FEEDBACK, BUSY, COACH_MESSAGES] = await Promise.all([
+        loadChanges(),
+        loadFeedback(),
+        loadBusy(),
+        loadCoachMessages(),
+      ]);
+      maybeStampReviewFeedback(previousNote);
+      if (!opts.fromSheet) COACH_CHAT_UNREAD = false;
+      render(true);
+      syncCoachChatUi();
+      return result;
+    }
+    if (result.jobId) pollCoachJob(result.jobId, { kind: "chat" });
+    else {
+      COACH_STATUS = "idle";
+      syncCoachChatUi();
+    }
+    return result;
+  } catch (err) {
+    COACH_STATUS = "idle";
+    syncCoachChatUi();
+    throw err;
+  }
+}
 
 async function invokeCoach(body) {
   const { data, error } = await sb.functions.invoke("coach", { body });
@@ -3144,19 +3471,27 @@ async function resumeCoachJob() {
 }
 
 
-async function pollCoachJob(jobId) {
+async function pollCoachJob(jobId, opts = {}) {
   clearTimeout(COACH_POLL);
   try {
     const data = await invokeCoach({ action: "status", jobId });
     if (data.status === "applied") {
       COACH_STATUS = "idle";
-      toastCoachResult(data, "Plan updated.");
+      const isChat = data.kind === "chat" || opts.kind === "chat";
+      toastCoachResult(data, isChat ? tt("coach.chatReplied") : "Plan updated.");
       const { data: plan } = await sb.from("plans").select("*").eq("user_id", CURRENT_USER_ID).maybeSingle();
       if (plan) applyPlanRow(plan);
       const previousNote = currentReviewNote();
-      [CHANGES, FEEDBACK] = await Promise.all([loadChanges(), loadFeedback()]);
+      [CHANGES, FEEDBACK, BUSY, COACH_MESSAGES] = await Promise.all([
+        loadChanges(),
+        loadFeedback(),
+        loadBusy(),
+        loadCoachMessages(),
+      ]);
       maybeStampReviewFeedback(previousNote);
+      if (isChat && isCoachChatMobile() && !COACH_CHAT_SHEET_OPEN) COACH_CHAT_UNREAD = true;
       render(true);
+      syncCoachChatUi();
       refreshOpenDay();
       return;
     }
@@ -3164,14 +3499,17 @@ async function pollCoachJob(jobId) {
       COACH_STATUS = "idle";
       toast(data.error || "Coach review failed.", true);
       render(true);
+      syncCoachChatUi();
       return;
     }
     COACH_STATUS = "reviewing";
-    COACH_POLL = setTimeout(() => pollCoachJob(jobId), 4000);
+    syncCoachChatUi();
+    COACH_POLL = setTimeout(() => pollCoachJob(jobId, opts), 4000);
   } catch (err) {
     COACH_STATUS = "idle";
     toast(err.message, true);
     render(true);
+    syncCoachChatUi();
   }
 }
 
@@ -3364,55 +3702,6 @@ function adaptChangeBody(c) {
       ${actions.length ? `<span class="adapt-actions">${actions.map((a) => esc(a)).join(" · ")}</span>` : ""}
       <span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
     </span>`;
-}
-
-function changesCard() {
-  const items = pendingChanges();
-  const sendable = coachSendableChanges();
-  const applied = CHANGES.filter((c) => c.status === "applied").length;
-  const reviewing = COACH_STATUS === "reviewing";
-  const appliedNote = !applied
-    ? ""
-    : applied === 1
-      ? tt("coach.appliedOne")
-      : tt("coach.appliedMany", { count: applied });
-  return `
-    <section class="card changes" id="changes">
-      <div class="card-head">
-        <div>
-          <div class="eyebrow">${tt("coach.eyebrow")}</div>
-          <h2>${tt("coach.planChanges")} ${items.length ? `<span class="count">${items.length}</span>` : ""}</h2>
-        </div>
-        <div class="card-actions">
-          <button class="button ghost small" type="button" data-action="niggle-mode">${tt("coach.niggle")}</button>
-          ${(sendable.length || reviewing) ? `<button class="button small" type="button" data-action="send-coach"${reviewing ? " disabled" : ""}>${reviewing ? tt("coach.reviewing") : tt("coach.send")}</button>` : ""}
-        </div>
-      </div>
-      ${items.length ? `
-        <ul class="change-list">
-          ${items.map((c) => `
-            <li class="${c.type === "adapt" ? "adapt-item" : ""}">
-              <span class="change-icon t-${c.type}">${CHANGE_ICON[c.type] || "•"}</span>
-              ${c.type === "adapt" ? adaptChangeBody(c) : `<span class="change-text">${esc(c.summary)}<span class="muted"> · ${fmt(new Date(c.createdAt), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></span>`}
-              <span class="change-actions">
-                ${c.type === "adapt" ? `<button class="button small" type="button" data-action="accept-adapt" data-id="${esc(c.id)}">${tt("coach.accept")}</button>` : ""}
-                <button class="icon-button" type="button" data-action="delete-change" data-id="${esc(c.id)}" title="${esc(c.type === "adapt" ? tt("coach.dismiss") : tt("coach.removeFromList"))}">✕</button>
-              </span>
-            </li>`).join("")}
-        </ul>
-        <p class="muted small-text">${reviewing
-          ? tt("coach.sentReviewing")
-          : [
-              items.some((c) => c.type === "adapt") ? tt("coach.adaptHint") : "",
-              sendable.length ? tt("coach.sendHint") : "",
-            ].filter(Boolean).join(" ")}</p>` : reviewing ? `
-        <p class="muted small-text">${tt("coach.sentNow")}</p>` : `
-        <p class="muted small-text">${tt("coach.nonePending")}${appliedNote}</p>`}
-      <form class="note-form">
-        <input type="text" name="text" maxlength="2000" placeholder="${esc(tt("coach.notePlaceholder"))}" />
-        <button class="button ghost small" type="submit">${tt("coach.addNote")}</button>
-      </form>
-    </section>`;
 }
 
 function toast(message, isError = false) {
@@ -3809,6 +4098,7 @@ function renderView(route, acts, now) {
 function render(force = false) {
   syncStandaloneClass();
   closeAccountMenu();
+  closeNavMoreMenu();
   captureEventFormDraft();
   captureEventPersonalDraft();
   captureActivityLogDraft();
@@ -3836,7 +4126,7 @@ function render(force = false) {
   }
   const now = today();
   const route = currentRoute();
-  document.querySelectorAll("nav > a").forEach((a) => {
+  document.querySelectorAll("nav a[data-route]").forEach((a) => {
     const active = a.dataset.route === route
       || (route === "progress" && a.dataset.route === "plan");
     a.classList.toggle("active", active);
@@ -3844,17 +4134,20 @@ function render(force = false) {
   const accountMenu = document.querySelector(".account-menu");
   if (accountMenu) {
     accountMenu.classList.toggle("active", ["profile", "connections", "settings"].includes(route));
-    accountMenu.querySelectorAll("[data-route]").forEach((a) => {
-      a.classList.toggle("active", a.dataset.route === route);
-    });
+  }
+  const navMore = document.querySelector(".nav-more");
+  if (navMore) {
+    navMore.classList.toggle(
+      "active",
+      ["home", "plan", "progress", "activities", "events", "gear"].includes(route),
+    );
   }
   updateNavSyncButton();
-  const badge = document.querySelector(".nav-badge");
   const pending = pendingChanges().length;
-  if (badge) {
+  document.querySelectorAll(".nav-badge:not(.coach-chat-badge)").forEach((badge) => {
     badge.hidden = !pending;
     badge.textContent = pending;
-  }
+  });
   const app = document.getElementById("app");
   const prevRoute = app.dataset.route;
   const sportKey = route === "profile" ? selectedYearSport() : route === "activities" ? `${selectedActivityYear(now)}-${selectedActivityFilter() || "all"}` : "";
@@ -3898,6 +4191,7 @@ function render(force = false) {
     if (PROGRESS_STATUS === "running") resumeProgressJob();
     else if (!progressReportIsCurrent()) requestProgressReport();
   }
+  syncCoachChatUi();
 }
 
 async function cloudRequest(method, url, body) {
@@ -4414,7 +4708,14 @@ document.addEventListener("click", async (e) => {
     toggleAccountMenu();
     return;
   }
+  const navMoreTrigger = e.target.closest("[data-action=nav-more]");
+  if (navMoreTrigger) {
+    e.preventDefault();
+    toggleNavMoreMenu();
+    return;
+  }
   if (!e.target.closest(".account-menu")) closeAccountMenu();
+  if (!e.target.closest(".nav-more")) closeNavMoreMenu();
   const link = e.target.closest("a[href]");
   if (link && !link.target && !link.hasAttribute("download") && e.button === 0
       && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
@@ -4423,6 +4724,7 @@ document.addEventListener("click", async (e) => {
     if (url.origin === location.origin && isAppPath(url.pathname)) {
       e.preventDefault();
       closeAccountMenu();
+      closeNavMoreMenu();
       const dest = url.pathname.replace(/\/+$/, "") || "/home";
       const onSetupFlow = document.body.classList.contains("onboarding")
         || currentRoute() === "setup"
@@ -4503,7 +4805,12 @@ document.addEventListener("click", async (e) => {
     openDay(btn.dataset.date);
     return;
   }
-  if (btn.dataset.action === "import") document.getElementById("csv-input").click();
+  if (btn.dataset.action === "import") {
+    closeAccountMenu();
+    closeNavMoreMenu();
+    document.getElementById("csv-input")?.click();
+    return;
+  }
   if (btn.dataset.action === "nav-sync") {
     await runNavSync();
     return;
@@ -4690,7 +4997,36 @@ document.addEventListener("click", async (e) => {
     return;
   }
   if (btn.dataset.action === "today-ask-toggle") {
-    if (typeof toggleTodayPanel === "function") toggleTodayPanel("ask");
+    const ds = ymd(today());
+    const plan = planFor(ds);
+    const prefill = plan
+      ? `Today (${plan.label}): `
+      : `Today (${ds}): `;
+    openCoachChat({ prefill });
+    return;
+  }
+  if (btn.dataset.action === "coach-chat-toggle") {
+    if (isCoachChatMobile()) {
+      if (COACH_CHAT_SHEET_OPEN) closeCoachChatSheet();
+      else openCoachChat();
+    } else {
+      openCoachChat();
+    }
+    return;
+  }
+  if (btn.dataset.action === "coach-chat-close") {
+    closeCoachChatSheet();
+    return;
+  }
+  if (btn.dataset.action === "coach-chat-collapse") {
+    setCoachChatCollapsed(true);
+    syncCoachChatUi();
+    return;
+  }
+  if (btn.dataset.action === "coach-chat-expand") {
+    setCoachChatCollapsed(false);
+    syncCoachChatUi();
+    focusCoachChatComposer();
     return;
   }
   if (btn.dataset.action === "today-move") {
@@ -4721,20 +5057,24 @@ document.addEventListener("click", async (e) => {
       if (row?.type === "adapt") {
         await dismissAdaptationChange(btn.dataset.id);
         render(true);
+        syncCoachChatUi();
         toast(tt("coach.adaptDismissed"));
       } else {
         await apiRequest("DELETE", `/api/changes/${encodeURIComponent(btn.dataset.id)}`);
         await refreshState();
+        syncCoachChatUi();
       }
     } catch (err) {
       toast(err.message, true);
     }
+    return;
   }
   if (btn.dataset.action === "accept-adapt") {
     btn.disabled = true;
     try {
       await applyAdaptationChange(btn.dataset.id);
       render(true);
+      syncCoachChatUi();
       toast(tt("coach.adaptApplied"));
     } catch (err) {
       btn.disabled = false;
@@ -4746,7 +5086,8 @@ document.addEventListener("click", async (e) => {
     btn.disabled = true;
     try {
       await queueNiggleAdaptation(today());
-      render(true);
+      await openCoachChat();
+      syncCoachChatUi();
       toast(tt("coach.niggleQueued"));
     } catch (err) {
       toast(err.message, true);
@@ -4762,9 +5103,15 @@ document.addEventListener("click", async (e) => {
       return;
     }
     COACH_STATUS = "reviewing";
+    syncCoachChatUi();
     render(true);
     await sendCoachRequest();
     render(true);
+    syncCoachChatUi();
+    return;
+  }
+  if (btn.dataset.action === "open-coach-chat") {
+    await openCoachChat();
     return;
   }
   if (btn.dataset.action === "toggle-activity-log") {
@@ -5074,10 +5421,10 @@ document.addEventListener("submit", async (e) => {
     const submit = todayAskForm.querySelector("button[type=submit]");
     if (submit) submit.disabled = true;
     try {
-      await apiRequest("POST", "/api/changes", { text: `${prefix}${text}` });
+      await openCoachChat();
+      await sendCoachChat(`${prefix}${text}`);
       todayAskForm.reset();
-      await refreshState();
-      toast(tt("home.todayAskDone"));
+      if (typeof toggleTodayPanel === "function") toggleTodayPanel(null);
     } catch (err) {
       toast(err.message || tt("home.todayAskFail"), true);
     } finally {
@@ -5085,15 +5432,21 @@ document.addEventListener("submit", async (e) => {
     }
     return;
   }
-  const noteForm = e.target.closest(".note-form");
-  if (noteForm) {
+  const chatForm = e.target.closest(".coach-chat-form");
+  if (chatForm) {
     e.preventDefault();
+    const text = String(chatForm.text?.value || "").trim();
+    if (!text) return;
+    const submit = chatForm.querySelector("button[type=submit]");
+    if (submit) submit.disabled = true;
     try {
-      await apiRequest("POST", "/api/changes", { text: noteForm.text.value });
-      await refreshState();
-      toast("Note added to the plan changes.");
+      chatForm.reset();
+      await sendCoachChat(text);
     } catch (err) {
-      toast(err.message, true);
+      toast(err.message || tt("home.todayAskFail"), true);
+      syncCoachChatUi();
+    } finally {
+      if (submit) submit.disabled = false;
     }
     return;
   }
@@ -5542,7 +5895,10 @@ document.addEventListener("input", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeAccountMenu();
+  if (e.key === "Escape") {
+    closeAccountMenu();
+    closeNavMoreMenu();
+  }
   if (e.key !== "Enter" && e.key !== " ") return;
   const day = e.target.closest?.(".day.clickable, .today-card-hit");
   if (day?.dataset?.date) {
@@ -5625,13 +5981,14 @@ window.bootApp = function bootApp() {
   showAppLoading();
   APP_BOOTING = (async () => {
     if (hasPlan() && typeof window.syncPlanDates === "function") window.syncPlanDates();
-    const [acts, events, feedback, busy, changes, gear] = await Promise.all([
+    const [acts, events, feedback, busy, changes, gear, messages] = await Promise.all([
       loadActivities(),
       loadEvents(),
       loadFeedback(),
       hasPlan() ? loadBusy() : Promise.resolve({}),
       hasPlan() ? loadChanges() : Promise.resolve([]),
       loadGear(),
+      hasPlan() ? loadCoachMessages() : Promise.resolve([]),
     ]);
     if (gen !== APP_BOOT_GEN || window.CURRENT_USER_ID !== bootUserId) return;
     ACTS = acts;
@@ -5640,6 +5997,7 @@ window.bootApp = function bootApp() {
     BUSY = busy;
     CHANGES = changes;
     GEAR = gear;
+    COACH_MESSAGES = messages;
     try {
       if (hasPlan()) await syncPlanWithAgendaEvents(EVENTS);
     } catch (err) {
@@ -5690,6 +6048,9 @@ window.resetApp = function resetApp() {
   FEEDBACK = { weeks: {}, activities: {} };
   BUSY = {};
   CHANGES = [];
+  COACH_MESSAGES = [];
+  COACH_CHAT_SHEET_OPEN = false;
+  COACH_CHAT_UNREAD = false;
   GEAR = { items: [], assignments: {} };
   window.WELLNESS = {};
   window.TRAINING_METRICS = null;
@@ -5724,6 +6085,14 @@ window.resetApp = function resetApp() {
     app.dataset.sport = "";
   }
 };
+
+let COACH_CHAT_RESIZE_T = null;
+window.addEventListener("resize", () => {
+  clearTimeout(COACH_CHAT_RESIZE_T);
+  COACH_CHAT_RESIZE_T = setTimeout(() => {
+    if (typeof syncCoachChatUi === "function") syncCoachChatUi();
+  }, 120);
+});
 
 window.addEventListener("tp:languagechange", () => {
   if (typeof window.applyDomI18n === "function") window.applyDomI18n();

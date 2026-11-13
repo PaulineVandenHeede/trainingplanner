@@ -337,8 +337,50 @@ Deno.serve(async (req) => {
   if (body.action === "status") return handleStatus(userClient, user.id, body.jobId || "");
   if (body.action === "progress") return handleProgress(userClient, user.id, body.snapshot || null);
   if (body.action === "feedback") return handleFeedback(userClient, user.id, body.snapshot || null);
+  if (body.action === "chat") return handleChat(userClient, user.id);
   return handleStart(userClient, user.id, body.stage || null);
 });
+
+async function loadRecentMessages(userClient: ReturnType<typeof createClient>, userId: string, limit = 20) {
+  const { data, error } = await userClient
+    .from("coach_messages")
+    .select("id, role, content, job_id, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).slice().reverse();
+}
+
+async function insertAssistantMessage(
+  userClient: ReturnType<typeof createClient>,
+  userId: string,
+  content: string,
+  jobId: string | null = null,
+) {
+  const text = String(content || "").trim().slice(0, 8000);
+  if (!text) return null;
+  const { data, error } = await userClient
+    .from("coach_messages")
+    .insert({
+      user_id: userId,
+      role: "assistant",
+      content: text,
+      job_id: jobId,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+function assistantReplyFromPatch(patch: Record<string, unknown>) {
+  const reply = typeof patch.reply === "string" ? patch.reply.trim() : "";
+  const summary = typeof patch.summary === "string" ? patch.summary.trim() : "";
+  const alert = typeof patch.alert === "string" ? patch.alert.trim() : "";
+  const parts = [reply || summary, alert].filter(Boolean);
+  return parts.join("\n\n").slice(0, 8000);
+}
 
 const MONTHS: Record<string, number> = {
   jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
@@ -361,10 +403,13 @@ function parseNoteDates(text: string, year: number) {
   return [...dates];
 }
 
-async function applyStructuredNotes(userClient: ReturnType<typeof createClient>, userId: string) {
+async function applyStructuredBusyText(
+  userClient: ReturnType<typeof createClient>,
+  userId: string,
+  texts: { id?: string; summary: string }[],
+) {
   const { data: plan } = await userClient.from("plans").select("start_date, event_date, weeks").eq("user_id", userId).maybeSingle();
-  const { data: changes } = await userClient.from("changes").select("id, type, summary, status").eq("user_id", userId).eq("status", "pending");
-  const notes = (changes || []).filter((c) => c.type === "note" && /busy|ski|holiday|remove|rest/i.test(c.summary || ""));
+  const notes = texts.filter((c) => /busy|ski|holiday|remove|rest/i.test(c.summary || ""));
   if (!plan || !notes.length) return null;
 
   const year = Number(String(plan.event_date || plan.start_date || "2027").slice(0, 4));
@@ -396,24 +441,35 @@ async function applyStructuredNotes(userClient: ReturnType<typeof createClient>,
         week.note = [week.note, `${date}: session removed (${session || "planned run"}).`].filter(Boolean).join(" ");
       }
     }
-    appliedIds.push(note.id);
+    if (note.id) appliedIds.push(note.id);
   }
-  if (!appliedIds.length) return null;
+  if (!dates.length) return null;
 
   const { error: planErr } = await userClient.from("plans").update({ weeks }).eq("user_id", userId);
   if (planErr) throw planErr;
-  const { error: chErr } = await userClient.from("changes").update({ status: "applied" }).eq("user_id", userId).in("id", appliedIds);
-  if (chErr) throw chErr;
+  if (appliedIds.length) {
+    const { error: chErr } = await userClient.from("changes").update({ status: "applied" }).eq("user_id", userId).in("id", appliedIds);
+    if (chErr) throw chErr;
+  }
 
   const summary = `Marked ${dates.join(", ")} busy and removed those sessions.`;
+  return { summary, dates, appliedIds };
+}
+
+async function applyStructuredNotes(userClient: ReturnType<typeof createClient>, userId: string) {
+  const { data: changes } = await userClient.from("changes").select("id, type, summary, status").eq("user_id", userId).eq("status", "pending");
+  const notes = (changes || []).filter((c) => c.type === "note").map((c) => ({ id: c.id as string, summary: String(c.summary || "") }));
+  const local = await applyStructuredBusyText(userClient, userId, notes);
+  if (!local) return null;
+
   const { data: job, error: jobErr } = await userClient.from("coach_jobs").insert({
     user_id: userId,
     status: "applied",
-    summary,
-    result: { dates, applyChangeIds: appliedIds },
+    summary: local.summary,
+    result: { dates: local.dates, applyChangeIds: local.appliedIds },
   }).select("id").single();
   if (jobErr) throw jobErr;
-  return { jobId: job.id, status: "applied", summary };
+  return { jobId: job.id, status: "applied", summary: local.summary };
 }
 
 async function handleStart(userClient: ReturnType<typeof createClient>, userId: string, stage: string | null) {
@@ -543,6 +599,169 @@ async function handleStart(userClient: ReturnType<typeof createClient>, userId: 
   if (jobErr) return json({ error: jobErr.message }, 500);
 
   return json({ jobId: job.id, status: job.status, agentId });
+}
+
+async function handleChat(userClient: ReturnType<typeof createClient>, userId: string) {
+  let messages: { id: string; role: string; content: string; created_at?: string }[] = [];
+  try {
+    messages = await loadRecentMessages(userClient, userId, 20);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return json({ error: message }, 500);
+  }
+  const latestUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!latestUser?.content?.trim()) {
+    return json({ error: "Send a chat message first" }, 400);
+  }
+
+  try {
+    const local = await applyStructuredBusyText(userClient, userId, [{ summary: latestUser.content }]);
+    if (local) {
+      const { data: job, error: jobErr } = await userClient.from("coach_jobs").insert({
+        user_id: userId,
+        status: "applied",
+        stage: "chat",
+        summary: local.summary,
+        result: { dates: local.dates, reply: local.summary },
+      }).select("id").single();
+      if (jobErr) throw jobErr;
+      await insertAssistantMessage(userClient, userId, local.summary, job.id);
+      return json({ jobId: job.id, status: "applied", summary: local.summary, kind: "chat" });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return json({ error: message }, 500);
+  }
+
+  const cursorKey = Deno.env.get("CURSOR_API_KEY");
+  if (!cursorKey) {
+    return json({
+      error: "CURSOR_API_KEY is not set",
+      needsKey: true,
+    }, 503);
+  }
+
+  const { data: open } = await userClient
+    .from("coach_jobs")
+    .select("id, agent_id, run_id, status, stage")
+    .eq("user_id", userId)
+    .in("status", ["queued", "running"])
+    .or("stage.is.null,and(stage.neq.progress-report,stage.neq.week-feedback)")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (open?.[0]) return json({ jobId: open[0].id, status: open[0].status, existing: true, kind: "chat" });
+
+  const [{ data: plan }, { data: changes }, { data: acts }, recovery] = await Promise.all([
+    userClient.from("plans").select(PLAN_FIELDS).eq("user_id", userId).maybeSingle(),
+    userClient.from("changes").select("id, type, summary, details, status, created_at").eq("user_id", userId).eq("status", "pending").order("created_at", { ascending: false }),
+    userClient.from("activities").select("started_at, activity_type, distance, avg_pace, avg_hr, title").eq("user_id", userId).order("started_at", { ascending: false }).limit(200),
+    loadRecovery(userClient, userId),
+  ]);
+  if (!plan) return json({ error: "No plan" }, 400);
+  const blocked = await stravaBlockedStarts(userClient, userId);
+  const visibleActs = omitStravaActs(acts, blocked);
+
+  const start = new Date(`${plan.start_date}T00:00:00`);
+  const today = new Date();
+  const week = Math.floor((today.getTime() - start.getTime()) / 86400000 / 7) + 1;
+  const header = planHeader(plan, week);
+  const execution = weekExecutionSnapshot(plan, visibleActs as Record<string, unknown>[], week);
+  const pendingForCoach = (changes || []).filter((c) => c.type !== "adapt");
+  const thread = messages.map((m) => ({
+    role: m.role,
+    content: String(m.content || "").slice(0, 2000),
+  }));
+
+  const prompt = [
+    "You are the training-plan coach for this athlete in a live chat. Do not write code or files.",
+    "Read the snapshot and chat thread. Reply as the coach in the JSON fields below.",
+    "Answer the athlete's latest message clearly. You may also adjust the plan when warranted.",
+    "",
+    `User id: ${userId}`,
+    ...header.lines,
+    plan.notes ? `Athlete notes: ${plan.notes}` : "",
+    "",
+    "Current paces / effort guide:",
+    JSON.stringify(plan.paces || []),
+    "",
+    "Weeks:",
+    JSON.stringify(compactWeeks(plan.weeks || [])),
+    "",
+    "Current week execution:",
+    JSON.stringify(execution),
+    "",
+    "Pending plan changes (events/busy/import — not adaptations):",
+    JSON.stringify(pendingForCoach),
+    "",
+    "Chat thread (oldest → newest). Reply to the latest user message:",
+    JSON.stringify(thread),
+    "",
+    "Recent activities:",
+    JSON.stringify(compactActs(visibleActs)),
+    "",
+    "Recovery summary:",
+    JSON.stringify(recovery.summary),
+    "Recent wellness days:",
+    JSON.stringify(compactWellness(recovery.wellness)),
+    "Training metrics:",
+    JSON.stringify(compactMetrics(recovery.metrics)),
+    "",
+    "Sport rules:",
+    ...sportRules(header.sport, plan.distance_preset),
+    "- If things look poor (missed key sessions, niggles, easy days too hard), hold or ease intensity. Do not tighten pace.",
+    ...recoveryRules(),
+    ...adaptationRules(),
+    "",
+    "JSON shape:",
+    '{"summary":"one short sentence for toasts","reply":"2-6 sentence chat reply the athlete will read","alert":null,"hold":false,"paces":null,"weekNotes":{},"weekFeedback":{},"activityFeedback":{},"adaptations":[],"applyChangeIds":[]}',
+    "- reply: the main chat answer. Be concrete and athlete-facing. Prefer reply over dumping everything into summary.",
+    '- paces: array of [name, pace, use] like the current paces, or null to leave them.',
+    '- weekNotes: { "11": "note" } keys are week numbers. Only weeks you change.',
+    '- weekFeedback: { "11": "feedback" } for completed weeks you reviewed.',
+    '- activityFeedback: { "<started_at>": "feedback" } using the activity started_at values.',
+    "- adaptations: optional array of week rebuild/rescue/niggle proposals (see rules). Stored as pending for the athlete to Accept — not applied automatically.",
+    "- applyChangeIds: pending change ids you accounted for (never adapt ids).",
+    "- hold: true if you did not change paces or weekly km.",
+    "- alert: null, or one short athlete-facing warning when the plan looks too heavy / paces should ease. Not a second summary.",
+  ].filter(Boolean).join("\n");
+
+  const created = await fetch("https://api.cursor.com/v1/agents", {
+    method: "POST",
+    headers: {
+      Authorization: cursorAuth(cursorKey),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Coach chat",
+      prompt: { text: prompt },
+      model: coachModel(),
+    }),
+  });
+  const payload = await created.json().catch(() => ({}));
+  if (!created.ok) {
+    return json({
+      error: payload.message || payload.error || `Cursor API ${created.status}`,
+    }, 502);
+  }
+
+  const agentId = payload.agent?.id || payload.id;
+  const runId = payload.run?.id || payload.agent?.latestRunId || null;
+  if (!agentId) return json({ error: "Cursor did not return an agent id", raw: payload }, 502);
+
+  const { data: job, error: jobErr } = await userClient
+    .from("coach_jobs")
+    .insert({
+      user_id: userId,
+      agent_id: agentId,
+      run_id: runId,
+      status: "running",
+      stage: "chat",
+    })
+    .select("id, status, agent_id")
+    .single();
+  if (jobErr) return json({ error: jobErr.message }, 500);
+
+  return json({ jobId: job.id, status: job.status, agentId, kind: "chat" });
 }
 
 async function handleProgress(userClient: ReturnType<typeof createClient>, userId: string, snapshot: Record<string, unknown> | null) {
@@ -845,15 +1064,22 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
   if (error || !job) return json({ error: "Job not found" }, 404);
   if (job.status === "applied" || job.status === "error") {
     const result = job.result && typeof job.result === "object"
-      ? job.result as { report?: string; week?: number; fingerprint?: string; alert?: string | null }
+      ? job.result as { report?: string; reply?: string; week?: number; fingerprint?: string; alert?: string | null }
       : null;
-    const kind = job.stage === "progress-report" ? "progress" : job.stage === "week-feedback" ? "feedback" : undefined;
+    const kind = job.stage === "progress-report"
+      ? "progress"
+      : job.stage === "week-feedback"
+        ? "feedback"
+        : job.stage === "chat"
+          ? "chat"
+          : undefined;
     return json({
       jobId: job.id,
       status: job.status,
       summary: job.summary,
       error: job.error,
       report: result?.report || job.summary || "",
+      reply: typeof result?.reply === "string" ? result.reply : "",
       week: result?.week ?? null,
       fingerprint: result?.fingerprint,
       alert: typeof result?.alert === "string" && result.alert.trim() ? result.alert.trim() : null,
@@ -976,19 +1202,31 @@ async function handleStatus(userClient: ReturnType<typeof createClient>, userId:
   }
 
   const alert = typeof patch.alert === "string" && patch.alert.trim() ? patch.alert.trim() : null;
-  const result = { ...patch, alert };
+  const reply = assistantReplyFromPatch(patch);
+  const summary = String(patch.summary || (job.stage === "chat" ? "Coach replied" : "Plan reviewed")).trim();
+  const result = { ...patch, alert, reply };
   await userClient.from("coach_jobs").update({
     status: "applied",
-    summary: patch.summary || "Plan reviewed",
+    summary,
     result,
     updated_at: new Date().toISOString(),
   }).eq("id", job.id);
 
+  if (job.stage === "chat" && reply) {
+    try {
+      await insertAssistantMessage(userClient, userId, reply, job.id);
+    } catch {
+      // Plan patch already applied; chat UI can still show summary via job result.
+    }
+  }
+
   return json({
     jobId: job.id,
     status: "applied",
-    summary: patch.summary || "Plan reviewed",
+    summary,
+    reply,
     alert,
+    kind: job.stage === "chat" ? "chat" : undefined,
   });
 }
 

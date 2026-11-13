@@ -550,13 +550,7 @@ function todayActionsHtml(plan, ds, statusClass) {
     return `
       <div class="today-actions">
         <button class="button ghost small" type="button" data-action="unbusy" data-date="${esc(ds)}">${esc(tt("home.todayUnbusy"))}</button>
-        <button class="button ghost small" type="button" data-action="today-ask-toggle" aria-expanded="false">${esc(tt("home.todayAsk"))}</button>
-      </div>
-      <div class="today-panel" data-today-panel="ask" hidden>
-        <form class="today-ask-form" data-date="${esc(ds)}">
-          <input type="text" name="text" maxlength="280" required placeholder="${esc(tt("home.todayAskPlaceholder"))}" />
-          <button class="button small" type="submit">${esc(tt("home.todayAskSend"))}</button>
-        </form>
+        <button class="button ghost small" type="button" data-action="today-ask-toggle">${esc(tt("home.todayAsk"))}</button>
       </div>`;
   }
 
@@ -583,16 +577,10 @@ function todayActionsHtml(plan, ds, statusClass) {
     <div class="today-actions">
       ${canBusy ? `<button class="button ghost small" type="button" data-action="today-busy" data-date="${esc(ds)}">${esc(tt("common.busy"))}</button>` : ""}
       ${canMove ? `<button class="button ghost small" type="button" data-action="today-move-toggle" aria-expanded="false">${esc(tt("home.todayMove"))}</button>` : ""}
-      <button class="button ghost small" type="button" data-action="today-ask-toggle" aria-expanded="false">${esc(tt("home.todayAsk"))}</button>
+      <button class="button ghost small" type="button" data-action="today-ask-toggle">${esc(tt("home.todayAsk"))}</button>
       ${canIcs ? `<button class="button ghost small" type="button" data-action="today-ics" data-date="${esc(ds)}">${esc(tt("home.todayCalendar"))}</button>` : ""}
     </div>
-    ${movePanel}
-    <div class="today-panel" data-today-panel="ask" hidden>
-      <form class="today-ask-form" data-date="${esc(ds)}">
-        <input type="text" name="text" maxlength="280" required placeholder="${esc(tt("home.todayAskPlaceholder"))}" />
-        <button class="button small" type="submit">${esc(tt("home.todayAskSend"))}</button>
-      </form>
-    </div>`;
+    ${movePanel}`;
 }
 
 function todaySessionCard(acts, now) {
@@ -710,15 +698,10 @@ function toggleTodayPanel(name) {
     const on = panel.dataset.todayPanel === name && panel.hasAttribute("hidden");
     panel.toggleAttribute("hidden", !on);
   });
-  card.querySelectorAll("[data-action=today-move-toggle], [data-action=today-ask-toggle]").forEach((btn) => {
-    const panelName = btn.dataset.action === "today-move-toggle" ? "move" : "ask";
-    const panel = card.querySelector(`[data-today-panel="${panelName}"]`);
+  card.querySelectorAll("[data-action=today-move-toggle]").forEach((btn) => {
+    const panel = card.querySelector('[data-today-panel="move"]');
     btn.setAttribute("aria-expanded", panel && !panel.hidden ? "true" : "false");
   });
-  if (name === "ask") {
-    const input = card.querySelector('.today-ask-form input[name="text"]');
-    if (input && !card.querySelector('[data-today-panel="ask"]')?.hidden) input.focus();
-  }
 }
 
 async function moveTodaySession(fromDs, toDs) {
@@ -883,10 +866,10 @@ function renderHome(acts, now) {
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
 
     ${changesN ? `
-      <a class="changes-banner" href="/plan">
+      <button class="changes-banner" type="button" data-action="open-coach-chat">
         <strong>${changesN === 1 ? tt("home.changesOne") : tt("home.changesMany", { count: changesN })}</strong>
         <span>${tt("home.changesReview")}</span>
-      </a>` : ""}
+      </button>` : ""}
 
     ${zone === "today" ? todayZone : weekZone}
     <p class="footnote">${footnote}</p>
