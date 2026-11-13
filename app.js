@@ -977,7 +977,7 @@ function reviewBlock(week, acts, now) {
     <p class="auto-text">${esc(weekFeedback(week, acts, now))}</p>`;
 }
 
-function reviewCard(acts, now) {
+function reviewCard(acts, now, opts = {}) {
   const week = reviewWeek(acts, now);
   if (!week) return "";
   const isCurrent = week.wk === weekOf(now);
@@ -986,6 +986,7 @@ function reviewCard(acts, now) {
   const aiSessions = reviewWeekActs(week, aiActs);
   const writing = FEEDBACK_STATUS === "writing";
   const hasNote = !!FEEDBACK.weeks[String(week.wk)];
+  const planNote = opts.includePlanNote ? String(week.note || "").trim() : "";
   const current = aiSessions.length > 0 && feedbackIsCurrent(week, aiActs);
   const showButton = writing || (aiSessions.length > 0 && !current);
   const label = writing ? "Writing…" : hasNote ? "Update feedback" : "Request feedback";
@@ -1000,12 +1001,13 @@ function reviewCard(acts, now) {
     <section class="card review">
       <div class="card-head">
         <div>
-          <div class="eyebrow">${isCurrent ? "This week" : "Last week"} · review</div>
-          <h2>Week ${week.wk} feedback</h2>
+          <div class="eyebrow">${isCurrent ? tt("home.thisWeekReview") : tt("home.lastWeekReview")}</div>
+          <h2>${tt("home.weekFeedbackTitle", { week: week.wk })}</h2>
         </div>
         ${showButton ? `<button type="button" class="button ghost small" data-action="request-feedback"${writing ? " disabled" : ""}>${label}</button>` : ""}
       </div>
       ${reviewBlock(week, acts, now)}
+      ${planNote ? `<p class="week-review-note">${esc(planNote)}</p>` : ""}
       ${hint ? `<p class="muted small-text">${hint}</p>` : ""}
     </section>`;
 }
@@ -1987,22 +1989,22 @@ function eventsCard(now, upcoming, opts = {}) {
 }
 
 function renderPastEvents(now) {
-  const past = pastEventsList(now);
+  const upcoming = upcomingEventsList(now, ACTS);
+  const past = pastEventsList(now, ACTS);
   return `
     <section class="hero compact">
       <div>
-        <div class="eyebrow"><a href="/home">Home</a> · Events</div>
-        <h1>Past events</h1>
-        <p class="muted">${past.length
-          ? `${past.length} finished event${past.length === 1 ? "" : "s"}`
-          : "No past events yet."}</p>
+        <div class="eyebrow"><a href="/home">${tt("nav.home")}</a> · ${tt("nav.events")}</div>
+        <h1>${tt("home.upcomingEvents")}</h1>
+        <p class="muted">${upcoming.length
+          ? tt("events.upcomingCount", { count: upcoming.length })
+          : past.length
+            ? tt("events.noneUpcoming")
+            : tt("events.emptyLead")}</p>
       </div>
     </section>
-    <section class="card">
-      <ul class="events">
-        ${past.map((e) => eventListItem(e, now, { past: true })).join("") || `<li class="muted">Nothing here yet. Finished events show up after their date.</li>`}
-      </ul>
-    </section>`;
+    ${eventsCard(now, upcoming, { acts: ACTS })}
+  `;
 }
 
 function eventPresetKm(sport, presetId) {
@@ -3919,6 +3921,16 @@ document.addEventListener("click", async (e) => {
     requestWeekFeedback();
     return;
   }
+  if (btn.dataset.action === "toggle-recovery") {
+    if (typeof toggleRecoveryPanel === "function") toggleRecoveryPanel();
+    return;
+  }
+  if (btn.dataset.action === "home-zone") {
+    if (typeof setHomeZone === "function") setHomeZone(btn.dataset.zone);
+    if (btn.dataset.zone === "today") HOME_WEEK = null;
+    render(true);
+    return;
+  }
   if (btn.dataset.action === "home-week-prev" || btn.dataset.action === "home-week-next" || btn.dataset.action === "home-week-today") {
     if (!hasPlan()) return;
     const calendarWk = calendarPlanWeek(today());
@@ -3927,6 +3939,7 @@ document.addEventListener("click", async (e) => {
     else if (btn.dataset.action === "home-week-prev") HOME_WEEK = Math.max(1, cur - 1);
     else HOME_WEEK = Math.min(WEEKS.length, cur + 1);
     if (HOME_WEEK === calendarWk) HOME_WEEK = null;
+    if (typeof setHomeZone === "function") setHomeZone("week");
     render(true);
     return;
   }
