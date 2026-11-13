@@ -128,6 +128,40 @@ function paintPasswordRules(form, checked) {
 const authLink = readAuthLink();
 let pendingRecovery = authLink.type === "recovery" && !authLink.error;
 let suppressAuthNavigation = false;
+let confirmResendTimer = null;
+const CONFIRM_RESEND_COOLDOWN_SEC = 15;
+
+function clearConfirmResendTimer() {
+  if (confirmResendTimer) {
+    clearInterval(confirmResendTimer);
+    confirmResendTimer = null;
+  }
+}
+
+function paintConfirmResendButton(btn, secondsLeft) {
+  if (!btn) return;
+  const waiting = secondsLeft > 0;
+  btn.disabled = waiting;
+  btn.textContent = waiting
+    ? tt("auth.resendConfirmIn", { seconds: secondsLeft })
+    : tt("auth.resendConfirm");
+}
+
+function startConfirmResendCooldown(form, seconds = CONFIRM_RESEND_COOLDOWN_SEC) {
+  if (!form) return;
+  const btn = form.querySelector(".resend-confirm-row");
+  if (!btn) return;
+  btn.hidden = false;
+  clearConfirmResendTimer();
+  let left = Math.max(0, Math.floor(seconds));
+  paintConfirmResendButton(btn, left);
+  if (left <= 0) return;
+  confirmResendTimer = setInterval(() => {
+    left -= 1;
+    paintConfirmResendButton(btn, left);
+    if (left <= 0) clearConfirmResendTimer();
+  }, 1000);
+}
 
 async function getAccessToken() {
   const { data: { session } } = await sb.auth.getSession();
@@ -207,15 +241,21 @@ function renderLogin(message = "", options = {}) {
         <p class="auth-links">
           <button class="text-button forgot-row" type="button" data-auth-mode="forgot">${tt("auth.forgot")}</button>
           <button class="text-button back-row" type="button" data-auth-mode="signin" hidden>${tt("auth.backSignIn")}</button>
+          <button class="text-button resend-confirm-row" type="button" data-action="resend-confirm" hidden>${tt("auth.resendConfirm")}</button>
         </p>
       </form>
     </section>`;
+  clearConfirmResendTimer();
   setAuthMode(options.mode || "signin");
   const form = document.querySelector(".auth-form");
   if (form && options.email) form.email.value = options.email;
   if (form && message) {
     const slot = options.tone === "ok" ? ".form-note" : ".form-error";
     form.querySelector(slot).textContent = message;
+  }
+  if (form && options.awaitConfirm) {
+    form.dataset.awaitConfirm = "1";
+    startConfirmResendCooldown(form);
   }
 }
 
@@ -276,6 +316,12 @@ function setAuthMode(mode) {
   form.querySelector(".password-rules").hidden = !signup;
   form.querySelector(".forgot-row").hidden = mode !== "signin";
   form.querySelector(".back-row").hidden = !forgot;
+  const resendRow = form.querySelector(".resend-confirm-row");
+  if (resendRow) {
+    resendRow.hidden = true;
+    clearConfirmResendTimer();
+  }
+  delete form.dataset.awaitConfirm;
   const tabs = document.querySelector(".auth-tabs");
   if (tabs) tabs.hidden = forgot;
   const lead = document.querySelector(".auth-lead");
@@ -371,6 +417,16 @@ async function enterApp(session) {
   const uid = session?.user?.id;
   if (!uid) return;
   if (enterAppInFlight && enterAppUserId === uid) return enterAppInFlight;
+  // Same user already in the app: auth events must not wipe Home back to "Loading…".
+  if (
+    window.CURRENT_USER_ID === uid
+    && typeof window.isAppReady === "function"
+    && window.isAppReady()
+    && !document.body.classList.contains("logged-out")
+    && !document.querySelector(".auth-form")
+  ) {
+    return;
+  }
   const gen = ++enterAppGen;
   enterAppUserId = uid;
   enterAppInFlight = (async () => {
@@ -390,18 +446,26 @@ async function enterApp(session) {
         if (handled || !stillCurrent()) return;
       }
       const routeBase = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+      const setupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
       const stayingOnSetup = document.body.classList.contains("onboarding")
         || routeBase === "setup"
         || routeBase === "create-plan"
-        || !!document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+        || !!setupUi;
       if (stayingOnSetup) {
+        // Re-read the URL: the user may have Cancel'd to Home while we awaited profile load.
+        const liveRoute = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+        if (liveRoute === "home" || liveRoute === "") {
+          revealAppChrome();
+          if (typeof window.bootApp === "function") await window.bootApp();
+          return;
+        }
         // Full reload of /setup or /create-plan used to return here with only "Loading…".
-        const setupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-        if (!setupUi && routeBase === "create-plan" && typeof window.renderCreatePlan === "function") {
+        const liveSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+        if (!liveSetupUi && liveRoute === "create-plan" && typeof window.renderCreatePlan === "function") {
           window.renderCreatePlan();
-        } else if (!setupUi && typeof window.renderOnboarding === "function") {
+        } else if (!liveSetupUi && liveRoute === "setup" && typeof window.renderOnboarding === "function") {
           window.renderOnboarding();
-        } else if (!setupUi && typeof window.bootApp === "function") {
+        } else if (!liveSetupUi && typeof window.bootApp === "function") {
           revealAppChrome();
           await window.bootApp();
         }
@@ -412,9 +476,13 @@ async function enterApp(session) {
       if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step, .setup-creating")) {
         return;
       }
-      if (ready && typeof window.bootApp === "function") {
+      if (typeof window.bootApp === "function") {
         revealAppChrome();
-        await window.bootApp();
+        // Always boot when ensurePlan says ready — and as a failsafe when we're on a
+        // normal app route with no setup UI (avoids a permanent "Loading…" screen).
+        if (ready || ["home", "activities", "events", "gear", "profile", "connections", "settings", "progress", "plan", ""].includes(routeBase)) {
+          await window.bootApp();
+        }
       }
     } catch (err) {
       if (!stillCurrent()) return;
@@ -441,6 +509,38 @@ window.resetAuthEntry = resetAuthEntry;
 document.addEventListener("click", (e) => {
   const tab = e.target.closest("[data-auth-mode]");
   if (tab) setAuthMode(tab.dataset.authMode);
+  const resendBtn = e.target.closest("[data-action=resend-confirm]");
+  if (resendBtn) {
+    e.preventDefault();
+    const form = resendBtn.closest(".auth-form");
+    if (!form || resendBtn.disabled) return;
+    const errorEl = form.querySelector(".form-error");
+    const noteEl = form.querySelector(".form-note");
+    const email = form.email ? form.email.value.trim() : "";
+    errorEl.textContent = "";
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errorEl.textContent = "Enter a valid email.";
+      return;
+    }
+    resendBtn.disabled = true;
+    sb.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: authRedirectTo("/setup") },
+    }).then(({ error }) => {
+      if (error) {
+        errorEl.textContent = error.message || "Could not resend confirmation.";
+        paintConfirmResendButton(resendBtn, 0);
+        return;
+      }
+      noteEl.textContent = tt("auth.confirmResent");
+      startConfirmResendCooldown(form);
+    }).catch((err) => {
+      errorEl.textContent = err.message || "Could not resend confirmation.";
+      paintConfirmResendButton(resendBtn, 0);
+    });
+    return;
+  }
   if (e.target.closest("[data-action=cancel-recovery]")) {
     e.preventDefault();
     pendingRecovery = false;
@@ -532,7 +632,12 @@ document.addEventListener("submit", async (e) => {
         if (email) localStorage.setItem(`setup-pending-connect-email:${email.toLowerCase()}`, "1");
       } catch { /* ignore */ }
       if (!data.session) {
-        renderLogin("Account created. Check your email to confirm, then sign in.", { mode: "signin", tone: "ok", email });
+        renderLogin(tt("auth.accountCreated"), {
+          mode: "signin",
+          tone: "ok",
+          email,
+          awaitConfirm: true,
+        });
         return;
       }
       renderAuthLoading();
@@ -561,6 +666,9 @@ sb.auth.onAuthStateChange((event, session) => {
     renderPasswordReset(session?.user?.email || "");
     return;
   }
+  // Token refresh must not re-run enterApp — that wipes the UI with "Loading…"
+  // and can reopen setup after the user cancelled or removed a plan.
+  if (event === "TOKEN_REFRESHED") return;
   if (session) {
     enterApp(session);
     return;

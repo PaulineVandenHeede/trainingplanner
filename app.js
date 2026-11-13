@@ -4695,8 +4695,19 @@ document.addEventListener("click", async (e) => {
         if (authForm) {
           const mode = authForm.dataset.mode || "signin";
           const email = authForm.email?.value || "";
+          const awaitConfirm = authForm.dataset.awaitConfirm === "1";
+          const note = awaitConfirm
+            ? (typeof window.t === "function" ? window.t("auth.accountCreated") : "")
+            : (authForm.querySelector(".form-note")?.textContent || "");
           if (mode === "recovery") renderPasswordReset(email);
-          else renderLogin("", { mode: mode === "forgot" || mode === "signup" ? mode : "signin", email });
+          else {
+            renderLogin(note, {
+              mode: mode === "forgot" || mode === "signup" ? mode : "signin",
+              email,
+              awaitConfirm,
+              tone: note ? "ok" : undefined,
+            });
+          }
         }
       }
     }
