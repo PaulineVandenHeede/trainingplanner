@@ -29,24 +29,30 @@
       <span class="brand-name" data-i18n="brand.name">Training Pal</span>
     </a>
     <nav>
-      <a href="/home" class="nav-btn" data-route="home" title="Home" aria-label="Home" data-i18n-title="nav.home" data-i18n-aria="nav.home">
+      <a href="/home" class="nav-btn nav-collapse" data-route="home" title="Home" aria-label="Home" data-i18n-title="nav.home" data-i18n-aria="nav.home">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 10.8 12 4l8 6.8V20a1 1 0 0 1-1 1h-5.2v-6.2H10.2V21H5a1 1 0 0 1-1-1z"/>
         </svg>
       </a>
-      <a href="/plan" class="nav-btn" data-route="plan" title="Full plan" aria-label="Full plan" data-i18n-title="nav.plan" data-i18n-aria="nav.plan">
+      <a href="/plan" class="nav-btn nav-collapse" data-route="plan" title="Full plan" aria-label="Full plan" data-i18n-title="nav.plan" data-i18n-aria="nav.plan">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3.5" y="5" width="17" height="15.5" rx="2"/>
           <path d="M8 3.5v3M16 3.5v3M3.5 9.5h17"/>
         </svg>
         <span class="nav-badge" hidden></span>
       </a>
-      <a href="/activities" class="nav-btn" data-route="activities" title="All activities" aria-label="All activities" data-i18n-title="nav.activities" data-i18n-aria="nav.activities">
+      <a href="/activities" class="nav-btn nav-collapse" data-route="activities" title="All activities" aria-label="All activities" data-i18n-title="nav.activities" data-i18n-aria="nav.activities">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M5 7h14M5 12h14M5 17h9"/>
         </svg>
       </a>
-      <a href="/gear" class="nav-btn" data-route="gear" title="Gear" aria-label="Gear" data-i18n-title="nav.gear" data-i18n-aria="nav.gear">
+      <a href="/events" class="nav-btn nav-collapse" data-route="events" title="Events" aria-label="Events" data-i18n-title="nav.events" data-i18n-aria="nav.events">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 21V4.5"/>
+          <path d="M6 4.5h9.5l-1.8 3.2 1.8 3.2H6"/>
+        </svg>
+      </a>
+      <a href="/gear" class="nav-btn nav-collapse" data-route="gear" title="Gear" aria-label="Gear" data-i18n-title="nav.gear" data-i18n-aria="nav.gear">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 8.4h8a2 2 0 0 1 2 2V19a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-8.6a2 2 0 0 1 2-2z"/>
           <path d="M9 8.4V7a3 3 0 0 1 6 0v1.4"/>
@@ -69,6 +75,23 @@
         </svg>
       </button>
       <input type="file" id="csv-input" accept=".csv,text/csv" hidden />
+      <div class="nav-more">
+        <button class="nav-btn nav-more-btn" type="button" data-action="nav-more" aria-haspopup="menu" aria-expanded="false" aria-controls="nav-more-panel" title="More" aria-label="More navigation" data-i18n-title="nav.more" data-i18n-aria="nav.moreAria">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="6" cy="12" r="1.35" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none"/>
+            <circle cx="18" cy="12" r="1.35" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="nav-badge nav-more-badge" hidden></span>
+        </button>
+        <div class="nav-more-panel" id="nav-more-panel" role="menu" hidden>
+          <a href="/home" role="menuitem" data-route="home" data-i18n="nav.home">Home</a>
+          <a href="/plan" role="menuitem" data-route="plan"><span data-i18n="nav.plan">Full plan</span><span class="nav-badge" hidden></span></a>
+          <a href="/activities" role="menuitem" data-route="activities" data-i18n="nav.activities">All activities</a>
+          <a href="/events" role="menuitem" data-route="events" data-i18n="nav.events">Events</a>
+          <a href="/gear" role="menuitem" data-route="gear" data-i18n="nav.gear">Gear</a>
+        </div>
+      </div>
       <div class="account-menu">
         <button class="nav-btn user-chip" type="button" data-action="account-menu" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel" title="Account" aria-label="Account menu" data-i18n-title="nav.account" data-i18n-aria="nav.accountAria">
           <span class="user-avatar" id="user-avatar" aria-hidden="true">?</span>
@@ -78,9 +101,11 @@
           <a href="/profile" role="menuitem" data-route="profile" data-i18n="nav.overview">Overview</a>
           <a href="/connections" role="menuitem" data-route="connections" data-i18n="nav.connections">Connections</a>
           <a href="/settings" role="menuitem" data-route="settings" data-i18n="nav.settings">Settings</a>
+          <button type="button" role="menuitem" class="account-menu-action" data-action="import" data-i18n="nav.importAria">Import CSV</button>
+          <button type="button" role="menuitem" class="account-menu-action" data-action="logout" data-i18n="nav.logout">Sign out</button>
         </div>
       </div>
-      <button class="nav-btn" type="button" data-action="logout" title="Sign out" aria-label="Sign out" data-i18n-title="nav.logout" data-i18n-aria="nav.logout">
+      <button class="nav-btn logout-btn" type="button" data-action="logout" title="Sign out" aria-label="Sign out" data-i18n-title="nav.logout" data-i18n-aria="nav.logout">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M10 5H6.2A1.2 1.2 0 0 0 5 6.2v11.6A1.2 1.2 0 0 0 6.2 19H10"/>
           <path d="M13 12h7M17.2 8.8 20.5 12l-3.3 3.2"/>
@@ -102,5 +127,7 @@
   <script src="/connections.js"></script>
   <script src="/progress.js"></script>
   <script src="/home.js"></script>
+  <script src="/share-card.js"></script>
+  <script src="/live-session.js"></script>
 </body>
 </html>

@@ -446,41 +446,28 @@ async function enterApp(session) {
         if (handled || !stillCurrent()) return;
       }
       const routeBase = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
-      const setupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-      const stayingOnSetup = document.body.classList.contains("onboarding")
-        || routeBase === "setup"
-        || routeBase === "create-plan"
-        || !!setupUi;
-      if (stayingOnSetup) {
-        // Re-read the URL: the user may have Cancel'd to Home while we awaited profile load.
-        const liveRoute = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
-        if (liveRoute === "home" || liveRoute === "") {
-          revealAppChrome();
-          if (typeof window.bootApp === "function") await window.bootApp();
-          return;
-        }
-        // Full reload of /setup or /create-plan used to return here with only "Loading…".
-        const liveSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-        if (!liveSetupUi && liveRoute === "create-plan" && typeof window.renderCreatePlan === "function") {
-          window.renderCreatePlan();
-        } else if (!liveSetupUi && liveRoute === "setup" && typeof window.renderOnboarding === "function") {
-          window.renderOnboarding();
-        } else if (!liveSetupUi && typeof window.bootApp === "function") {
-          revealAppChrome();
-          await window.bootApp();
-        }
-        return;
-      }
+      // Always resolve this user's plan first. Leftover /setup from a previous no-plan
+      // account must not skip the DB load or reopen onboarding for someone who already has a plan.
       const ready = typeof window.ensurePlan === "function" ? await window.ensurePlan(session.user) : true;
       if (!stillCurrent()) return;
-      if (document.body.classList.contains("onboarding") || document.querySelector(".setup-form, .setup-connect-step, .setup-creating")) {
+      const liveRoute = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+      if (liveRoute === "create-plan") {
+        const hasForm = document.querySelector(".setup-form[data-create-only='1']");
+        if (!hasForm && typeof window.renderCreatePlan === "function") window.renderCreatePlan();
         return;
+      }
+      if (document.body.classList.contains("onboarding")
+        || document.querySelector(".setup-form, .setup-connect-step, .setup-creating")
+        || liveRoute === "setup") {
+        // ensurePlan already opened setup for a true first-time user — stay there.
+        if (!ready) return;
+        // Returning user with a plan/skip: leave leftover setup chrome and boot Home.
       }
       if (typeof window.bootApp === "function") {
         revealAppChrome();
         // Always boot when ensurePlan says ready — and as a failsafe when we're on a
         // normal app route with no setup UI (avoids a permanent "Loading…" screen).
-        if (ready || ["home", "activities", "events", "gear", "profile", "connections", "settings", "progress", "plan", ""].includes(routeBase)) {
+        if (ready || ["home", "activities", "events", "gear", "profile", "connections", "settings", "progress", "plan", ""].includes(liveRoute || routeBase)) {
           await window.bootApp();
         }
       }
@@ -616,6 +603,21 @@ document.addEventListener("submit", async (e) => {
       if (error) throw error;
       pendingRecovery = false;
       clearAuthParams();
+      // Recovery must not reopen onboarding (leftover /setup or pending-connect flags).
+      try {
+        sessionStorage.removeItem("setup-pending-connect");
+        const emailKey = email ? `setup-pending-connect-email:${email.toLowerCase()}` : "";
+        if (emailKey) localStorage.removeItem(emailKey);
+      } catch { /* ignore */ }
+      if (typeof window.leaveSetupRouteIfNeeded === "function") {
+        window.leaveSetupRouteIfNeeded();
+      } else {
+        const base = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+        if (base === "setup" || base === "create-plan") {
+          document.body.classList.remove("onboarding");
+          history.replaceState(null, "", "/home" + location.search);
+        }
+      }
       const { data: { session } } = await sb.auth.getSession();
       if (session) await enterApp(session);
       return;
@@ -698,6 +700,15 @@ sb.auth.getSession().then(({ data: { session } }) => {
     clearAuthParams();
     return;
   }
+  // PKCE email links land with ?code=… and no type= yet. Let onAuthStateChange
+  // decide (PASSWORD_RECOVERY vs normal sign-in) so we don't boot into /setup first.
+  try {
+    const q = new URLSearchParams(location.search);
+    const hash = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : "");
+    if (q.get("code") || hash.get("access_token") || hash.get("type") === "recovery") {
+      return;
+    }
+  } catch { /* ignore */ }
   if (session) {
     enterApp(session).then(() => {
       if (authLink.error) clearAuthParams();

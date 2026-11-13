@@ -13,8 +13,20 @@ const STRAVA_SCOPES = "read,activity:read_all,profile:read_all";
 /** First connect / deep backfill window — long enough to keep prior race evidence (e.g. a spring half). */
 const FIRST_SYNC_DAYS = 365;
 const PAGE_SIZE = 50;
-const DETAIL_BUDGET = 40;
+/** Cap list pages per sync so one athlete cannot burn the shared 15‑min quota. */
+const MAX_LIST_PAGES = 4;
+const DETAIL_BUDGET = 15;
+const DEFAULT_RETRY_AFTER_SEC = 60;
 const STATE_TTL_MS = 15 * 60 * 1000;
+
+class RateLimitError extends Error {
+  retryAfterSec: number;
+  constructor(step: string, retryAfterSec = DEFAULT_RETRY_AFTER_SEC) {
+    super(`Strava rate limit hit during ${step} — wait about ${retryAfterSec}s then Sync again.`);
+    this.name = "RateLimitError";
+    this.retryAfterSec = retryAfterSec;
+  }
+}
 
 /** Temporary placeholders until real Strava API credentials are set as Edge Function secrets. */
 const TEMP = {
@@ -47,18 +59,8 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
 
-  const auth = req.headers.get("Authorization") || "";
-  if (!auth.startsWith("Bearer ")) return json({ error: "Sign in required" }, 401);
-
   const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
-  const anon = req.headers.get("apikey") || Deno.env.get("SUPABASE_ANON_KEY") || "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-  const userClient = createClient(supabaseUrl, anon, {
-    global: { headers: { Authorization: auth } },
-  });
-  const { data: userData, error: userErr } = await userClient.auth.getUser();
-  const user = userData?.user;
-  if (userErr || !user) return json({ error: "Sign in required" }, 401);
   if (!serviceKey) return json({ error: "Server misconfigured" }, 500);
   const admin = createClient(supabaseUrl, serviceKey);
 
@@ -70,6 +72,8 @@ Deno.serve(async (req) => {
     state?: string;
     full?: boolean;
     deep?: boolean;
+    before?: number | null;
+    userId?: string;
     shareWithCoach?: boolean;
     returnTo?: string;
   } = {};
@@ -80,6 +84,43 @@ Deno.serve(async (req) => {
   }
 
   const action = body.action || "status";
+
+  // Temporary operator path: full/deep sync for a target user without their browser session.
+  if (action === "admin_sync") {
+    try {
+      assertPasscode(body.passcode || "");
+      const targetUserId = String(body.userId || "").trim();
+      if (!/^[0-9a-f-]{36}$/i.test(targetUserId)) {
+        return json({ error: "Valid userId required." }, 400);
+      }
+      const before = Number(body.before);
+      return json(await handleSync(
+        admin,
+        targetUserId,
+        body.full === true,
+        body.deep === true,
+        Number.isFinite(before) && before > 0 ? Math.floor(before) : null,
+      ));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Strava request failed";
+      const status = /passcode|not configured|Sign in|already linked|Invalid|expired|Connect Strava/i.test(message)
+        ? 400
+        : 500;
+      return json({ error: message }, status);
+    }
+  }
+
+  const auth = req.headers.get("Authorization") || "";
+  if (!auth.startsWith("Bearer ")) return json({ error: "Sign in required" }, 401);
+
+  const anon = req.headers.get("apikey") || Deno.env.get("SUPABASE_ANON_KEY") || "";
+  const userClient = createClient(supabaseUrl, anon, {
+    global: { headers: { Authorization: auth } },
+  });
+  const { data: userData, error: userErr } = await userClient.auth.getUser();
+  const user = userData?.user;
+  if (userErr || !user) return json({ error: "Sign in required" }, 401);
+
   try {
     if (action === "status") return json(await handleStatus(admin, user.id));
     if (action === "connect_url") {
@@ -96,7 +137,14 @@ Deno.serve(async (req) => {
     }
     if (action === "disconnect") return json(await handleDisconnect(admin, user.id));
     if (action === "sync") {
-      return json(await handleSync(admin, user.id, body.full === true, body.deep === true));
+      const before = Number(body.before);
+      return json(await handleSync(
+        admin,
+        user.id,
+        body.full === true,
+        body.deep === true,
+        Number.isFinite(before) && before > 0 ? Math.floor(before) : null,
+      ));
     }
     return json({ error: "Unknown action" }, 400);
   } catch (err) {
@@ -216,21 +264,49 @@ async function handleDisconnect(admin: Sb, userId: string) {
   return { ok: true, connected: false, removed };
 }
 
-async function handleSync(admin: Sb, userId: string, full = false, deep = false) {
+async function handleSync(
+  admin: Sb,
+  userId: string,
+  full = false,
+  deep = false,
+  before: number | null = null,
+) {
   const conn = await loadConn(admin, userId);
   if (!conn) throw new Error("Connect Strava first.");
+
+  let added = 0;
+  let updated = 0;
+  let skippedDup = 0;
+  let total = 0;
+  let detailed = 0;
+  let rateLimited = false;
+  let retryAfterSec = DEFAULT_RETRY_AFTER_SEC;
+  let incomplete = false;
+  let nextBefore: number | null = null;
+  let listHitCap = false;
 
   try {
     const access = await ensureAccessToken(admin, userId, conn);
     // deep: re-open the first-sync lookback even after an earlier short sync (e.g. 90 → 365 days).
     const after = full ? null : syncAfterEpoch(deep ? null : conn.last_sync_at);
-    const summaries = await listActivities(access, after);
+    let summaries: Record<string, unknown>[] = [];
+    try {
+      const listed = await listActivities(access, after, before);
+      summaries = listed.activities;
+      listHitCap = listed.hitPageCap;
+      nextBefore = listed.nextBefore;
+      if (listed.rateLimited) {
+        rateLimited = true;
+        retryAfterSec = listed.retryAfterSec;
+      }
+    } catch (err) {
+      if (!(err instanceof RateLimitError)) throw err;
+      rateLimited = true;
+      retryAfterSec = err.retryAfterSec;
+      incomplete = true;
+    }
+
     const index = await loadActivityIndex(admin, userId);
-    let added = 0;
-    let updated = 0;
-    let skippedDup = 0;
-    let total = 0;
-    let detailed = 0;
     let detailBudget = DETAIL_BUDGET;
     const pendingGear: { startedAt: string; gearId: string; activityType: string }[] = [];
 
@@ -252,15 +328,22 @@ async function handleSync(admin: Sb, userId: string, full = false, deep = false)
 
       const isNew = !index.exact.has(exactKey);
       let detail: Record<string, unknown> | null = null;
-      if (isNew && detailBudget > 0) {
+      // After a 429, finish this in-memory page from summaries only (no more detail GETs).
+      if (!rateLimited && isNew && detailBudget > 0) {
         const id = Number(summary.id);
         if (Number.isFinite(id)) {
           try {
             detail = await getActivity(access, id);
             detailBudget -= 1;
             detailed += 1;
-          } catch {
-            detail = null;
+          } catch (err) {
+            if (err instanceof RateLimitError) {
+              rateLimited = true;
+              retryAfterSec = err.retryAfterSec;
+              detail = null;
+            } else {
+              detail = null;
+            }
           }
         }
       }
@@ -283,41 +366,79 @@ async function handleSync(admin: Sb, userId: string, full = false, deep = false)
       if (gearId) pendingGear.push({ startedAt: row.started_at, gearId, activityType: row.activity_type });
     }
 
+    // Page cap → walk older via nextBefore. Rate limit after a full list → retry same
+    // window (nextBefore null) so gear/zones can finish after backoff.
+    if (listHitCap) {
+      nextBefore = nextBefore || oldestActivityEpoch(summaries);
+    } else if (rateLimited) {
+      nextBefore = null;
+    }
+    incomplete = rateLimited || listHitCap;
+
     let gearAssigned = 0;
     let gearCreated = 0;
     let gearNote = "";
-    try {
-      const gear = await matchStravaGear(admin, userId, access, pendingGear);
-      gearAssigned = gear.assigned;
-      gearCreated = gear.created;
-      gearNote = gear.note ? ` ${gear.note}` : "";
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Gear matching failed";
-      gearNote = ` Gear matching skipped: ${message}`;
+    if (!rateLimited && pendingGear.length) {
+      try {
+        const gear = await matchStravaGear(admin, userId, access, pendingGear);
+        gearAssigned = gear.assigned;
+        gearCreated = gear.created;
+        gearNote = gear.note ? ` ${gear.note}` : "";
+      } catch (err) {
+        if (err instanceof RateLimitError) {
+          rateLimited = true;
+          retryAfterSec = err.retryAfterSec;
+          incomplete = true;
+          nextBefore = null; // retry this window after backoff
+          gearNote = " Gear matching paused — Strava rate limit. Sync again shortly.";
+        } else {
+          const message = err instanceof Error ? err.message : "Gear matching failed";
+          gearNote = ` Gear matching skipped: ${message}`;
+        }
+      }
     }
 
     let metrics: Record<string, unknown> | null = null;
     let metricsNote = "";
-    try {
-      const zonesResult = await syncAthleteZones(admin, userId, access, conn);
-      metrics = zonesResult.metrics;
-      metricsNote = zonesResult.note ? ` ${zonesResult.note}` : "";
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Zone sync failed";
-      metricsNote = ` HR zones skipped: ${message}`;
+    // Zones only on a finishing chunk to avoid extra API calls during backfill.
+    if (!rateLimited && !incomplete) {
+      try {
+        const zonesResult = await syncAthleteZones(admin, userId, access, conn);
+        metrics = zonesResult.metrics;
+        metricsNote = zonesResult.note ? ` ${zonesResult.note}` : "";
+      } catch (err) {
+        if (err instanceof RateLimitError) {
+          rateLimited = true;
+          retryAfterSec = err.retryAfterSec;
+          incomplete = true;
+          nextBefore = null;
+          metricsNote = " HR zones paused — Strava rate limit. Sync again shortly.";
+        } else {
+          const message = err instanceof Error ? err.message : "Zone sync failed";
+          metricsNote = ` HR zones skipped: ${message}`;
+        }
+      }
     }
 
     const now = new Date().toISOString();
     const dupNote = skippedDup ? ` Skipped ${skippedDup} already saved via Garmin.` : "";
+    const chunkNote = incomplete
+      ? (rateLimited
+        ? ` Partial sync — Strava rate limit; retry in ~${retryAfterSec}s.`
+        : " Partial sync — more history left; continuing…")
+      : "";
     const status = full
-      ? `Full history: ${added} added, ${Math.max(0, total - added - skippedDup)} already saved.${dupNote}${gearNote}${metricsNote}`
+      ? `Full history: ${added} added, ${Math.max(0, total - added - skippedDup)} already saved.${dupNote}${gearNote}${metricsNote}${chunkNote}`
       : deep
-        ? `Deep sync (${FIRST_SYNC_DAYS}d): ${added} added, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}`
-        : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}`;
+        ? `Deep sync (${FIRST_SYNC_DAYS}d): ${added} added, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}${chunkNote}`
+        : `Synced ${added} new, ${updated} updated (${total} total${detailed ? `, ${detailed} detailed` : ""}).${dupNote}${gearNote}${metricsNote}${chunkNote}`;
+
+    // Only mark fully caught up when this chunk finishes the lookback window.
+    const syncAt = incomplete ? (conn.last_sync_at || null) : now;
     await admin.from("strava_connections").update({
-      last_sync_at: now,
+      ...(incomplete ? {} : { last_sync_at: now }),
       last_sync_status: status,
-      last_error: null,
+      last_error: rateLimited ? `rate_limited:${retryAfterSec}` : null,
       updated_at: now,
     }).eq("user_id", userId);
 
@@ -334,13 +455,18 @@ async function handleSync(admin: Sb, userId: string, full = false, deep = false)
       metrics,
       full,
       deep,
-      lastSyncAt: now,
+      incomplete,
+      rateLimited,
+      retryAfterSec: rateLimited ? retryAfterSec : null,
+      nextBefore: incomplete ? nextBefore : null,
+      lastSyncAt: syncAt,
       lastSyncStatus: status,
-      lastError: null,
+      lastError: rateLimited ? `rate_limited:${retryAfterSec}` : null,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed";
     const now = new Date().toISOString();
+    // Keep upserts already written; surface error only when nothing useful to continue.
     await admin.from("strava_connections").update({
       last_sync_status: "error",
       last_error: message,
@@ -398,9 +524,7 @@ function metricsFromStravaZones(payload: Record<string, unknown>) {
 }
 
 async function getAthleteZones(accessToken: string) {
-  const res = await fetch(`${STRAVA_API}/athlete/zones`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const res = await stravaFetch(`${STRAVA_API}/athlete/zones`, accessToken, "zones");
   const text = await res.text();
   if (res.status === 401 || res.status === 403) {
     throw new Error("reconnect");
@@ -541,35 +665,84 @@ async function exchangeCode(code: string, redirectUri: string) {
   };
 }
 
-async function listActivities(accessToken: string, after: number | null) {
+async function listActivities(
+  accessToken: string,
+  after: number | null,
+  before: number | null = null,
+): Promise<{
+  activities: Record<string, unknown>[];
+  hitPageCap: boolean;
+  nextBefore: number | null;
+  rateLimited: boolean;
+  retryAfterSec: number;
+}> {
   const out: Record<string, unknown>[] = [];
   let page = 1;
-  while (page <= 40) {
+  let hitPageCap = false;
+  let rateLimited = false;
+  let retryAfterSec = DEFAULT_RETRY_AFTER_SEC;
+  while (page <= MAX_LIST_PAGES) {
     const url = new URL(`${STRAVA_API}/athlete/activities`);
     url.searchParams.set("page", String(page));
     url.searchParams.set("per_page", String(PAGE_SIZE));
     if (after != null) url.searchParams.set("after", String(after));
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    if (before != null) url.searchParams.set("before", String(before));
+    let res: Response;
+    try {
+      res = await stravaFetch(url, accessToken, "activities");
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        if (!out.length) throw err;
+        rateLimited = true;
+        retryAfterSec = err.retryAfterSec;
+        hitPageCap = true;
+        break;
+      }
+      throw err;
+    }
     const text = await res.text();
     if (!res.ok) throw new Error(stravaError("activities", res.status, text));
     const batch = JSON.parse(text) as Record<string, unknown>[];
     if (!Array.isArray(batch) || !batch.length) break;
     out.push(...batch);
     if (batch.length < PAGE_SIZE) break;
+    if (page >= MAX_LIST_PAGES) {
+      hitPageCap = true;
+      break;
+    }
     page += 1;
   }
-  return out;
+  return {
+    activities: out,
+    hitPageCap,
+    nextBefore: hitPageCap ? oldestActivityEpoch(out) : null,
+    rateLimited,
+    retryAfterSec,
+  };
 }
 
 async function getActivity(accessToken: string, id: number) {
-  const res = await fetch(`${STRAVA_API}/activities/${id}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const res = await stravaFetch(`${STRAVA_API}/activities/${id}`, accessToken, "activity");
   const text = await res.text();
   if (!res.ok) throw new Error(stravaError("activity", res.status, text));
   return JSON.parse(text) as Record<string, unknown>;
+}
+
+function activityStartEpoch(summary: Record<string, unknown>): number | null {
+  const raw = summary.start_date || summary.start_date_local;
+  if (!raw) return null;
+  const ms = Date.parse(String(raw));
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function oldestActivityEpoch(summaries: Record<string, unknown>[]): number | null {
+  let oldest: number | null = null;
+  for (const summary of summaries) {
+    const ep = activityStartEpoch(summary);
+    if (ep == null) continue;
+    if (oldest == null || ep < oldest) oldest = ep;
+  }
+  return oldest;
 }
 
 type ActIndexRow = {
@@ -751,9 +924,11 @@ function findLocalStravaGear(items: LocalGear[], type: string, gearId: string, n
 }
 
 async function getStravaGear(accessToken: string, gearId: string) {
-  const res = await fetch(`${STRAVA_API}/gear/${encodeURIComponent(gearId)}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const res = await stravaFetch(
+    `${STRAVA_API}/gear/${encodeURIComponent(gearId)}`,
+    accessToken,
+    "gear",
+  );
   const text = await res.text();
   if (!res.ok) throw new Error(stravaError("gear", res.status, text));
   return JSON.parse(text) as Record<string, unknown>;
@@ -786,7 +961,8 @@ async function matchStravaGear(
       try {
         detail = await getStravaGear(accessToken, item.gearId);
         cache.set(item.gearId, detail);
-      } catch {
+      } catch (err) {
+        if (err instanceof RateLimitError) throw err;
         detail = { id: item.gearId, name: item.gearId };
         cache.set(item.gearId, detail);
       }
@@ -1176,11 +1352,44 @@ function b64url(value: string) {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function parseRetryAfterSec(res: Response, body: string): number {
+  const header = res.headers.get("Retry-After");
+  if (header) {
+    const asNum = Number(header);
+    if (Number.isFinite(asNum) && asNum > 0) return Math.min(Math.ceil(asNum), 900);
+    const asDate = Date.parse(header);
+    if (Number.isFinite(asDate)) {
+      const sec = Math.ceil((asDate - Date.now()) / 1000);
+      if (sec > 0) return Math.min(sec, 900);
+    }
+  }
+  const match = String(body || "").match(/(\d+)\s*(?:second|sec|s)\b/i);
+  if (match) {
+    const sec = Number(match[1]);
+    if (Number.isFinite(sec) && sec > 0) return Math.min(sec, 900);
+  }
+  return DEFAULT_RETRY_AFTER_SEC;
+}
+
+async function stravaFetch(url: string | URL, accessToken: string, step: string) {
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (res.status === 429) {
+    const text = await res.text();
+    throw new RateLimitError(step, parseRetryAfterSec(res, text));
+  }
+  return res;
+}
+
 function stravaError(step: string, status: number, body: string) {
   let detail = body.slice(0, 200);
   try {
     const parsed = JSON.parse(body);
     detail = parsed?.message || parsed?.error || detail;
   } catch { /* keep slice */ }
+  if (status === 429) {
+    return `Strava rate limit hit during ${step} — wait about ${DEFAULT_RETRY_AFTER_SEC}s then Sync again. (${detail || "429"})`;
+  }
   return `Strava ${step} failed (${status}): ${detail}`;
 }

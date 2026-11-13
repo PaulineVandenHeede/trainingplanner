@@ -506,24 +506,91 @@ async function performGarminSync() {
   return gearBits.length ? `${base} ${gearBits.join(", ")}.` : base;
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function performStravaSync() {
   // One-time deeper lookback after raising FIRST_SYNC_DAYS (90 → 365), so prior races land.
   const deepKey = `strava-deep-sync-365:${CURRENT_USER_ID || "anon"}`;
   const deep = localStorage.getItem(deepKey) !== "done";
-  const data = await invokeStrava({ action: "sync", deep });
-  if (data?.ok) localStorage.setItem(deepKey, "done");
+  const maxRounds = 20;
+  let before = null;
+  let data = null;
+  let added = 0;
+  let updated = 0;
+  let skippedDup = 0;
+  let total = 0;
+  let gearAssigned = 0;
+  let gearCreated = 0;
+  let metrics = null;
+  let rounds = 0;
+  let stoppedEarly = false;
+
+  while (rounds < maxRounds) {
+    rounds += 1;
+    if (rounds > 1 && typeof toast === "function") {
+      toast(before
+        ? `Syncing Strava in chunks (${rounds})…`
+        : "Continuing Strava sync…");
+    }
+    const body = { action: "sync", deep };
+    if (before != null) body.before = before;
+    data = await invokeStrava(body);
+    added += data.added || 0;
+    updated += data.updated || 0;
+    skippedDup += data.skippedDup || 0;
+    total += data.total || 0;
+    gearAssigned += data.gearAssigned || 0;
+    gearCreated += data.gearCreated || 0;
+    if (data.metrics) metrics = data.metrics;
+
+    if (!data.incomplete) break;
+
+    if (data.rateLimited) {
+      const waitSec = Math.min(Math.max(Number(data.retryAfterSec) || 60, 15), 900);
+      if (typeof toast === "function") {
+        toast(`Strava rate limit — waiting ~${waitSec}s then continuing…`);
+      }
+      await sleepMs(waitSec * 1000);
+    }
+
+    const next = Number(data.nextBefore);
+    if (Number.isFinite(next) && next > 0) {
+      // Avoid a tight loop on the same cursor.
+      if (before != null && next >= before) {
+        stoppedEarly = true;
+        break;
+      }
+      before = Math.floor(next);
+    } else if (data.rateLimited) {
+      // Same window; retry after backoff.
+      continue;
+    } else {
+      stoppedEarly = true;
+      break;
+    }
+  }
+
+  if (data?.incomplete && rounds >= maxRounds) stoppedEarly = true;
+
+  // Mark deep done only when the lookback finished (not mid-chunk / rate-limit pause).
+  if (data?.ok && !data.incomplete && !stoppedEarly) {
+    localStorage.setItem(deepKey, "done");
+  }
+
   STRAVA = {
     connected: true,
     shareWithCoach: STRAVA.shareWithCoach,
-    lastSyncAt: data.lastSyncAt || null,
-    lastSyncStatus: data.lastSyncStatus || null,
-    lastError: data.lastError || null,
+    lastSyncAt: data?.lastSyncAt || null,
+    lastSyncStatus: data?.lastSyncStatus || null,
+    lastError: data?.lastError || null,
     needsReconnectForZones: !!STRAVA.needsReconnectForZones,
     loaded: true,
   };
   window.STRAVA_STATUS = STRAVA;
-  if (data?.metrics && typeof applyGarminContext === "function") {
-    applyGarminContext({ metrics: data.metrics });
+  if (metrics && typeof applyGarminContext === "function") {
+    applyGarminContext({ metrics });
   }
   try { await loadStravaStatus(); } catch { /* keep sync payload */ }
   ACTS = await loadActivities();
@@ -534,17 +601,20 @@ async function performStravaSync() {
   if (setupForm && typeof window.fillWeeklyFromSynced === "function") {
     window.fillWeeklyFromSynced(setupForm, { force: true });
   }
-  const n = data.added || 0;
   const bits = [];
-  if (data.deep) bits.push("365-day lookback");
-  if (data.skippedDup) bits.push(`skipped ${data.skippedDup} already on Garmin`);
-  if (data.gearAssigned) bits.push(`linked gear on ${data.gearAssigned}`);
-  if (data.gearCreated) bits.push(`added ${data.gearCreated} from Strava`);
-  if (data.metrics?.zones) bits.push("HR zones updated");
-  const base = n
-    ? `Synced ${n} new activit${n === 1 ? "y" : "ies"} from Strava (${data.updated || 0} updated).`
-    : (data.total || data.skippedDup
-      ? `Strava sync complete — ${data.updated || 0} already known.`
+  if (deep) bits.push("365-day lookback");
+  if (rounds > 1) bits.push(`${rounds} chunks`);
+  if (skippedDup) bits.push(`skipped ${skippedDup} already on Garmin`);
+  if (gearAssigned) bits.push(`linked gear on ${gearAssigned}`);
+  if (gearCreated) bits.push(`added ${gearCreated} from Strava`);
+  if (metrics?.zones) bits.push("HR zones updated");
+  if (stoppedEarly || data?.incomplete) {
+    bits.push("more history left — Sync again to continue");
+  }
+  const base = added
+    ? `Synced ${added} new activit${added === 1 ? "y" : "ies"} from Strava (${updated} updated).`
+    : (total || skippedDup
+      ? `Strava sync complete — ${updated} already known.`
       : "Strava sync complete — no activities in range.");
   return bits.length ? `${base} ${bits.join(", ")}.` : base;
 }

@@ -67,26 +67,74 @@ function dayRow(week, i, acts, now) {
     </li>`;
 }
 
+function agendaEventNotes(ds) {
+  if (typeof eventsOn !== "function") return "";
+  return eventsOn(ds).map((ev) => {
+    const multi = !!(ev.end_date && ev.end_date > ev.date);
+    const distBit = multi || !(Number(ev.km) >= 1) ? "" : ` · ${fmtDistWithUnit(ev.km)}`;
+    const soft = typeof window.eventIsSoftKind === "function" && window.eventIsSoftKind(ev.kind);
+    const chip = soft ? "event" : "race";
+    return `
+      <div class="session"><span class="chip k-${chip}">${KIND_LABEL(chip)}</span><span class="label">${esc(ev.name)}${distBit}</span></div>
+      <div class="event-note">★ ${esc(ev.name)}${distBit}${ev.note ? ` — ${esc(ev.note)}` : ""}</div>`;
+  }).join("");
+}
+
 function loggedDayRow(i, start, acts, now) {
   const date = addDays(start, i);
   const ds = ymd(date);
   const dayActs = acts.filter((a) => a.date === ds);
   const isToday = ds === ymd(now);
   const isPast = date < now;
+  const eventBits = agendaEventNotes(ds);
   const sessions = dayActs.length
     ? dayActs.map((a) => `
         <div class="session"><span class="chip k-${a.cat}">${KIND_LABEL(a.cat) || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
         <div class="actual k-${a.cat}">${activityLine(a)}</div>
         <p class="auto-text">${esc(activityFeedback(a, null, acts))}</p>`).join("")
-    : `<div class="session"><span class="chip k-rest">${KIND_LABEL("rest")}</span><span class="label">${isPast ? tt("day.nothingLogged") : tt("day.noSessionYet")}</span></div>`;
+    : (eventBits
+      ? ""
+      : `<div class="session"><span class="chip k-rest">${KIND_LABEL("rest")}</span><span class="label">${isPast ? tt("day.nothingLogged") : tt("day.noSessionYet")}</span></div>`);
   return `
-    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(dayActs.length ? tt("day.viewActivity") : tt("day.viewDay"))}">
+    <li class="day clickable ${isToday ? "today" : ""} ${isPast ? "past" : ""}" data-date="${ds}" tabindex="0" role="button" title="${esc(dayActs.length || eventBits ? tt("day.viewActivity") : tt("day.viewDay"))}">
       <div class="day-date"><strong>${DAY_NAMES()[i]}</strong><span>${short(date)}</span></div>
-      <div class="day-body">${sessions}</div>
+      <div class="day-body">${eventBits}${sessions}</div>
       <span class="day-open" aria-hidden="true">›</span>
     </li>`;
 }
 
+
+/** Pace graph for race/event days — use the plan day, or synthesize from the agenda event. */
+function planForPaceGraph(plan, evs, ds) {
+  if (plan && (plan.kind === "race" || plan.kind === "event" || plan.kind === "long" || plan.kind === "quality" || plan.kind === "brick")) {
+    return plan;
+  }
+  if (plan && typeof sessionProfile === "function" && sessionProfile(plan.kind, plan.label, plan.km)) {
+    return plan;
+  }
+  const ev = (evs || []).find((e) => {
+    const soft = typeof window.eventIsSoftKind === "function" && window.eventIsSoftKind(e.kind);
+    const entry = typeof eventDayEntryFor === "function" ? eventDayEntryFor(e, ds) : null;
+    const load = entry ? (typeof window.legDayLoadKm === "function" ? window.legDayLoadKm(entry) : 0) : Number(e.km) || 0;
+    return !soft && load > 0;
+  }) || (evs || [])[0];
+  if (!ev) return plan || null;
+  const soft = typeof window.eventIsSoftKind === "function" && window.eventIsSoftKind(ev.kind);
+  if (soft) return plan || null;
+  const entry = typeof eventDayEntryFor === "function" ? eventDayEntryFor(ev, ds) : null;
+  const load = entry && typeof window.legDayLoadKm === "function"
+    ? window.legDayLoadKm(entry)
+    : Number(ev.km) || 0;
+  if (!(load > 0) && !(Number(ev.km) > 0)) return plan || null;
+  const km = load > 0 ? load : Number(ev.km) || 0;
+  return {
+    week: plan?.week || null,
+    i: plan?.i ?? 0,
+    kind: "race",
+    label: ev.name || "Race",
+    km,
+  };
+}
 
 function renderDayDetail(ds) {
   const plan = planFor(ds);
@@ -97,7 +145,13 @@ function renderDayDetail(ds) {
   const ebikes = allDayActs.filter((a) => a.cat === "ebike");
   const dayMatch = matchPlanDay(plan, allDayActs);
   const evs = eventsOn(ds);
-  const title = plan ? plan.label : hasPlan() ? "Outside the plan" : (dayActs[0]?.title || "Logged day");
+  const title = plan
+    ? plan.label
+    : evs[0]?.name
+      ? evs[0].name
+      : hasPlan()
+        ? "Outside the plan"
+        : (dayActs[0]?.title || "Logged day");
 
   const activityMeta = (a, label, matchInfo) => {
     const time = a.datetime.slice(11, 16);
@@ -167,12 +221,13 @@ function renderDayDetail(ds) {
     : dayMatch.trainable && allDayActs.some((a) => !quietExtra(a))
       ? `<p class="match-summary is-unmatched"><span class="match-tag unmatched">${esc(tt("day.unmatched"))}</span> ${esc(tt("day.noPlanMatch"))}</p>`
       : "";
+  const graphPlan = planForPaceGraph(plan, evs, ds);
 
   return `
     <header class="dialog-head">
       <div>
         <div class="eyebrow">${fmt(date, { weekday: "long", day: "numeric", month: "long" })}${plan ? ` · Week ${plan.week.wk} · ${plan.week.phase}` : ""}</div>
-        <h2>${plan ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span> ` : ""}${esc(title)}</h2>
+        <h2>${plan ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span> ` : (evs[0] ? `<span class="chip k-race">${KIND_LABEL("race")}</span> ` : "")}${esc(title)}</h2>
         ${matchSummary}
       </div>
       <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close">✕</button>
@@ -183,11 +238,16 @@ function renderDayDetail(ds) {
       ? raceWeekChecklistCard(parseDate(ds))
       : ""}
     ${plan ? busyBlock(plan, ds) : ""}
-    ${plan ? paceGraph(plan) : ""}
+    ${graphPlan ? paceGraph(graphPlan) : ""}
     ${activities}
     ${walkBlocks}
     ${ebikeBlocks}
-    ${currentRoute() === "activities" ? "" : logSessionForm(ds, plan, allDayActs)}
+    ${typeof window.canOfferLiveSession === "function" && window.canOfferLiveSession(ds)
+      ? `<section class="live-start-block">
+          <button class="button" type="button" data-action="start-session" data-date="${esc(ds)}">${esc(tt("live.startSession"))}</button>
+          <p class="muted small-text">${esc(tt("live.startHint"))}</p>
+        </section>`
+      : ""}
     ${guides.length ? `
       <details class="guides" ${showGuidesOpen ? "open" : ""}>
         <summary>${dayActs.length ? "About the planned session" : "How to do this session"}</summary>
@@ -546,12 +606,31 @@ function todaySessionMeta(plan) {
   return { effort, target, gear };
 }
 
-function todayActionsHtml(plan, ds, statusClass) {
+function todayShareButton(a) {
+  if (!a || typeof window.openShareCard !== "function") return "";
+  return `<button class="button ghost small" type="button"
+      data-action="share-activity"
+      data-datetime="${esc(a.datetime)}"
+      data-date="${esc(a.date || "")}"
+      data-cat="${esc(a.cat || "")}"
+      data-title="${esc(a.title || "")}"
+      data-dist="${a.dist != null && Number.isFinite(Number(a.dist)) ? esc(String(a.dist)) : ""}"
+      data-time="${esc(a.time || "")}"
+      data-pace="${esc(a.pace || "")}"
+      title="${esc(tt("share.share"))}"
+      aria-label="${esc(tt("share.share"))}">${esc(tt("share.share"))}</button>`;
+}
+
+function todayActionsHtml(plan, ds, statusClass, dayActs = []) {
+  const shareAct = dayActs[0] || null;
+  const canShare = !!shareAct;
+
   if (statusClass === "busy") {
     return `
       <div class="today-actions">
         <button class="button ghost small" type="button" data-action="unbusy" data-date="${esc(ds)}">${esc(tt("home.todayUnbusy"))}</button>
         <button class="button ghost small" type="button" data-action="today-ask-toggle">${esc(tt("home.todayAsk"))}</button>
+        ${canShare ? todayShareButton(shareAct) : ""}
       </div>`;
   }
 
@@ -559,8 +638,12 @@ function todayActionsHtml(plan, ds, statusClass) {
   const canMove = trainable && todayMoveCandidates(plan).length > 0;
   const canBusy = trainable;
   const canIcs = !!(plan && plan.kind !== "rest");
+  const isToday = String(ds).slice(0, 10) === ymd(today());
+  const canStart = statusClass !== "busy" && isToday
+    && typeof window.canOfferLiveSession === "function"
+    && window.canOfferLiveSession(ds);
 
-  if (!canBusy && !canMove && !canIcs && statusClass === "free") return "";
+  if (!canBusy && !canMove && !canIcs && !canStart && !canShare && statusClass === "free") return "";
 
   const movePanel = canMove
     ? `<div class="today-panel" data-today-panel="move" hidden>
@@ -576,6 +659,8 @@ function todayActionsHtml(plan, ds, statusClass) {
 
   return `
     <div class="today-actions">
+      ${canStart ? `<button class="button small" type="button" data-action="start-session" data-date="${esc(ds)}">${esc(tt("live.startSession"))}</button>` : ""}
+      ${canShare ? todayShareButton(shareAct) : ""}
       ${canBusy ? `<button class="button ghost small" type="button" data-action="today-busy" data-date="${esc(ds)}">${esc(tt("common.busy"))}</button>` : ""}
       ${canMove ? `<button class="button ghost small" type="button" data-action="today-move-toggle" aria-expanded="false">${esc(tt("home.todayMove"))}</button>` : ""}
       <button class="button ghost small" type="button" data-action="today-ask-toggle">${esc(tt("home.todayAsk"))}</button>
@@ -588,9 +673,11 @@ function todaySessionCard(acts, now) {
   const ds = ymd(now);
   const plan = planFor(ds);
   const dayActs = (acts || []).filter((a) => a.date === ds);
+  const todayEvents = typeof eventsOn === "function" ? eventsOn(ds) : [];
   const busy = BUSY[ds];
   const dayMatch = plan ? matchPlanDay(plan, dayActs) : null;
   const meta = !busy ? todaySessionMeta(plan) : null;
+  const primaryEvent = todayEvents[0];
 
   let statusLine = tt("home.todayOpen");
   let statusClass = "pending";
@@ -606,6 +693,9 @@ function todaySessionCard(acts, now) {
   } else if (plan && plannedSportCats(plan.kind).length) {
     statusLine = tt("home.todayTodo");
     statusClass = "todo";
+  } else if (primaryEvent) {
+    statusLine = tt("home.todayTodo");
+    statusClass = "todo";
   } else if (dayActs.length) {
     statusLine = tt("home.todayLogged");
     statusClass = "done";
@@ -618,17 +708,24 @@ function todaySessionCard(acts, now) {
     ? tt("common.busy")
     : plan
       ? plan.label
-      : dayActs[0]?.title || tt("home.todayFree");
+      : primaryEvent
+        ? primaryEvent.name
+        : dayActs[0]?.title || tt("home.todayFreeTrain");
   const chip = busy
     ? `<span class="chip k-busy">${tt("common.busy")}</span>`
     : plan
       ? `<span class="chip k-${plan.kind}">${KIND_LABEL(plan.kind)}</span>`
-      : dayActs[0]
-        ? `<span class="chip k-${dayActs[0].cat}">${KIND_LABEL(dayActs[0].cat) || dayActs[0].cat}</span>`
-        : `<span class="chip k-rest">${KIND_LABEL("rest")}</span>`;
+      : primaryEvent
+        ? `<span class="chip k-race">${KIND_LABEL("race")}</span>`
+        : dayActs[0]
+          ? `<span class="chip k-${dayActs[0].cat}">${KIND_LABEL(dayActs[0].cat) || dayActs[0].cat}</span>`
+          : `<span class="chip k-run">${esc(tt("home.todayOpenChip"))}</span>`;
 
   const logged = dayActs.length
     ? dayActs.slice(0, 2).map((a) => dayActivityMatchLine(a, dayMatch || { trainable: false }, plan?.kind)).join("")
+    : "";
+  const eventNote = !plan && primaryEvent
+    ? `<div class="event-note">★ ${esc(primaryEvent.name)}${Number(primaryEvent.km) >= 1 ? ` · ${fmtDistWithUnit(primaryEvent.km)}` : ""}</div>`
     : "";
 
   const metaHtml = meta
@@ -654,8 +751,9 @@ function todaySessionCard(acts, now) {
         </div>
       </button>
       ${metaHtml}
+      ${eventNote}
       ${logged ? `<div class="today-logged">${logged}</div>` : ""}
-      ${todayActionsHtml(plan, ds, statusClass)}
+      ${todayActionsHtml(plan, ds, statusClass, dayActs)}
     </section>`;
 }
 
@@ -783,26 +881,49 @@ function downloadTodayIcs(ds) {
 }
 
 function renderNoPlanHome(acts, now) {
+  const zone = homeZone();
   const lastSync = acts.length ? acts.map((a) => a.date).sort().at(-1) : null;
   const footnote = lastSync
     ? `${tt("home.actsUpTo", { date: short(parseDate(lastSync)) })} <a href="/activities">${tt("home.seeAll")}</a>`
     : tt("home.logOrImport");
+
+  const todayZone = `
+    <div class="home-zone home-zone-today">
+      ${todaySessionCard(acts, now)}
+      <section class="card no-plan-cta">
+        <div class="card-head">
+          <div>
+            <div class="eyebrow">${esc(tt("home.noPlan"))}</div>
+            <h2>${esc(tt("home.noPlanLead"))}</h2>
+          </div>
+        </div>
+        <button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button>
+      </section>
+    </div>`;
+
+  const weekZone = `
+    <div class="home-zone home-zone-week">
+      ${acts.length
+        ? loggedWeekBlock(acts, now)
+        : `<section class="card">
+            <p class="muted" style="margin:0">${esc(tt("home.noPlanWeekEmpty"))}</p>
+          </section>`}
+      <div class="cta"><a class="button ghost" href="/events">${tt("home.manageEvents")}</a></div>
+    </div>`;
+
   return `
-    <section class="hero morning-hero">
-      <div>
-        <div class="eyebrow">${tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })}</div>
-        <h1>${tt("home.noPlan")}</h1>
-        <p class="muted">${tt("home.noPlanLead")}</p>
-      </div>
-      <button class="button" type="button" data-action="start-plan">${tt("home.startPlan")}</button>
+    <section class="hero morning-hero hero-compact">
+      <div class="eyebrow">${zone === "today"
+        ? tt("home.today", { date: fmt(now, { weekday: "long", day: "numeric", month: "long" }) })
+        : tt("home.zoneWeek")}</div>
+      <h1>${zone === "today" ? tt("home.todayFocus") : tt("home.zoneWeek")}</h1>
+      <p class="muted">${zone === "today" ? tt("home.noPlanTodayLead") : tt("home.noPlanWeekLead")}</p>
     </section>
-    ${todaySessionCard(acts, now)}
+
+    ${homeZoneToggle(zone)}
     ${typeof installPromptBanner === "function" ? installPromptBanner() : ""}
-    ${acts.length ? loggedWeekBlock(acts, now) : `
-      <section class="card">
-        <p class="muted" style="margin:0">${tt("home.emptyCard")}</p>
-      </section>`}
-    <div class="cta"><a class="button ghost" href="/events">${tt("home.manageEvents")}</a></div>
+
+    ${zone === "today" ? todayZone : weekZone}
     <p class="footnote">${footnote}</p>`;
 }
 

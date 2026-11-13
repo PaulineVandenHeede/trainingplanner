@@ -393,33 +393,26 @@ function localProgressReport(acts, now) {
   const stats = planProgressStats(acts, now);
   const pred = typeof window.racePrediction === "function" ? window.racePrediction(acts, now) : null;
   if (!stats) return "Start the plan to get a progress report.";
-  const paras = [];
+  const bits = [];
   if (!stats.started) {
-    paras.push(`${eventLabel()} starts in ${daysBetween(now, START)} days. The report will track from week 1.`);
+    bits.push(`${eventLabel()} starts in ${daysBetween(now, START)} days.`);
   } else if (stats.finished) {
-    paras.push(`${eventLabel()} is done. You logged ${fmtDistWithUnit(stats.loggedKm, 1)} across ${stats.done} sessions in this block.`);
+    bits.push(`${eventLabel()} done — ${fmtDistWithUnit(stats.loggedKm, 1)} across ${stats.done} sessions.`);
   } else {
     const sessionPct = stats.planned ? Math.round((stats.done / stats.planned) * 100) : 0;
-    paras.push(`Week ${stats.wk} of ${stats.totalWeeks}, ${stats.phase.name || "build"}, ${Math.max(0, stats.daysToRace)} days to ${eventLabel()}. ${stats.done} of ${stats.planned} planned sessions are done (${sessionPct}%), with ${fmtDist(stats.loggedKm, 1)} of ${fmtDist(stats.plannedKm, 0)} ${distUnit()} logged.`);
+    bits.push(`Week ${stats.wk}/${stats.totalWeeks} (${stats.phase.name || "build"}), ${Math.max(0, stats.daysToRace)} days out. ${stats.done}/${stats.planned} sessions (${sessionPct}%), ${fmtDist(stats.loggedKm, 1)}/${fmtDist(stats.plannedKm, 0)} ${distUnit()}.`);
   }
   if (pred && !pred.empty) {
-    const cur = fmtRaceClock(pred.currentSec);
-    const proj = fmtRaceClock(pred.projectedSec);
-    if (pred.pacingBands?.length && pred.spec?.sport === "triathlon") {
-      const legs = pred.pacingBands
-        .filter((b) => b.leg !== "T1+T2")
-        .map((b) => `${b.leg} ${b.time} (${b.goal})`)
-        .join("; ");
-      paras.push(`Current predicted finish is ${cur} (projection ${proj}). Per-leg bands: ${legs}.`);
-    } else {
-      paras.push(`Current predicted finish is ${cur}. If you follow the rest of the plan, the projection is ${proj}.`);
-    }
+    bits.push(`Now ${fmtRaceClock(pred.currentSec)}; race-day projection ${fmtRaceClock(pred.projectedSec)} if you follow the plan.`);
   } else {
-    paras.push("Log or import timed sessions so the race prediction can fill in.");
+    bits.push("Log timed sessions to fill in the race prediction.");
   }
   const week = WEEKS[Math.max(0, stats.wk - 1)];
-  if (week && stats.started && !stats.finished) paras.push(`This week: ${weekFeedback(week, acts, now)}`);
-  return paras.join("\n\n");
+  if (week && stats.started && !stats.finished) {
+    const tip = weekFeedback(week, acts, now);
+    if (tip) bits.push(tip);
+  }
+  return bits.join(" ");
 }
 
 function hashText(raw) {
@@ -639,15 +632,38 @@ function renderRacePrediction(acts, now, nested = false) {
   const nowDate = parseDate(pred.now);
   const finished = nowDate >= raceDate;
   const hist = pred.history;
-  const values = hist.map((p) => p.timeSec);
-  if (!finished) {
-    values.push(pred.projectedSec, pred.optimisticSec, pred.pessimisticSec);
+  // Scale around historical fitness so real progress shows; don't let the race-day fan squash the line.
+  const histVals = hist.map((p) => p.timeSec).filter((n) => n > 0);
+  let lo = Math.min(...histVals);
+  let hi = Math.max(...histVals);
+  const km = spec.targetRunKm || spec.runKm || (spec.sport === "bike" && spec.bikeKm ? spec.bikeKm / 4 : 10);
+  const minSpan = km >= 30 ? 300 : km >= 15 ? 180 : 120;
+  if (hi - lo < minSpan) {
+    const mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
   }
-  const rawMin = Math.min(...values);
-  const rawMax = Math.max(...values);
-  const padY = Math.max(40, (rawMax - rawMin) * 0.16);
-  const minSec = Math.max(60, rawMin - padY);
-  const maxSec = rawMax + padY;
+  if (!finished) {
+    const histSpan = hi - lo;
+    const futureLo = Math.min(pred.projectedSec, pred.optimisticSec);
+    const futureHi = Math.max(pred.pessimisticSec, pred.currentSec);
+    const wantLo = Math.min(lo, futureLo);
+    const wantHi = Math.max(hi, futureHi);
+    const maxTotal = histSpan / 0.45;
+    if (wantHi - wantLo <= maxTotal) {
+      lo = wantLo;
+      hi = wantHi;
+    } else {
+      const mid = (lo + hi) / 2;
+      lo = Math.min(lo, mid - maxTotal / 2, pred.currentSec);
+      hi = Math.max(hi, mid + maxTotal / 2, pred.currentSec);
+      if (pred.projectedSec < lo) lo = pred.projectedSec - histSpan * 0.05;
+      if (pred.projectedSec > hi) hi = pred.projectedSec + histSpan * 0.05;
+    }
+  }
+  const padY = Math.max(25, (hi - lo) * 0.1);
+  const minSec = Math.max(60, lo - padY);
+  const maxSec = hi + padY;
 
   const W = 900, H = 248, padL = 52, padR = 16, padT = 18, padB = 36;
   const plotW = W - padL - padR, plotH = H - padT - padB;
@@ -762,17 +778,17 @@ function renderRacePrediction(acts, now, nested = false) {
         </svg>
       </div>
       <div class="legend predict-legend">
-        <span><i class="lg-predict-prev"></i>Previous</span>
-        <span><i class="lg-predict-cur"></i>Current</span>
-        <span><i class="lg-predict-proj"></i>Projection</span>
+        <span><i class="lg-predict-prev"></i>Fitness so far</span>
+        <span><i class="lg-predict-cur"></i>If you raced today</span>
+        <span><i class="lg-predict-proj"></i>Race-day projection</span>
       </div>
       <div class="predict-stats">
         <div>
-          <span><i class="lg-predict-cur"></i>Current</span>
+          <span><i class="lg-predict-cur"></i>If you raced today</span>
           <strong>${esc(currentVal)}</strong>
         </div>
         <div>
-          <span><i class="lg-predict-proj"></i>${finished ? "Race day" : "Projection"}</span>
+          <span><i class="lg-predict-proj"></i>${finished ? "Race day" : "Race-day projection"}</span>
           <strong>${esc(projVal)}</strong>
           ${delta ? `<em>${esc(delta)}</em>` : ""}
         </div>

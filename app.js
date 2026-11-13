@@ -750,7 +750,7 @@ function logSessionForm(ds, plan, dayActs) {
       <details class="log-details" ${matched ? "" : "open"}>
         <summary>${trainable && !matched ? "Mark as done" : "Log a session"}</summary>
         <form class="log-form" data-date="${esc(ds)}">
-          <p class="muted small-text">For today or an older day. Distance is enough; time and heart rate help the coach comments.</p>
+          <p class="muted small-text">Distance is enough; time and heart rate help the coach comments.</p>
           <div class="log-fields">
             ${logSessionFields(sport, { distance: prefill })}
           </div>
@@ -2147,7 +2147,7 @@ function renderProfile(acts, now) {
     ${renderPlanProgress(acts, now)}
     ${renderYearStats(acts, now)}
     ${renderStreak(acts, now)}
-    <p class="footnote">${acts.length ? "Year stats come from sessions you log here, Garmin sync, and CSV imports." : "Log a session from a day, sync Garmin from Connections, or import a Garmin Connect Activities.csv."}</p>`;
+    <p class="footnote">${acts.length ? "Year stats come from sessions you log here, Garmin sync, and CSV imports." : "Log a session here, sync Garmin from Connections, or import a Garmin Connect Activities.csv."}</p>`;
 }
 window.renderProfile = renderProfile;
 
@@ -4502,6 +4502,17 @@ function activityListRow(a) {
         <div class="session"><span class="chip k-${a.cat}">${YEAR_SPORT_LABEL(a.cat) || a.cat}</span><span class="label">${esc(a.title || activityLine(a))}</span></div>
         <div class="actual k-${a.cat}">${activityLine(a)}</div>
       </div>
+      <button class="button ghost small act-share-btn" type="button"
+        data-action="share-activity"
+        data-datetime="${esc(a.datetime)}"
+        data-date="${esc(a.date || "")}"
+        data-cat="${esc(a.cat || "")}"
+        data-title="${esc(a.title || "")}"
+        data-dist="${a.dist != null && Number.isFinite(Number(a.dist)) ? esc(String(a.dist)) : ""}"
+        data-time="${esc(a.time || "")}"
+        data-pace="${esc(a.pace || "")}"
+        title="${esc(tt("share.share"))}"
+        aria-label="${esc(tt("share.share"))}">${esc(tt("share.share"))}</button>
       <span class="day-open" aria-hidden="true">›</span>
     </li>`;
 }
@@ -5108,7 +5119,21 @@ async function cloudRequest(method, url, body) {
       }
       const duration = parseDurationInput(body.duration);
       const pace = computeAvgPace(cat, dist, duration.sec);
-      const started = uniqueStartedAt(ds);
+      const sourceRaw = String(body.source || "manual").toLowerCase();
+      const source = sourceRaw === "phone-gps" || sourceRaw === "phone-session" ? sourceRaw : "manual";
+      let started = uniqueStartedAt(ds);
+      const wantStarted = String(body.startedAt || "").trim();
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(wantStarted) && wantStarted.startsWith(ds)) {
+        const taken = new Set(ACTS.map((a) => a.datetime));
+        started = wantStarted;
+        while (taken.has(started)) {
+          const [date, time] = started.split(" ");
+          const [h, m, s] = time.split(":").map(Number);
+          const next = parseDate(date);
+          next.setHours(h, m, s + 1);
+          started = `${ymd(next)} ${pad(next.getHours())}:${pad(next.getMinutes())}:${pad(next.getSeconds())}`;
+        }
+      }
       const plan = planFor(ds);
       const provisional = {
         datetime: started,
@@ -5117,10 +5142,18 @@ async function cloudRequest(method, url, body) {
         dist,
         title: spec.title,
       };
-      const title = plan && scoreActivityAgainstPlan(provisional, plan)
-        ? plan.label
-        : spec.title;
+      const bodyTitle = String(body.title || "").trim();
+      const title = bodyTitle
+        || (plan && scoreActivityAgainstPlan(provisional, plan) ? plan.label : spec.title);
       const distText = cat === "swim" ? String(Math.round(dist)) : String(Math.round(dist * 100) / 100);
+      const track = Array.isArray(body.track)
+        ? body.track.slice(0, 600).map((p) => ({
+          lat: Number(p.lat),
+          lng: Number(p.lng),
+          t: Number(p.t) || undefined,
+          acc: p.acc != null ? Number(p.acc) : undefined,
+        })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
+        : null;
       const row = {
         user_id: uid,
         activity_type: spec.type,
@@ -5140,7 +5173,8 @@ async function cloudRequest(method, url, body) {
           "Avg HR": hr != null ? String(hr) : "",
           "Max HR": "",
           "Avg Pace": pace || "",
-          Source: "manual",
+          Source: source,
+          ...(track && track.length ? { track } : {}),
         },
       };
       const { error } = await sb.from("activities").insert(row);
@@ -5377,6 +5411,25 @@ document.addEventListener("click", async (e) => {
   if (btn.dataset.action === "open-day") {
     e.preventDefault();
     openDay(btn.dataset.date);
+    return;
+  }
+  if (btn.dataset.action === "share-activity") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof window.openShareCardFromActivity === "function") {
+      const act = ACTS.find((x) => String(x.datetime) === String(btn.dataset.datetime));
+      if (act) window.openShareCardFromActivity(act);
+      else if (typeof window.openShareCard === "function") {
+        window.openShareCard({
+          title: btn.dataset.title || "",
+          sport: btn.dataset.cat || "run",
+          dist: btn.dataset.dist !== "" ? Number(btn.dataset.dist) : undefined,
+          duration: btn.dataset.time || "",
+          pace: btn.dataset.pace || "",
+          date: btn.dataset.date || "",
+        });
+      }
+    }
     return;
   }
   if (btn.dataset.action === "import") {
@@ -5621,6 +5674,13 @@ document.addEventListener("click", async (e) => {
     } finally {
       btn.disabled = false;
     }
+    return;
+  }
+  if (btn.dataset.action === "start-session") {
+    e.preventDefault();
+    const ds = btn.dataset.date || ymd(today());
+    if (typeof window.openLiveSession === "function") window.openLiveSession(ds);
+    else toast(tt("live.unavailable"), true);
     return;
   }
   if (btn.dataset.action === "today-ics") {
@@ -6626,11 +6686,18 @@ function showAppLoading() {
 
 window.bootApp = function bootApp() {
   if (currentRoute() === "setup") {
-    const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
-    if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
-      window.renderOnboarding();
+    // Returning users with a plan must not get stuck on leftover /setup.
+    if (hasPlan()) {
+      history.replaceState(null, "", "/home" + location.search);
+      document.body.classList.remove("onboarding");
+      // Fall through and boot Home.
+    } else {
+      const hasSetupUi = document.querySelector(".setup-form, .setup-connect-step, .setup-creating");
+      if (typeof window.renderOnboarding === "function" && !hasSetupUi) {
+        window.renderOnboarding();
+      }
+      return Promise.resolve();
     }
-    return Promise.resolve();
   }
   if (currentRoute() === "create-plan") {
     const hasForm = document.querySelector(".setup-form[data-create-only='1']");
@@ -6758,6 +6825,12 @@ window.resetApp = function resetApp() {
   window.CURRENT_USER_ID = null;
   window.CURRENT_PROFILE = null;
   window.CURRENT_USER_EMAIL = "";
+  document.body.classList.remove("onboarding");
+  // Drop leftover /setup so the next account doesn't inherit onboarding from this one.
+  const pathBase = location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] || "";
+  if (pathBase === "setup" || pathBase === "create-plan") {
+    history.replaceState(null, "", "/" + location.search);
+  }
   const app = document.getElementById("app");
   if (app) {
     app.dataset.route = "";

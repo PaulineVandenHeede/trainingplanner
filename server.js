@@ -34,7 +34,7 @@ const SECURITY_HEADERS = {
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(self)",
   "Cross-Origin-Opener-Policy": "same-origin",
   "Content-Security-Policy": [
     "default-src 'self'",

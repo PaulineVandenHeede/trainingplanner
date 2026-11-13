@@ -660,18 +660,212 @@ function sessionProfile(kind, label, km) {
     };
   }
 
-  if (kind === "race") {
+  if (kind === "race" || (kind === "event" && total > 0 && !/travel|holiday|rest|transfer/i.test(l))) {
+    const raceKm = total || 42.2;
+    const settleKm = Math.min(5, Math.max(1, raceKm * 0.12));
     return {
-      title: "Race pace shape",
+      title: kind === "event" ? "Event pace shape" : "Race pace shape",
       segments: finishSegments([
-        { name: "First 5 km, slightly slower", km: 5, zone: "settle" },
-        { name: "Goal pace", km: Math.max(5, (total || 42.2) - 5), zone: "mp" },
+        { name: "First km, slightly slower", km: settleKm, zone: "settle" },
+        { name: "Goal pace", km: Math.max(settleKm, raceKm - settleKm), zone: "mp" },
       ]),
     };
   }
 
   return null;
 }
+
+/** Seconds for a km segment at a pace-zone mid, or bike ~25 km/h. */
+function kmToSeconds(km, zone, sport) {
+  const n = Number(km) || 0;
+  if (!(n > 0)) return 60;
+  if (sport === "bike" || sport === "ebike") return Math.round((n / 25) * 3600);
+  const z = (typeof paceZones === "function" ? paceZones() : null)?.[zone || "easy"];
+  const secPerKm = z?.sec || 360;
+  return Math.max(15, Math.round(n * secPerKm));
+}
+
+function cueRoleFromName(name, zone, index, total) {
+  const n = String(name || "").toLowerCase();
+  if (/warm/.test(n)) return "warmup";
+  if (/cool/.test(n)) return "cooldown";
+  if (zone === "interval" || zone === "mp" || zone === "steady" || zone === "cruise" || zone === "stride") {
+    return "work";
+  }
+  if (/walk/.test(n) && !/jog|run/.test(n)) return index === 0 || index === total - 1 ? (index === 0 ? "warmup" : "cooldown") : "recover";
+  if (/jog|recover|easy jog/.test(n) && /recover|jog between|rest/i.test(n)) return "recover";
+  if (zone === "easy" && index > 0 && index < total - 1 && /jog|recover/.test(n)) return "recover";
+  if (/stride/.test(n)) return "work";
+  if (/interval|steady|cruise|marathon|mp|off-bike|quality|work/.test(n)) return "work";
+  if (/bike/.test(n)) return "easy";
+  return index === 0 ? "warmup" : (index === total - 1 ? "cooldown" : "easy");
+}
+
+function cueSpeak(label, role) {
+  const n = String(label || "").toLowerCase();
+  if (role === "warmup") {
+    if (/walk/.test(n)) return "Warm up. Start walking";
+    if (/bike|ride/.test(n)) return "Warm up. Start riding";
+    return "Warm up";
+  }
+  if (role === "cooldown") {
+    if (/walk/.test(n)) return "Cool down. Walk";
+    return "Cool down";
+  }
+  if (role === "recover" || (/walk/.test(n) && !/jog|run/.test(n))) return "Walk";
+  if (/jog/.test(n)) return "Start jogging";
+  if (role === "work") {
+    if (/stride/.test(n)) return "Stride";
+    if (/interval|vo\s*?2|vo₂/.test(n)) return "Interval";
+    if (/cruise|steady/.test(n)) return "Steady effort";
+    if (/marathon|mp/.test(n)) return "Marathon pace";
+    return "Work interval";
+  }
+  if (/bike|ride/.test(n)) return "Keep riding";
+  if (/run|easy/.test(n)) return "Easy run";
+  return String(label || "Next").replace(/\s+/g, " ").trim().slice(0, 48) || "Next";
+}
+
+/**
+ * Timed cue list for the live session player.
+ * Prefers explicit minutes (walk–jog / timed intervals); estimates from pace for km segments.
+ * @returns {{ title: string, cues: Array<{ id: string, label: string, speak: string, role: string, durationSec: number }> } | null}
+ */
+function sessionCues(kind, label, km) {
+  const l = String(label || "").toLowerCase();
+  const total = Number(km) || 0;
+  const sport = kind === "bike" || kind === "ebike" ? "bike"
+    : kind === "walk" ? "walk"
+    : kind === "ski" ? "ski"
+    : "run";
+
+  /** @type {Array<{ name: string, minutes?: number, km?: number, zone: string, role?: string }>} */
+  let raw = null;
+  let title = "";
+
+  if (kind === "walkrun" || /warm-up walk|jog\s+[\d.]+'\s*\/\s*walk|continuous jog/i.test(l)) {
+    title = "Walk–jog";
+    const warm = Number((l.match(/warm-up walk\s+([\d.]+)/) || [])[1] || 5);
+    const cool = Number((l.match(/cool-down walk\s+([\d.]+)/) || [])[1] || 5);
+    const cont = l.match(/continuous jog\s+([\d.]+)/);
+    raw = [{ name: "Warm-up walk", minutes: warm, zone: "easy", role: "warmup" }];
+    if (cont) {
+      raw.push({ name: "Easy jog", minutes: Number(cont[1]) || 20, zone: "easy", role: "work" });
+    } else {
+      const bout = l.match(/jog\s+([\d.]+)'\s*\/\s*walk\s+([\d.]+)'\s*[×x]\s*(\d+)/i);
+      const jogMin = Number(bout?.[1] || 1);
+      const walkMin = Number(bout?.[2] || 2);
+      const reps = Number(bout?.[3] || 6);
+      for (let i = 0; i < reps; i++) {
+        raw.push({
+          name: `Jog ${jogMin}'`,
+          minutes: jogMin,
+          zone: "easy",
+          role: "work",
+        });
+        if (walkMin > 0) {
+          raw.push({
+            name: `Walk ${walkMin}'`,
+            minutes: walkMin,
+            zone: "easy",
+            role: "recover",
+          });
+        }
+      }
+    }
+    raw.push({ name: "Cool-down walk", minutes: cool, zone: "easy", role: "cooldown" });
+  } else {
+    const profile = sessionProfile(kind, label, km);
+    if (profile?.segments?.length) {
+      title = profile.title || KIND_LABEL?.(kind) || "Session";
+      // Re-expand timed quality patterns so we keep minute accuracy when possible.
+      if (kind === "quality" || /(\d+)\s*[×x]\s*10/.test(l) || /cruise/.test(l) || /interval|vo\s*?2|400m|800m|1000m/i.test(l)) {
+        if (/(\d+)\s*[×x]\s*10/.test(l) || (kind === "quality" && /steady/.test(l))) {
+          const n = Number((l.match(/(\d+)\s*[×x]\s*10/) || [])[1] || 2);
+          raw = [{ name: "Warm-up", km: 2.2, zone: "easy", role: "warmup" }];
+          for (let i = 0; i < n; i++) {
+            if (i) raw.push({ name: "Easy jog", minutes: 3, zone: "easy", role: "recover" });
+            raw.push({ name: `${n} × 10 min steady`, minutes: 10, zone: "steady", role: "work" });
+          }
+          if (total > 0) raw.push({ name: "Cool-down", km: Math.max(0.5, total - 2.2 - minutesToKm(n * 10 + (n - 1) * 3, "easy")), zone: "easy", role: "cooldown" });
+        } else if (/cruise/.test(l)) {
+          const n = Number((l.match(/(\d+)\s*[×x]\s*6/) || [])[1] || 5);
+          raw = [{ name: "Warm-up", km: 2.2, zone: "easy", role: "warmup" }];
+          for (let i = 0; i < n; i++) {
+            if (i) raw.push({ name: "Jog", minutes: 1.5, zone: "easy", role: "recover" });
+            raw.push({ name: `${n} × 6 min cruise`, minutes: 6, zone: "cruise", role: "work" });
+          }
+        } else {
+          const timeRep = l.match(/(\d+)\s*[×x]\s*(\d+)\s*'/);
+          const distRep = l.match(/(\d+)\s*[×x]\s*(\d+)\s*m/);
+          if (timeRep) {
+            const n = Number(timeRep[1]) || 5;
+            const mins = Number(timeRep[2]) || 3;
+            raw = [{ name: "Warm-up", km: 2.2, zone: "easy", role: "warmup" }];
+            for (let i = 0; i < n; i++) {
+              if (i) raw.push({ name: "Jog", minutes: Math.max(1.5, mins * 0.5), zone: "easy", role: "recover" });
+              raw.push({ name: `${n} × ${mins}' @ interval`, minutes: mins, zone: "interval", role: "work" });
+            }
+          } else if (distRep) {
+            const n = Number(distRep[1]) || 5;
+            const meters = Number(distRep[2]) || 400;
+            const repKm = meters / 1000;
+            const jogMin = meters <= 400 ? 1.5 : meters <= 800 ? 2 : 2.5;
+            raw = [{ name: "Warm-up", km: 2.2, zone: "easy", role: "warmup" }];
+            for (let i = 0; i < n; i++) {
+              if (i) raw.push({ name: "Jog", minutes: jogMin, zone: "easy", role: "recover" });
+              raw.push({ name: `${n} × ${meters}m @ interval`, km: repKm, zone: "interval", role: "work" });
+            }
+          }
+        }
+      }
+      if (!raw) {
+        raw = profile.segments.map((s) => ({
+          name: s.name || s.zone || "Segment",
+          km: s.km,
+          zone: s.zone || "easy",
+        }));
+      }
+    } else if (["run", "walk", "long", "quality", "bike", "ski", "brick"].includes(kind)) {
+      title = (typeof KIND_LABEL === "function" ? KIND_LABEL(kind) : kind) || "Session";
+      if (kind === "bike") {
+        const mins = total > 0 ? (total / 25) * 60 : 45;
+        raw = [{ name: label || "Ride", minutes: mins, zone: "easy", role: "easy" }];
+      } else if (kind === "walk") {
+        const mins = total > 0 ? (total / 5.5) * 60 : 30;
+        raw = [{ name: label || "Walk", minutes: mins, zone: "easy", role: "easy" }];
+      } else {
+        const mins = total > 0 ? (kmToSeconds(total, "easy", sport) / 60) : 30;
+        raw = [{ name: label || "Session", minutes: mins, zone: "easy", role: "easy" }];
+      }
+    }
+  }
+
+  if (!raw?.length) return null;
+
+  const cues = raw.map((s, i) => {
+    const role = s.role || cueRoleFromName(s.name, s.zone, i, raw.length);
+    let durationSec = 0;
+    if (s.minutes != null && Number(s.minutes) > 0) durationSec = Math.round(Number(s.minutes) * 60);
+    else if (s.km != null && Number(s.km) > 0) durationSec = kmToSeconds(s.km, s.zone, sport);
+    else durationSec = 60;
+    durationSec = Math.max(10, durationSec);
+    const cueLabel = String(s.name || "").trim() || (role === "work" ? "Work" : role === "recover" ? "Recover" : "Segment");
+    return {
+      id: `c${i}`,
+      label: cueLabel,
+      speak: cueSpeak(cueLabel, role),
+      role,
+      durationSec,
+    };
+  }).filter((c) => c.durationSec > 0);
+
+  if (!cues.length) return null;
+  return { title: title || "Session", cues };
+}
+
+window.sessionCues = sessionCues;
+window.sessionProfile = sessionProfile;
 
 // ---------- Busy days ----------
 
@@ -1307,6 +1501,38 @@ function weightedVdot(samples) {
   return den ? num / den : null;
 }
 
+/** Recency-decayed VDOT so the prediction history moves with training, not a frozen race anchor. */
+function decayWeightedVdot(samples, asOf) {
+  if (!samples?.length) return null;
+  const asOfDate = typeof asOf === "string" ? parseDate(asOf) : asOf;
+  if (!asOfDate || Number.isNaN(asOfDate.getTime())) return weightedVdot(samples);
+  const scored = [];
+  for (const s of samples) {
+    if (!(s?.vdot > 0)) continue;
+    const when = parseDate(s.date);
+    if (!when || Number.isNaN(when.getTime()) || when > asOfDate) continue;
+    const age = Math.max(0, daysBetween(when, asOfDate));
+    const halfLife = s.source === "race" ? 70
+      : s.source === "quality" ? 18
+      : s.source === "hr" ? 16
+      : s.source === "long" ? 24
+      : 10;
+    const recency = Math.exp(-Math.LN2 * age / halfLife);
+    if (recency < 0.04) continue;
+    const rank = sourceRank(s.source);
+    scored.push({ vdot: s.vdot, w: recency * rank * rank, source: s.source });
+  }
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.w - a.w);
+  const top = scored.slice(0, 8);
+  let num = 0, den = 0;
+  top.forEach((s) => {
+    num += s.vdot * s.w;
+    den += s.w;
+  });
+  return den ? num / den : null;
+}
+
 function paceBand(lo, hi) {
   const a = Math.round(Math.min(lo, hi));
   const b = Math.round(Math.max(lo, hi));
@@ -1389,24 +1615,14 @@ function estimateAthleteVdot(acts, now = new Date()) {
   if (!samples.length) return vo2 >= 25 && vo2 <= 85 ? vo2 : null;
 
   const ds = typeof ymd === "function" ? ymd(now) : String(now).slice(0, 10);
-  const recentFrom = typeof addDays === "function" && typeof parseDate === "function"
-    ? ymd(addDays(parseDate(ds), -28))
-    : ds;
-  const raceFrom = typeof addDays === "function" && typeof parseDate === "function"
-    ? ymd(addDays(parseDate(ds), -400))
-    : ds;
-  const prior = samples.filter((s) => s.date <= ds);
-  const races = prior.filter((s) => s.source === "race" && s.date >= raceFrom);
-  const recent = prior.filter((s) => s.date >= recentFrom);
-  const perf = recent.filter((s) => s.source !== "easy");
-  const use = races.length ? races : (perf.length ? perf : recent);
-  let vdot = use.length ? weightedVdot(use) : null;
+  let vdot = decayWeightedVdot(samples.filter((s) => s.date <= ds), ds);
   if (vdot && vo2 >= 25 && vo2 <= 85) {
-    const hard = use.some((s) => s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
+    const hard = samples.some((s) => s.date <= ds && (s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84)));
+    const hadRace = samples.some((s) => s.date <= ds && s.source === "race");
     // Garmin VO2 can sit well above what logged paces support — only blend lightly, and
     // almost ignore it when it disagrees by more than ~8 VDOT points.
     const gap = Math.abs(vo2 - vdot);
-    let w = races.length ? 0.12 : (hard ? 0.22 : 0.3);
+    let w = hadRace ? 0.12 : (hard ? 0.22 : 0.3);
     if (gap > 8) w = Math.min(w, 0.06);
     else if (gap > 5) w = Math.min(w, 0.12);
     vdot = vdot * (1 - w) + vo2 * w;
@@ -1750,24 +1966,23 @@ window.racePrediction = function racePrediction(acts, now) {
       : (spec.bikeKm || 0) >= 70 ? 8 * 60
         : 5 * 60;
 
+  const nowYmd = ymd(now);
   function eventAt(date) {
     const ds = typeof date === "string" ? date : ymd(date);
     let runSec = null, swimSec = null, bikeSec = null, vdot = null;
     if (wantRun && spec.targetRunKm) {
       const prior = runSamples.filter((s) => s.date <= ds);
-      const from = ymd(addDays(parseDate(ds), -21));
-      const recent = prior.filter((s) => s.date >= from);
-      // Races stay useful for months; keep a longer window than routine sessions.
-      const raceFrom = ymd(addDays(parseDate(ds), -400));
-      const races = prior.filter((s) => s.source === "race" && s.date >= raceFrom);
-      const perf = recent.filter((s) => s.source !== "easy");
-      const use = races.length ? races : (perf.length ? perf : recent);
-      vdot = use.length ? weightedVdot(use) : null;
+      // Decay-weighted fitness: recent quality moves the line; old races fade instead of freezing it.
+      vdot = decayWeightedVdot(prior, ds);
       const vo2 = num(trainingMetrics().vo2_run);
-      if (vdot && vo2 >= 25 && vo2 <= 85) {
-        const hard = use.some((s) => s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
-        // When we already have a race result, trust it more than Garmin VO2 blend.
-        const w = races.length ? 0.15 : (hard ? 0.3 : 0.45);
+      // Only blend today's Garmin VO2 into the current point — never rewrite the whole history with it.
+      if (vdot && ds === nowYmd && vo2 >= 25 && vo2 <= 85) {
+        const hard = prior.some((s) => s.source === "race" || s.source === "quality" || (s.fraction != null && s.fraction >= 0.84));
+        const hadRace = prior.some((s) => s.source === "race");
+        const gap = Math.abs(vo2 - vdot);
+        let w = hadRace ? 0.15 : (hard ? 0.3 : 0.45);
+        if (gap > 8) w = Math.min(w, 0.08);
+        else if (gap > 5) w = Math.min(w, 0.15);
         vdot = vdot * (1 - w) + vo2 * w;
       }
       if (vdot) runSec = timeFromVdot(vdot, spec.targetRunKm * 1000);
@@ -1799,6 +2014,23 @@ window.racePrediction = function racePrediction(acts, now) {
     const point = eventAt(now);
     if (point) history.push({ ...point, date: ymd(from) });
   }
+  // Light EMA so day-to-day noise settles like Garmin, while real session steps still show.
+  if (history.length > 2) {
+    let ema = history[0].timeSec;
+    const alpha = 0.28;
+    for (let i = 0; i < history.length; i++) {
+      const raw = history[i].timeSec;
+      ema = i === 0 ? raw : ema * (1 - alpha) + raw * alpha;
+      const paceRatio = history[i].paceSec && history[i].timeSec
+        ? history[i].paceSec / history[i].timeSec
+        : 1;
+      history[i] = {
+        ...history[i],
+        timeSec: ema,
+        paceSec: history[i].paceSec ? ema * paceRatio : ema,
+      };
+    }
+  }
   if (!history.length && goalRun) {
     history.push({ date: ymd(endHist), timeSec: goalRun, paceSec: goalRun, vdot: null });
   }
@@ -1827,18 +2059,18 @@ window.racePrediction = function racePrediction(acts, now) {
   const usedRace = runSamples.some((s) => s.source === "race");
   const phys = trainingMetrics();
   const note = incomplete
-    ? "Per-leg times fill in as you log swims and rides; run estimate is already active."
+    ? "“If you raced today” is from your run fitness; swim/bike fill in as you log those. Race-day projection assumes you finish the plan."
     : !runSamples.length && !swimSamples.length && !bikeSamples.length
       ? "From your plan race pace until there are timed sessions to work from."
       : spec.sport === "triathlon"
-        ? "Per-leg estimates from recent swim, bike and run sessions. Projection assumes you follow the rest of the plan."
+        ? "“If you raced today” = current fitness from recent swim/bike/run. Race-day projection = that fitness after the remaining plan weeks."
         : usedRace
-          ? "Anchored on recent race efforts (half/marathon/5–10K), not easy social runs. Projection assumes you follow the rest of the plan."
+          ? "Line tracks fitness from races and hard sessions as they age in; easy runs barely move it. Race-day projection assumes you follow the rest of the plan."
           : phys.vo2_run
-            ? "From recent runs, with heart rate as the effort, blended with Garmin VO2max. Projection assumes you follow the rest of the plan."
+            ? "Line tracks recent run fitness (HR as effort); today’s point also blends Garmin VO2max. Race-day projection assumes you follow the rest of the plan."
             : usedHr
-              ? "From recent runs, with heart rate as the effort. Easy social runs are down-weighted. Projection assumes you follow the rest of the plan."
-              : "From logged sessions. Projection assumes you follow the rest of the plan.";
+              ? "Line tracks recent run fitness with heart rate as the effort. Race-day projection assumes you follow the rest of the plan."
+              : "Line tracks logged sessions over the block. Race-day projection assumes you follow the rest of the plan.";
 
   function scaleLeg(sec) {
     if (!(sec > 0)) return null;
