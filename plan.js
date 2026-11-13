@@ -15,27 +15,43 @@ function tt(key, vars) {
 function skipKey(userId) {
   return `plan-skipped:${userId}`;
 }
+function storedSkip(userId) {
+  if (!userId) return false;
+  try {
+    return localStorage.getItem(skipKey(userId)) === "1";
+  } catch {
+    return false;
+  }
+}
 function hasSkipped(userId) {
-  return !!userId && localStorage.getItem(skipKey(userId)) === "1";
+  if (!userId) return false;
+  if (storedSkip(userId)) return true;
+  // In-memory only (e.g. private mode where localStorage writes fail).
+  return !!(window.PLAN_SKIPPED && window.CURRENT_USER_ID === userId);
 }
 function markSkipped(userId) {
   window.PLAN_SKIPPED = true;
-  if (userId) localStorage.setItem(skipKey(userId), "1");
+  if (!userId) return;
+  try { localStorage.setItem(skipKey(userId), "1"); } catch { /* private mode */ }
 }
 function clearSkipped(userId) {
   window.PLAN_SKIPPED = false;
-  if (userId) localStorage.removeItem(skipKey(userId));
+  if (!userId) return;
+  try { localStorage.removeItem(skipKey(userId)); } catch { /* ignore */ }
 }
 
 function applyPlanRow(row) {
   const goalType = row?.goal_type
-    || (/^general fitness$/i.test(String(row?.event_name || "")) ? "fitness" : "race");
+    || (/^general fitness$/i.test(String(row?.event_name || "")) ? "fitness"
+      : /^start to run$/i.test(String(row?.event_name || "")) ? "fitness" : "race");
+  const program = row?.program
+    || (/^start to run$/i.test(String(row?.event_name || "")) ? "start_to_run" : "standard");
   const sources = Array.isArray(row?.sources) && row.sources.length
     ? row.sources
     : (typeof window.researchForSport === "function"
-      ? window.researchForSport(row?.sport || "run", goalType)
+      ? window.researchForSport(row?.sport || "run", goalType, program)
       : []);
-  window.CURRENT_PLAN = { ...row, goal_type: goalType, sources };
+  window.CURRENT_PLAN = { ...row, goal_type: goalType, program, sources };
   window.PLAN_START = row.start_date;
   window.MARATHON_DATE = row.event_date;
   window.PHASES = row.phases || [];
@@ -409,8 +425,26 @@ function renderSetupPlanForm(message = "", opts = {}) {
           <div id="time-custom-wrap" hidden></div>
           <input type="hidden" name="time_goal" />
         </fieldset>
-        <fieldset data-for-goal="fitness">
-          <legend>How long?</legend>
+        <fieldset data-for-goal="fitness" data-setup-program hidden>
+          <legend class="field-label-row">${tt("setup.program")}
+            <button class="info-tip" type="button" aria-label="About programs" data-tip="${escAttr(tt("setup.programTip"))}">i</button>
+          </legend>
+          <div class="choice-row" id="fitness-program-choices">
+            <button class="choice-btn active" type="button" data-program="standard">${tt("setup.programFitness")}</button>
+            <button class="choice-btn" type="button" data-program="start_to_run">${tt("setup.programStartToRun")}</button>
+          </div>
+          <input type="hidden" name="program" value="" />
+          <p class="muted small-text" id="fitness-program-hint"></p>
+        </fieldset>
+        <div class="start-to-run-box" id="start-to-run-box" hidden>
+          <p class="setup-hint" id="start-to-run-hint"></p>
+          <div class="choice-row" id="start-to-run-opt">
+            <button class="choice-btn" type="button" data-program-override="start_to_run">${tt("setup.programStartToRun")}</button>
+            <button class="choice-btn" type="button" data-program-override="standard">${tt("setup.programStandard5k")}</button>
+          </div>
+        </div>
+        <fieldset data-for-goal="fitness" data-setup-fitness-weeks>
+          <legend>${tt("setup.howLong")}</legend>
           <div class="choice-row" id="fitness-week-choices"></div>
           <input type="hidden" name="fitness_weeks" value="12" />
           <label class="fitness-custom-label" id="fitness-custom-wrap" hidden>
@@ -568,6 +602,25 @@ function setupGoal(form) {
   return fieldValue(form, "goal_type") || "race";
 }
 
+function setupProgramValue(form) {
+  return String(fieldValue(form, "program") || "").toLowerCase();
+}
+
+/** Whether the current setup answers will generate a Start to Run plan. */
+function setupUsesStartToRun(form) {
+  if (!form || typeof window.resolveStartToRunProgram !== "function") return false;
+  const sport = setupSport(form);
+  if (sport !== "run") return false;
+  return window.resolveStartToRunProgram({
+    sport,
+    preset: effectivePreset(form),
+    goalType: setupGoal(form),
+    experience: fieldValue(form, "experience") || "intermediate",
+    weeklyKm: weeklyKmFromForm(form),
+    program: setupProgramValue(form),
+  }) === "start_to_run";
+}
+
 function effectivePreset(form) {
   const goal = setupGoal(form);
   if (goal === "time") {
@@ -576,6 +629,7 @@ function effectivePreset(form) {
   }
   if (goal === "fitness") {
     const sport = setupSport(form);
+    if (sport === "run" && setupProgramValue(form) === "start_to_run") return "5k";
     if (sport === "run") return "10k";
     if (sport === "swim") return "1500";
     if (sport === "bike") return "40";
@@ -607,13 +661,14 @@ function setupAdvice(form) {
   if (!sport) return null;
   return trainingAdvice(sport, effectivePreset(form), {
     run: fieldValue(form, "custom_run"),
+    run2: fieldValue(form, "custom_run2"),
     swim: fieldValue(form, "custom_swim"),
     bike: fieldValue(form, "custom_bike"),
   }, fieldValue(form, "experience") || "intermediate");
 }
 
 function syncChoiceButtons(root, attr, value) {
-  const buttonOnly = new Set(["data-goal", "data-experience", "data-strength", "data-sport"]);
+  const buttonOnly = new Set(["data-goal", "data-experience", "data-strength", "data-sport", "data-program", "data-program-override"]);
   const sel = buttonOnly.has(attr) ? `button[${attr}]` : `[${attr}]`;
   root.querySelectorAll(sel).forEach((b) => {
     b.classList.toggle("active", b.getAttribute(attr) === String(value));
@@ -648,9 +703,10 @@ function pickStrength(form, value) {
   if (value === "no" && strengthEl) strengthEl.value = "";
   if (value === "yes" && strengthEl && !parseDays(strengthEl.value).length && typeof defaultTrainingBlocks === "function") {
     const sport = setupSport(form) || "run";
-    const n = Number(fieldValue(form, "run_days")) || 3;
+    const startToRun = setupUsesStartToRun(form);
+    const n = Number(fieldValue(form, "run_days")) || (startToRun ? 1 : 3);
     const busy = parseDays(fieldValue(form, "busy_weekdays"));
-    const blocks = defaultTrainingBlocks(sport, n, true, busy);
+    const blocks = defaultTrainingBlocks(sport, n, true, busy, { startToRun });
     strengthEl.value = (blocks.strength || []).join(",");
   }
   paintWeekBlocks(form);
@@ -730,7 +786,34 @@ function bindSetupForm(form) {
         keepTimeDistanceChrome(form);
         return;
       }
+      setChoice(form, "program", "", "data-program");
+      delete form.dataset.runDaysPicked;
       applyGoalType(form, nextGoal, { explicit: true });
+      return;
+    }
+    const programPick = e.target.closest("[data-program]");
+    if (programPick && form.contains(programPick) && !programPick.hasAttribute("data-program-override")) {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = programPick.getAttribute("data-program") === "start_to_run" ? "start_to_run" : "standard";
+      setChoice(form, "program", next === "standard" ? "" : next, "data-program");
+      delete form.dataset.runDaysPicked;
+      paintFitnessProgram(form);
+      updateTrainingAdvice();
+      saveSetupDraft(form);
+      return;
+    }
+    const programOverride = e.target.closest("[data-program-override]");
+    if (programOverride && form.contains(programOverride)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = programOverride.getAttribute("data-program-override") === "standard"
+        ? "standard"
+        : "start_to_run";
+      setChoice(form, "program", next, "data-program");
+      delete form.dataset.runDaysPicked;
+      updateTrainingAdvice();
+      saveSetupDraft(form);
       return;
     }
     // Clicks in the distance row that miss a chip must not fall through to other handlers.
@@ -789,11 +872,12 @@ function bindSetupForm(form) {
       delete form.dataset.runDaysPicked;
       delete form.dataset.strengthPicked;
       delete form.dataset.fitnessWeeksPicked;
+      setChoice(form, "program", "", "data-program");
       ["run_weekdays", "swim_weekdays", "bike_weekdays", "strength_weekdays"].forEach((name) => {
         const el = fieldOf(form, name);
         if (el) el.value = "";
       });
-      paintDistances(sportPick.dataset.sport, { keepPreset: false, skipAdvice: true });
+      paintDistances(nextSport, { keepPreset: false, skipAdvice: true });
       if (setupGoal(form) === "fitness") paintFitnessWeeks(form);
       fillWeeklyFromSynced(form, { force: true });
       syncExperienceFromWeekly(form);
@@ -1003,22 +1087,53 @@ function applySetupSeed(form, draft) {
     form.querySelectorAll("#distance-choices .choice-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === draft.preset));
     toggleCustom(draft.sport, draft.preset);
   }
-  ["custom_run", "custom_swim", "custom_bike", "event_name", "event_location", "event_date", "event_end_date",
-    "event_kind", "event_legs_json", "weekly_km",
+  ["custom_run", "custom_run2", "custom_swim", "custom_bike", "event_name", "event_location", "event_date", "event_end_date",
+    "multi_day", "event_kind", "event_legs_json", "weekly_km",
     "run_days", "run_weekdays", "strength_weekdays", "swim_weekdays", "bike_weekdays", "busy_weekdays",
-    "long_weekday", "time_goal", "time_custom", "fitness_weeks", "fitness_weeks_custom",
+    "long_weekday", "time_goal", "time_custom", "fitness_weeks", "fitness_weeks_custom", "program",
     "goal_type", "is_public", "experience", "strength"].forEach((name) => {
     if (fieldOf(form, name) && draft[name] != null) fieldOf(form, name).value = draft[name];
   });
+  const risk = fieldOf(form, "own_risk");
+  if (risk) risk.checked = draft.own_risk === "1" || draft.own_risk === true;
+  // Restore lock flags before advice refresh so the week grid is not reseeded away.
+  [
+    ["weekEdited", "weekEdited"],
+    ["blocksPicked", "blocksPicked"],
+    ["runDaysPicked", "runDaysPicked"],
+    ["strengthPicked", "strengthPicked"],
+    ["experiencePicked", "experiencePicked"],
+    ["longPicked", "longPicked"],
+    ["weeklyPicked", "weeklyPicked"],
+    ["weeklyAuto", "weeklyAuto"],
+    ["fitnessWeeksPicked", "fitnessWeeksPicked"],
+    ["timeChrome", "timeChrome"],
+    ["strengthMode", "strengthMode"],
+    ["pickedSport", "pickedSport"],
+    ["pickedPreset", "pickedPreset"],
+  ].forEach(([from, to]) => {
+    if (draft[from]) form.dataset[to] = draft[from];
+    else delete form.dataset[to];
+  });
+  // Prefer an explicit lock when weekday answers were restored.
+  if (draft.run_weekdays || draft.swim_weekdays || draft.bike_weekdays || draft.strength_weekdays || draft.busy_weekdays) {
+    form.dataset.blocksPicked = "1";
+    form.dataset.weekEdited = "1";
+  }
   syncChoiceButtons(form, "data-goal", fieldValue(form, "goal_type") || "race");
   paintTimeTargets(form);
   paintFitnessWeeks(form);
+  paintFitnessProgram(form);
+  updateStartToRunChrome(form);
   syncChoiceButtons(form, "data-time-target", fieldValue(form, "time_goal"));
   syncChoiceButtons(form, "data-fitness-weeks", fieldValue(form, "fitness_weeks") || "12");
+  syncChoiceButtons(form, "data-program", setupProgramValue(form) === "start_to_run" ? "start_to_run" : "standard");
+  syncChoiceButtons(form, "data-program-override", setupProgramValue(form) === "standard" ? "standard" : "start_to_run");
   syncChoiceButtons(form, "data-is-public", fieldValue(form, "is_public") || "no");
   syncChoiceButtons(form, "data-experience", fieldValue(form, "experience") || "intermediate");
   syncChoiceButtons(form, "data-strength", fieldValue(form, "strength"));
   syncChoiceButtons(form, "data-event-kind", fieldValue(form, "event_kind") || "race");
+  syncChoiceButtons(form, "data-event-multi", fieldValue(form, "multi_day") || "no");
   if (draft.event_legs_json) form.dataset.eventLegsJson = draft.event_legs_json;
   if (draft.run_days) setRunDays(form, draft.run_days);
   if (draft.extraDisciplines) form.dataset.extraDisciplines = draft.extraDisciplines;
@@ -1153,6 +1268,8 @@ function applyGoalType(form, goal, opts = {}) {
   const card = form.querySelector(".picked-event");
   if (card) card.hidden = !(goal === "race" && picked);
   if (goal === "fitness") paintFitnessWeeks(form);
+  paintFitnessProgram(form);
+  updateStartToRunChrome(form);
   updateWeeklyVolumeLimits(form);
   fillWeeklyFromSynced(form);
   updateTrainingAdvice();
@@ -1184,15 +1301,99 @@ function updateWeeklyVolumeLimits(form) {
   const unit = distLabel();
   const maxKm = sport === "bike" ? 500 : sport === "swim" ? 40 : 200;
   const maxDisplay = typeof window.displayDistValue === "function" ? window.displayDistValue(maxKm, 0) : maxKm;
+  const startToRun = setupUsesStartToRun(form);
+  weekly.min = startToRun ? "0" : "1";
   weekly.max = String(maxDisplay);
   form.querySelectorAll("[data-units-label]").forEach((el) => { el.textContent = unit; });
   const hint = document.getElementById("weekly-hint");
   if (!hint) return;
-  if (sport === "bike") hint.textContent = `Use your current typical week on the bike (${unit}).`;
+  if (startToRun) {
+    hint.textContent = `Just starting? Enter 0. Otherwise use your current typical week of running (${unit}).`;
+  } else if (sport === "bike") hint.textContent = `Use your current typical week on the bike (${unit}).`;
   else if (sport === "swim") hint.textContent = `Use your current typical week in the water (${unit}).`;
   else if (sport === "triathlon") hint.textContent = `Use your current typical run volume (${unit}). Swim and bike volume are planned separately.`;
   else if (sport === "run") hint.textContent = `Use your current typical week of running (${unit}).`;
   else hint.textContent = `Use your current typical weekly volume (${unit}).`;
+}
+
+function paintFitnessProgram(form) {
+  const field = form?.querySelector("[data-setup-program]");
+  const weeksField = form?.querySelector("[data-setup-fitness-weeks]");
+  const hint = document.getElementById("fitness-program-hint");
+  if (!form || !field) return;
+  const goal = setupGoal(form);
+  const sport = setupSport(form);
+  const show = goal === "fitness" && sport === "run";
+  field.hidden = !show;
+  if (!show) {
+    if (setupProgramValue(form) === "start_to_run") setChoice(form, "program", "", "data-program");
+    if (weeksField) weeksField.hidden = goal !== "fitness";
+    return;
+  }
+  field.hidden = false;
+  const selected = setupProgramValue(form) === "start_to_run" ? "start_to_run" : "standard";
+  syncChoiceButtons(form, "data-program", selected);
+  if (hint) {
+    hint.textContent = selected === "start_to_run"
+      ? tt("setup.programStartToRunHint")
+      : tt("setup.programFitnessHint");
+  }
+  if (weeksField) {
+    const hideWeeks = selected === "start_to_run";
+    weeksField.hidden = hideWeeks;
+  }
+}
+
+function updateStartToRunChrome(form) {
+  const box = document.getElementById("start-to-run-box");
+  const hint = document.getElementById("start-to-run-hint");
+  if (!form || !box) return;
+  const goal = setupGoal(form);
+  const sport = setupSport(form);
+  const preset = effectivePreset(form);
+  const experience = fieldValue(form, "experience") || "intermediate";
+  const weekly = weeklyKmFromForm(form);
+  const explicit = setupProgramValue(form);
+  const autoCandidate = sport === "run"
+    && (goal === "race" || goal === "time")
+    && preset === "5k"
+    && (experience === "beginner" || weekly < 10);
+  if (!autoCandidate) {
+    if ((goal === "race" || goal === "time")
+      && (explicit === "start_to_run" || explicit === "standard")
+      && !(sport === "run" && preset === "5k" && (experience === "beginner" || weekly < 10))) {
+      setChoice(form, "program", "", "data-program");
+    }
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.removeAttribute("hidden");
+  const using = explicit === "standard" ? "standard" : "start_to_run";
+  if (!explicit) setChoice(form, "program", "start_to_run", "data-program");
+  syncChoiceButtons(form, "data-program-override", using);
+  if (hint) {
+    hint.textContent = using === "start_to_run"
+      ? tt("setup.startToRunAutoHint")
+      : tt("setup.startToRunOptOutHint");
+  }
+}
+
+function paintRunDayChoices(form, options) {
+  const box = document.getElementById("run-day-choices");
+  const legend = document.getElementById("run-days-legend");
+  if (!box) return;
+  const opts = Array.isArray(options) && options.length ? options : [3, 4, 5, 6];
+  const current = Number(fieldValue(form, "run_days")) || opts[0];
+  box.innerHTML = opts.map((n) => `
+    <button class="choice-btn" type="button" data-run-days="${n}">${n} day${n === 1 ? "" : "s"}</button>`).join("");
+  if (legend) {
+    legend.textContent = opts[opts.length - 1] <= 3
+      ? tt("setup.runDaysStartToRun")
+      : tt("setup.runDays");
+  }
+  const next = opts.includes(current) ? current : opts[0];
+  setRunDays(form, next, !!form.dataset.runDaysPicked);
 }
 
 const WEEKDAY_KEYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -1285,11 +1486,13 @@ function ensureLongWeekday(form, runDays, prefer = null) {
 }
 
 function setupNeedsLongDay(form) {
+  if (setupUsesStartToRun(form)) return false;
   const sport = setupSport(form);
   const preset = effectivePreset(form);
   if (!sport || !preset || typeof window.needsDedicatedLongDay !== "function") return false;
   return window.needsDedicatedLongDay(sport, preset, {
     run: fieldValue(form, "custom_run"),
+    run2: fieldValue(form, "custom_run2"),
     swim: fieldValue(form, "custom_swim"),
     bike: fieldValue(form, "custom_bike"),
   });
@@ -1305,15 +1508,16 @@ function fillProposedWeek(form, force = false) {
   const mainEl = fieldOf(form, `${mainKey}_weekdays`);
   if (!mainEl) return false;
   if (!force && (form.dataset.blocksPicked || parseDays(mainEl.value).length)) return false;
-  const n = Number(fieldValue(form, "run_days")) || 3;
+  const startToRun = setupUsesStartToRun(form);
+  const n = Number(fieldValue(form, "run_days")) || (startToRun ? 1 : 3);
   const strength = fieldValue(form, "strength") === "yes";
   const busy = parseDays(fieldValue(form, "busy_weekdays"));
-  const blocks = defaultTrainingBlocks(sport, n, strength, busy);
+  const blocks = defaultTrainingBlocks(sport, n, strength, busy, { startToRun });
   if (primary.includes("run")) {
     const runEl = fieldOf(form, "run_weekdays");
     if (runEl) runEl.value = (blocks.run || []).join(",");
     if (!form.dataset.runDaysPicked) setRunDays(form, (blocks.run || []).length);
-    if (!form.dataset.longPicked) setLongWeekday(form, blocks.long);
+    if (!form.dataset.longPicked && !startToRun) setLongWeekday(form, blocks.long);
   }
   if (primary.includes("swim")) {
     const swimEl = fieldOf(form, "swim_weekdays");
@@ -1354,9 +1558,10 @@ function applyDefaultBlocks(form, { force = false } = {}) {
     return;
   }
   const strength = fieldValue(form, "strength") === "yes";
-  const n = Number(fieldValue(form, "run_days")) || 3;
+  const startToRun = setupUsesStartToRun(form);
+  const n = Number(fieldValue(form, "run_days")) || (startToRun ? 1 : 3);
   const busy = parseDays(fieldValue(form, "busy_weekdays"));
-  const blocks = defaultTrainingBlocks(sport, n, strength, busy);
+  const blocks = defaultTrainingBlocks(sport, n, strength, busy, { startToRun });
   const extras = parseExtras(form);
   const primary = primaryDisciplines(sport);
   const keep = {
@@ -1372,8 +1577,9 @@ function applyDefaultBlocks(form, { force = false } = {}) {
   setDays("strength_weekdays", strength ? blocks.strength.join(",") : "");
   setDays("swim_weekdays", primary.includes("swim") ? blocks.swim.join(",") : keep.swim);
   setDays("bike_weekdays", primary.includes("bike") ? blocks.bike.join(",") : keep.bike);
-  if (primary.includes("run") && !form.dataset.longPicked) setLongWeekday(form, blocks.long);
-  else if (primary.includes("run")) ensureLongWeekday(form, blocks.run, blocks.long);
+  if (primary.includes("run") && !startToRun && !form.dataset.longPicked) setLongWeekday(form, blocks.long);
+  else if (primary.includes("run") && !startToRun) ensureLongWeekday(form, blocks.run, blocks.long);
+  else if (startToRun) setLongWeekday(form, null);
   // Seeded — but not user-locked, so recommended day-count changes can reseed.
   form.dataset.blocksPicked = "1";
   paintWeekBlocks(form);
@@ -1592,13 +1798,15 @@ function trainingDayPressure(form, sport) {
   const experience = fieldValue(form, "experience") || "intermediate";
   const custom = {
     run: fieldValue(form, "custom_run"),
+    run2: fieldValue(form, "custom_run2"),
     swim: fieldValue(form, "custom_swim"),
     bike: fieldValue(form, "custom_bike"),
   };
   const advice = typeof window.trainingAdvice === "function"
     ? window.trainingAdvice(sport, preset, custom, experience)
-    : { minDays: 3, showRunDays: sport === "run" || sport === "walk" || sport === "triathlon" };
-  const minDays = Math.max(2, Number(advice.minDays) || 3);
+    : { minDays: 3, showRunDays: sport === "run" || sport === "walk" || sport === "triathlon" || sport === "duathlon" || sport === "aquathlon" };
+  const startToRun = setupUsesStartToRun(form);
+  const minDays = startToRun ? 1 : Math.max(2, Number(advice.minDays) || 3);
   const sportDays = new Set();
   ["run", "swim", "bike", "strength"].forEach((k) => {
     parseDays(fieldValue(form, `${k}_weekdays`)).forEach((d) => sportDays.add(d));
@@ -1611,7 +1819,8 @@ function trainingDayPressure(form, sport) {
         ? parseDays(fieldValue(form, "bike_weekdays")).length
         : sportDays.size;
   const tooBusy = free < minDays;
-  const tooFewSport = primaryCount < minDays || sportDays.size < Math.min(2, minDays);
+  const tooFewSport = primaryCount < minDays
+    || (!startToRun && sportDays.size < Math.min(2, minDays));
   return { tooBusy, tooFewSport, free, minDays, primaryCount, sportCount: sportDays.size, busy: busy.length };
 }
 
@@ -1716,18 +1925,23 @@ function updateTrainingAdvice() {
   const form = document.querySelector(".setup-form");
   if (!form) return;
   syncExperienceFromWeekly(form);
+  paintFitnessProgram(form);
+  updateStartToRunChrome(form);
   updateWeeklyVolumeLimits(form);
   updateReachability(form);
   const advice = setupAdvice(form);
+  const startToRun = setupUsesStartToRun(form);
   const runField = form.querySelector(".run-days-field");
   const daysHint = document.getElementById("run-days-hint");
   const strengthHint = document.getElementById("strength-hint");
   const expHint = document.getElementById("experience-hint");
   if (expHint && form.dataset.experiencePicked) {
     const sport = setupSport(form);
-    expHint.textContent = (sport === "run" || sport === "triathlon")
-      ? "This changes how many run days are recommended."
-      : "This changes how hard the week is built for your event type.";
+    expHint.textContent = startToRun
+      ? tt("setup.experienceStartToRunHint")
+      : (sport === "run" || sport === "triathlon" || sport === "duathlon" || sport === "aquathlon")
+        ? "This changes how many run days are recommended."
+        : "This changes how hard the week is built for your event type.";
   }
   if (!advice) {
     if (runField) {
@@ -1736,6 +1950,14 @@ function updateTrainingAdvice() {
     }
     paintWeekBlocks(form);
     return;
+  }
+  if (startToRun) {
+    advice.minDays = 1;
+    advice.recDays = typeof window.startToRunRecommendedFreq === "function"
+      ? window.startToRunRecommendedFreq(weeklyKmFromForm(form))
+      : 1;
+    advice.daysHint = tt("setup.startToRunDaysHint");
+    advice.showRunDays = true;
   }
   if (runField) {
     if (advice.showRunDays) {
@@ -1746,6 +1968,11 @@ function updateTrainingAdvice() {
       runField.setAttribute("hidden", "");
     }
   }
+  const dayOptions = startToRun ? [1, 2, 3] : [3, 4, 5, 6];
+  const existingOpts = [...form.querySelectorAll("#run-day-choices [data-run-days]")].map((b) => Number(b.dataset.runDays));
+  const optsChanged = dayOptions.length !== existingOpts.length
+    || dayOptions.some((n, i) => n !== existingOpts[i]);
+  if (optsChanged) paintRunDayChoices(form, dayOptions);
   // Keep the recommended day count selected until the athlete picks another.
   let runDaysChanged = false;
   const recDays = Number(advice.recDays) || 0;
@@ -1810,9 +2037,10 @@ function updateTrainingAdvice() {
       const strengthEl = fieldOf(form, "strength_weekdays");
       if (strengthEl && !parseDays(strengthEl.value).length && typeof defaultTrainingBlocks === "function") {
         const sport = setupSport(form) || "run";
-        const n = Number(fieldValue(form, "run_days")) || 3;
+        const startToRun = setupUsesStartToRun(form);
+        const n = Number(fieldValue(form, "run_days")) || (startToRun ? 1 : 3);
         const busy = parseDays(fieldValue(form, "busy_weekdays"));
-        const blocks = defaultTrainingBlocks(sport, n, true, busy);
+        const blocks = defaultTrainingBlocks(sport, n, true, busy, { startToRun });
         strengthEl.value = (blocks.strength || []).join(",");
       }
     }
@@ -3425,13 +3653,16 @@ document.addEventListener("submit", async (e) => {
       preset = timeGoal.preset;
     }
   }
+  const program = setupProgramValue(form);
   if (goalType === "fitness") {
-    eventName = "General fitness";
-    preset = sport === "run" || sport === "walk"
-      ? (sport === "walk" ? "20" : "10k")
-      : sport === "swim" ? "1500"
-        : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
-          : "halve";
+    const startToRun = sport === "run" && program === "start_to_run";
+    eventName = startToRun ? "Start to Run" : "General fitness";
+    preset = startToRun ? "5k"
+      : sport === "run" || sport === "walk"
+        ? (sport === "walk" ? "20" : "10k")
+        : sport === "swim" ? "1500"
+          : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
+            : "halve";
     const end = new Date();
     end.setDate(end.getDate() + fitnessWeeks * 7);
     eventDate = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
@@ -3460,6 +3691,7 @@ document.addEventListener("submit", async (e) => {
     timeGoal: timeGoalId,
     customTime,
     fitnessWeeks,
+    program: program || (setupUsesStartToRun(form) ? "start_to_run" : "standard"),
     sport,
     preset,
     eventName,

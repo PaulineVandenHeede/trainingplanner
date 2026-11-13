@@ -67,6 +67,18 @@ const GUIDES = {
     ],
     targets: [["Pace", "Easy zone"], ["Effort", "Conversational, RPE 3/10"], ["Shoes", "Daily trainer"]],
   },
+  walkRun: {
+    title: "Walk–jog session",
+    why: "Builds the habit of moving and gently introduces jogging. Walking recoveries are part of the workout, not a failure.",
+    how: [
+      "Use a soft surface if you can (path, track, treadmill).",
+      "Warm up with the prescribed walk, then follow the jog / walk repeats exactly.",
+      "Jog = easy shuffle you could hold a short chat in; never a sprint.",
+      "If a jog bout feels too hard, walk it and resume the next one — finish the full time on feet.",
+      "Cool down with the closing walk and a short stretch.",
+    ],
+    targets: [["Jog effort", "Easy / conversational"], ["Walk", "Easy recovery"], ["Shoes", "Comfortable trainers"]],
+  },
   strides: {
     title: "Strides",
     why: "Short relaxed accelerations that keep your legs used to faster turnover without adding fatigue.",
@@ -433,7 +445,10 @@ function guidesFor(kind, label) {
     else if (/technique|feel|short|drill/i.test(l)) out = [GUIDES.swimB];
     else out = [GUIDES.swimA];
   } else if (kind === "walkswim") out = [GUIDES.swimA, GUIDES.walk];
-  else if (kind === "walk") out = /swim/.test(l) ? [GUIDES.walk, { ...GUIDES.swimB, title: GUIDES.swimB.title + " (optional)" }] : [GUIDES.walk];
+  else if (kind === "walkrun" || /jog\s+\d|walk\s+\d.*jog|warm-up walk/i.test(l)) {
+    out = [GUIDES.walkRun];
+    if (/strength/.test(l)) out.push(strengthGuideForAccess());
+  } else if (kind === "walk") out = /swim/.test(l) ? [GUIDES.walk, { ...GUIDES.swimB, title: GUIDES.swimB.title + " (optional)" }] : [GUIDES.walk];
   else if (kind === "rest") {
     if (/backup/.test(l)) out = [GUIDES.backup];
     else if (/bag|checklist|early night|t1|t2/i.test(l)) out = [GUIDES.rest, GUIDES.transition];
@@ -497,6 +512,27 @@ function finishSegments(raw, totalKm) {
 function sessionProfile(kind, label, km) {
   const l = String(label || "").toLowerCase();
   const total = Number(km) || 0;
+
+  if (kind === "walkrun" || /warm-up walk|jog\s+[\d.]+'\s*\/\s*walk|continuous jog/i.test(l)) {
+    const warm = Number((l.match(/warm-up walk\s+([\d.]+)/) || [])[1] || 5);
+    const cool = Number((l.match(/cool-down walk\s+([\d.]+)/) || [])[1] || 5);
+    const cont = l.match(/continuous jog\s+([\d.]+)/);
+    const raw = [{ name: "Warm-up walk", minutes: warm, zone: "easy" }];
+    if (cont) {
+      raw.push({ name: "Easy jog", minutes: Number(cont[1]) || 20, zone: "easy" });
+    } else {
+      const bout = l.match(/jog\s+([\d.]+)'\s*\/\s*walk\s+([\d.]+)'\s*[×x]\s*(\d+)/i);
+      const jogMin = Number(bout?.[1] || 1);
+      const walkMin = Number(bout?.[2] || 2);
+      const reps = Number(bout?.[3] || 6);
+      for (let i = 0; i < reps; i++) {
+        raw.push({ name: i === 0 ? `Jog ${jogMin}' / Walk ${walkMin}' × ${reps}` : "", minutes: jogMin, zone: "easy" });
+        if (walkMin > 0) raw.push({ name: "", minutes: walkMin, zone: "easy" });
+      }
+    }
+    raw.push({ name: "Cool-down walk", minutes: cool, zone: "easy" });
+    return { title: "Walk–jog", segments: finishSegments(raw, total || null) };
+  }
 
   if (kind === "brick" || /brick|t2/i.test(l)) {
     const runMatch = l.match(/(\d+)\s*[–-]\s*(\d+)'\s*(?:easy\s*)?run|(\d+)'\s*(?:t2\s*)?run/);

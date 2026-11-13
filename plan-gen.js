@@ -376,6 +376,117 @@ window.FITNESS_WEEKS_BY_SPORT = {
   ski: { options: [8, 12, 16], default: 12, hint: "Ski fitness blocks commonly run 8–16 weeks." },
 };
 
+// Adaptive walk–jog → 5K program (original progression; not a branded Couch-to-5K copy).
+// warm/jog/walk/cool are minutes; soft km uses ~5.5 km/h walk and ~7.5 km/h jog.
+window.START_TO_RUN_STAGES = [
+  { id: 1, band: "Intro", name: "Walk with tiny jogs", warm: 5, jog: 0.5, walk: 1.5, reps: 8, cool: 5 },
+  { id: 2, band: "Intro", name: "Short jog bouts", warm: 5, jog: 1, walk: 2, reps: 8, cool: 5 },
+  { id: 3, band: "Intro", name: "Building the jog", warm: 5, jog: 1.5, walk: 1.5, reps: 7, cool: 5 },
+  { id: 4, band: "Build", name: "Two-minute jogs", warm: 5, jog: 2, walk: 2, reps: 6, cool: 5 },
+  { id: 5, band: "Build", name: "Three-minute jogs", warm: 5, jog: 3, walk: 2, reps: 5, cool: 5 },
+  { id: 6, band: "Build", name: "Five-minute jogs", warm: 5, jog: 5, walk: 2, reps: 4, cool: 5 },
+  { id: 7, band: "Build", name: "Longer jog blocks", warm: 5, jog: 8, walk: 2, reps: 3, cool: 5 },
+  { id: 8, band: "Continuous", name: "Nearly continuous", warm: 5, jog: 12, walk: 3, reps: 2, cool: 5 },
+  { id: 9, band: "Continuous", name: "Continuous jog", warm: 5, jog: 22, walk: 0, reps: 1, cool: 5 },
+];
+
+window.startToRunLabel = function startToRunLabel(stage) {
+  const s = stage || {};
+  const warm = `Warm-up walk ${s.warm || 5}'`;
+  const cool = `Cool-down walk ${s.cool || 5}'`;
+  if ((s.reps || 1) === 1 || !(s.walk > 0)) {
+    return `${warm} · Continuous jog ${s.jog || 20}' · ${cool}`;
+  }
+  const jog = Number(s.jog) === 0.5 ? "0.5" : String(s.jog);
+  const walk = Number(s.walk) === 0.5 ? "0.5" : String(s.walk);
+  return `${warm} · Jog ${jog}' / Walk ${walk}' × ${s.reps} · ${cool}`;
+};
+
+window.startToRunEstKm = function startToRunEstKm(stage) {
+  const s = stage || {};
+  const reps = Math.max(1, Number(s.reps) || 1);
+  const walkMin = (Number(s.warm) || 0) + (Number(s.cool) || 0) + (Number(s.walk) || 0) * reps;
+  const jogMin = (Number(s.jog) || 0) * reps;
+  const km = (walkMin / 60) * 5.5 + (jogMin / 60) * 7.5;
+  return Math.max(0.5, Math.round(km * 10) / 10);
+};
+
+window.startToRunEntryIndex = function startToRunEntryIndex(weeklyKm, experience) {
+  const w = Number(weeklyKm);
+  const km = Number.isFinite(w) && w > 0 ? w : 0;
+  if (experience === "advanced" && km >= 12) return 6;
+  if (km <= 2) return 0;
+  if (km <= 6) return 1;
+  if (km <= 10) return 3;
+  if (km <= 15) return 5;
+  return 6;
+};
+
+window.startToRunFreq = function startToRunFreq(runDays) {
+  return Math.max(1, Math.min(3, Number(runDays) || 1));
+};
+
+window.startToRunWeeksPerStage = function startToRunWeeksPerStage(freq) {
+  return window.startToRunFreq(freq) <= 1 ? 2 : 1;
+};
+
+window.startToRunRecommendedFreq = function startToRunRecommendedFreq(weeklyKm) {
+  const w = Number(weeklyKm) || 0;
+  if (w < 5) return 1;
+  if (w < 12) return 2;
+  return 3;
+};
+
+window.startToRunIdealWeeks = function startToRunIdealWeeks(entryIndex, freq) {
+  const stages = window.START_TO_RUN_STAGES || [];
+  const remaining = Math.max(1, stages.length - Math.max(0, entryIndex));
+  return Math.max(4, remaining * window.startToRunWeeksPerStage(freq));
+};
+
+window.startToRunDaySlots = function startToRunDaySlots(freq) {
+  const f = window.startToRunFreq(freq);
+  if (f === 1) return [2]; // Wed
+  if (f === 2) return [1, 3]; // Tue / Thu
+  return [1, 3, 5]; // Tue / Thu / Sat
+};
+
+window.resolveStartToRunProgram = function resolveStartToRunProgram({
+  sport,
+  preset,
+  goalType,
+  experience,
+  weeklyKm,
+  program,
+} = {}) {
+  if (sport !== "run") return "standard";
+  const explicit = String(program || "").toLowerCase();
+  if (explicit === "start_to_run") return "start_to_run";
+  if (explicit === "standard" || explicit === "none" || explicit === "fitness") return "standard";
+  // Auto for Race/Time 5K when beginner or very low volume.
+  if ((goalType === "race" || goalType === "time") && preset === "5k") {
+    const weekly = Number(weeklyKm) || 0;
+    if (experience === "beginner" || weekly < 10) return "start_to_run";
+  }
+  return "standard";
+};
+
+window.startToRunStageForWeek = function startToRunStageForWeek(wk, entryIndex, freq, buildWeeks) {
+  const stages = window.START_TO_RUN_STAGES || [];
+  const last = Math.max(0, stages.length - 1);
+  const entry = Math.max(0, Math.min(last, Number(entryIndex) || 0));
+  const build = Math.max(1, Number(buildWeeks) || 1);
+  const week = Math.max(1, Number(wk) || 1);
+  const remaining = last - entry + 1;
+  const wps = window.startToRunWeeksPerStage(freq);
+  const ideal = remaining * wps;
+  if (build >= ideal) {
+    return Math.min(last, entry + Math.floor((week - 1) / wps));
+  }
+  if (build <= 1) return last;
+  const t = (week - 1) / (build - 1);
+  return Math.min(last, entry + Math.round(t * (last - entry)));
+};
+
 // Research links returned on generated plans. Each entry lists which sports it applies to;
 // race_only sources (tapers, race bricks) are omitted for general fitness blocks.
 window.TRAINING_RESEARCH = [
@@ -1169,11 +1280,15 @@ function normalizeWeekdays(list, fallback = []) {
   return uniq.length ? uniq : fallback.slice();
 }
 
-window.defaultTrainingBlocks = function defaultTrainingBlocks(sport, recDays, wantStrength, busyDays = []) {
+window.defaultTrainingBlocks = function defaultTrainingBlocks(sport, recDays, wantStrength, busyDays = [], opts = {}) {
   const busy = new Set(normalizeWeekdays(busyDays, []));
   const free = (days) => days.filter((d) => !busy.has(d));
-  const n = Math.max(2, Math.min(6, Number(recDays) || 3));
-  const run = free((sport === "run" || sport === "triathlon") ? runDaySlots(n) : []);
+  const startToRun = !!opts.startToRun;
+  const n = startToRun
+    ? Math.max(1, Math.min(3, Number(recDays) || 1))
+    : Math.max(2, Math.min(6, Number(recDays) || 3));
+  const wantsRun = sport === "run" || sport === "triathlon" || sport === "duathlon" || sport === "aquathlon";
+  const run = free(wantsRun ? (startToRun ? window.startToRunDaySlots(n) : runDaySlots(n)) : []);
   const strength = wantStrength && run.length ? free([run.includes(0) ? 0 : run[0]]) : [];
   // Triathlon week template (Triathlete 20-week / ~15-55-30 time split):
   // ~3 swim (frequency for technique), 2–3 bike (volume on the bike), run days as chosen.
@@ -2255,19 +2370,81 @@ function defaultPaces(sport) {
   ];
 }
 
-function researchForSport(sport, goalType = "race") {
+function researchForSport(sport, goalType = "race", program = "standard") {
   const all = window.TRAINING_RESEARCH || [];
-  const mapped = window.planTemplateSport ? window.planTemplateSport(sport) : sport;
-  const key = ["run", "swim", "bike", "triathlon"].includes(mapped) ? mapped : "run";
+  const raw = String(sport || "run");
+  const mapped = window.planTemplateSport ? window.planTemplateSport(raw) : raw;
+  const template = ["run", "swim", "bike", "triathlon"].includes(mapped) ? mapped : "run";
+  // Match the real sport (duathlon/aquathlon/walk/ski) and its periodization template.
+  const keys = [...new Set([raw, template].filter(Boolean))];
   const fitness = goalType === "fitness";
+  const startToRun = program === "start_to_run";
   return all.filter((s) => {
     const sports = Array.isArray(s.sports) && s.sports.length ? s.sports : ["triathlon"];
-    if (!sports.includes(key)) return false;
+    if (!keys.some((k) => sports.includes(k))) return false;
     if (fitness && s.race_only) return false;
+    if (startToRun) return s.id === "run-start-to-run" || s.id === "run-recreational";
+    if (s.id === "run-start-to-run") return false;
     return true;
   });
 }
 window.researchForSport = researchForSport;
+
+function daysForStartToRun(stage, opts = {}, raceDay = 5, isRaceWeek = false, distances = {}) {
+  const days = Array.from({ length: 7 }, () => ["rest", "Rest"]);
+  const set = (i, kind, label, run) => { days[i] = run != null ? [kind, label, run] : [kind, label]; };
+  const busySet = new Set(normalizeWeekdays(opts.busyWeekdays, []));
+  const freeDays = (list, fallback) => normalizeWeekdays(list, fallback).filter((d) => !busySet.has(d));
+  const freq = window.startToRunFreq(opts.runDays || 1);
+
+  if (isRaceWeek) {
+    const name = distances.label || "5K";
+    set(raceDay, "race", `${name} ${fmtKmLabel(distances.run || 5)} km`, distances.run || 5);
+    if (raceDay > 0) {
+      const opener = Math.max(0, raceDay - 2);
+      if (opener !== raceDay && !busySet.has(opener)) {
+        set(opener, "walkrun", "Warm-up walk 5' · Easy jog 8–10' · Cool-down walk 5'", 1.5);
+      }
+      if (raceDay - 1 !== opener) set(raceDay - 1, "rest", "Rest · early night");
+    }
+    return days;
+  }
+
+  const slots = freeDays(opts.runWeekdays, window.startToRunDaySlots(freq)).slice(0, freq);
+  const label = window.startToRunLabel(stage);
+  const km = window.startToRunEstKm(stage);
+  slots.forEach((i) => set(i, "walkrun", label, km));
+
+  if (opts.strength && slots.length) {
+    const strengthDays = freeDays(opts.strengthWeekdays, [slots[0]]);
+    strengthDays.slice(0, 1).forEach((i) => {
+      const [kind, existing, run] = days[i];
+      if (kind === "rest") set(i, "run", "Strength (bodyweight / light)", undefined);
+      else days[i] = [kind, `${existing} + strength`, run];
+    });
+  }
+  return days;
+}
+
+function startToRunPhases(weeksMeta) {
+  const bands = ["Intro", "Build", "Continuous"];
+  const phases = [];
+  bands.forEach((name) => {
+    const idxs = weeksMeta.map((w, i) => (w.phase === name ? i + 1 : null)).filter((x) => x != null);
+    if (!idxs.length) return;
+    phases.push({
+      name,
+      from: idxs[0],
+      to: idxs[idxs.length - 1],
+      focus: name === "Intro"
+        ? "Build the habit with short jog bouts — walk is part of the session"
+        : name === "Build"
+          ? "Lengthen jog intervals; keep walks easy and complete every session"
+          : "Hold a continuous easy jog toward 5K feel",
+    });
+  });
+  return phases.length ? phases : [{ name: "Intro", from: 1, to: weeksMeta.length, focus: "Walk–jog progression" }];
+}
 
 window.generateTrainingPlan = function generateTrainingPlan(input) {
   const goalType = input.goalType === "time" || input.goalType === "fitness" ? input.goalType : "race";
@@ -2307,11 +2484,18 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   }
   if (goalType === "fitness") {
     if (!(window.EVENT_SPORTS || []).includes(sport)) throw new Error("Choose a focus.");
-    preset = sport === "run" || sport === "walk" ? (sport === "walk" ? "20" : "10k")
-      : sport === "swim" ? "1500"
-        : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
-          : "halve";
-    eventName = eventName || "General fitness";
+    const wantsStartToRun = sport === "run"
+      && String(input.program || "").toLowerCase() === "start_to_run";
+    if (wantsStartToRun) {
+      preset = "5k";
+      eventName = eventName || "Start to Run";
+    } else {
+      preset = sport === "run" || sport === "walk" ? (sport === "walk" ? "20" : "10k")
+        : sport === "swim" ? "1500"
+          : sport === "bike" || sport === "ski" ? (sport === "ski" ? "full" : "40")
+            : "halve";
+      eventName = eventName || "General fitness";
+    }
     const weeksIn = Number(input.fitnessWeeks);
     const weeks = weeksIn >= 4 && weeksIn <= 32 ? Math.round(weeksIn) : 12;
     if (!eventDate) eventDate = pgYmd(pgAdd(todayDate, weeks * 7));
@@ -2342,30 +2526,35 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     if ((sport === "run" || sport === "walk") && !(distances.run > 0)) distances.run = legSummary.hardest;
     if ((sport === "bike" || sport === "ski") && !(distances.bike > 0)) distances.bike = legSummary.hardest;
   }
-  const weekly = Number(input.weeklyKm);
+  const weeklyRaw = Number(input.weeklyKm);
+  const weekly = Number.isFinite(weeklyRaw) ? Math.max(0, weeklyRaw) : 0;
   const weeklyMax = sport === "bike" || sport === "ski" ? 500 : sport === "swim" ? 40 : 200;
-  if (!(weekly > 0) || weekly > weeklyMax) {
+  const experience = EXPERIENCE_LEVELS.includes(input.experience) ? input.experience : "intermediate";
+  const program = window.resolveStartToRunProgram({
+    sport,
+    preset,
+    goalType,
+    experience,
+    weeklyKm: weekly,
+    program: input.program,
+  });
+  const isStartToRun = program === "start_to_run";
+  if (isStartToRun) {
+    if (weekly < 0 || weekly > weeklyMax) {
+      throw new Error(`Enter your current weekly kilometres (0–${weeklyMax}). Use 0 if you are just starting.`);
+    }
+  } else if (!(weekly > 0) || weekly > weeklyMax) {
     throw new Error(`Enter your current weekly kilometres (1–${weeklyMax}).`);
   }
-  eventName = eventName || distances.label;
-  const race = pgParse(eventDate);
-  if (Number.isNaN(race.getTime())) throw new Error(goalType === "time" ? "Pick a target date." : "Pick an event date.");
-  if (race < todayDate) throw new Error(goalType === "time" ? "Target date needs to be in the future." : "Event date needs to be in the future.");
-  const raceEnd = pgParse(eventEndRaw && eventEndRaw >= pgYmd(race) ? eventEndRaw : pgYmd(race));
-  if (Number.isNaN(raceEnd.getTime())) throw new Error("Pick a valid event end date.");
-  const isFitness = goalType === "fitness";
-  const multiDayGoal = !isFitness && pgYmd(raceEnd) > pgYmd(race);
-
-  let start = pgMonday(todayDate);
-  let n = Math.floor(pgDays(start, pgMonday(raceEnd)) / 7) + 1;
-  if (n > 32) {
-    start = pgAdd(pgMonday(raceEnd), -31 * 7);
-    n = 32;
+  if (isStartToRun && sport === "run") {
+    if (!distances.run) distances.run = 5;
+    if (goalType === "fitness") eventName = eventName || "Start to Run";
   }
-  if (n < 4) n = Math.max(4, n);
+  eventName = eventName || distances.label;
+  const isFitness = goalType === "fitness";
 
-  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon";
-  const experience = EXPERIENCE_LEVELS.includes(input.experience) ? input.experience : "intermediate";
+  const wantsRunDays = sport === "run" || sport === "walk" || sport === "triathlon"
+    || sport === "duathlon" || sport === "aquathlon";
   const busyWeekdays = normalizeWeekdays(input.busyWeekdays, []);
   const busySet = new Set(busyWeekdays);
   const withoutBusy = (days) => normalizeWeekdays(days, []).filter((d) => !busySet.has(d));
@@ -2376,12 +2565,44 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
   const swimWeekdays = withoutBusy(input.swimWeekdays);
   const bikeWeekdays = withoutBusy(input.bikeWeekdays);
   const runDaysN = wantsRunDays
-    ? Math.max(2, Math.min(6, runWeekdays.length || Number(input.runDays) || advice.recDays))
+    ? (isStartToRun
+      ? Math.max(1, Math.min(3, runWeekdays.length || Number(input.runDays) || window.startToRunRecommendedFreq(weekly)))
+      : Math.max(2, Math.min(6, runWeekdays.length || Number(input.runDays) || advice.recDays)))
     : null;
   if (wantsRunDays && !runWeekdays.length && !(Number(input.runDays) > 0)) {
     throw new Error(sport === "walk" ? "Choose which days you want to walk." : "Choose which days you want to run.");
   }
-  const needsLong = typeof window.needsDedicatedLongDay === "function"
+
+  // Fitness Start to Run: set duration from stages × frequency (optional longer fitnessWeeks).
+  let effectiveEndRaw = eventEndRaw;
+  if (isStartToRun && isFitness) {
+    const ideal = window.startToRunIdealWeeks(
+      window.startToRunEntryIndex(weekly, experience),
+      runDaysN || 1,
+    );
+    const weeksIn = Number(input.fitnessWeeks);
+    const weeks = weeksIn >= ideal && weeksIn <= 32 ? Math.round(weeksIn) : ideal;
+    eventDate = pgYmd(pgAdd(todayDate, weeks * 7));
+    effectiveEndRaw = eventDate;
+  }
+
+  const race = pgParse(eventDate);
+  if (Number.isNaN(race.getTime())) throw new Error(goalType === "time" ? "Pick a target date." : "Pick an event date.");
+  if (race < todayDate) throw new Error(goalType === "time" ? "Target date needs to be in the future." : "Event date needs to be in the future.");
+  const raceEnd = pgParse(effectiveEndRaw && effectiveEndRaw >= pgYmd(race) ? effectiveEndRaw : pgYmd(race));
+  if (Number.isNaN(raceEnd.getTime())) throw new Error("Pick a valid event end date.");
+  const multiDayGoal = !isFitness && pgYmd(raceEnd) > pgYmd(race);
+
+  let start = pgMonday(todayDate);
+  let n = Math.floor(pgDays(start, pgMonday(raceEnd)) / 7) + 1;
+  if (n > 32) {
+    start = pgAdd(pgMonday(raceEnd), -31 * 7);
+    n = 32;
+  }
+  if (n < 4) n = Math.max(4, n);
+
+  const needsLong = !isStartToRun
+    && typeof window.needsDedicatedLongDay === "function"
     && window.needsDedicatedLongDay(sport, preset, input.custom || {});
   let longWeekday = Number.isInteger(Number(input.longWeekday)) ? Number(input.longWeekday) : null;
   if (needsLong) {
@@ -2394,8 +2615,123 @@ window.generateTrainingPlan = function generateTrainingPlan(input) {
     longWeekday = null;
   }
 
+  // —— Start to Run walk–jog trajectory ——
+  if (isStartToRun) {
+    const freq = window.startToRunFreq(runDaysN || 1);
+    const entryIdx = window.startToRunEntryIndex(weekly, experience);
+    const raceDay = (race.getDay() + 6) % 7;
+    const raceStartWeek = Math.floor(pgDays(start, pgMonday(race)) / 7) + 1;
+    const buildWeeks = isFitness ? n : Math.max(1, raceStartWeek - 1);
+    const stages = window.START_TO_RUN_STAGES || [];
+    const weekMetas = [];
+    const weeks = [];
+    for (let i = 0; i < n; i++) {
+      const wk = i + 1;
+      const isRaceWeek = !isFitness && wk === raceStartWeek;
+      const stageIdx = isRaceWeek
+        ? stages.length - 1
+        : window.startToRunStageForWeek(Math.min(wk, buildWeeks), entryIdx, freq, buildWeeks);
+      const stage = stages[stageIdx] || stages[stages.length - 1];
+      const phaseName = isRaceWeek ? "Race" : (stage.band || "Intro");
+      const dayOpts = {
+        runDays: freq,
+        strength,
+        runWeekdays,
+        strengthWeekdays,
+        busyWeekdays,
+        weekNum: wk,
+      };
+      const days = daysForStartToRun(stage, dayOpts, raceDay, isRaceWeek, { ...distances, label: eventName });
+      busyWeekdays.forEach((d) => {
+        if (!isRaceWeek || d !== raceDay) days[d] = ["rest", "Busy"];
+      });
+      const sessionKm = window.startToRunEstKm(stage);
+      const weekKm = isRaceWeek ? (distances.run || 5) : Math.round(sessionKm * freq * 10) / 10;
+      let note;
+      if (wk === 1) {
+        note = `Start to Run from ${weekly || 0} km/week · ${freq} day${freq === 1 ? "" : "s"}/week · starting at stage ${stage.id} (${stage.name}). Walk is part of every session — finish the prescription even if you walk more of the jog bits.`;
+      } else if (isRaceWeek) {
+        note = "Event week: short opener only, then your 5K. Keep it easy and enjoy finishing.";
+      } else if (stage.band === "Continuous" && stage.id === stages[stages.length - 1]?.id) {
+        note = "Continuous easy jog stage — hold conversational effort; walk breaks are fine if you need them.";
+      }
+      weekMetas.push({ phase: phaseName === "Race" ? "Continuous" : phaseName });
+      weeks.push({
+        wk,
+        phase: phaseName === "Race" ? "Continuous" : phaseName,
+        km: weekKm,
+        long: isRaceWeek ? (distances.run || 5) : sessionKm,
+        swim: null,
+        bike: null,
+        focus: isRaceWeek
+          ? "Race week"
+          : (stage.name || phaseName),
+        note,
+        days,
+      });
+    }
+    const phases = startToRunPhases(weekMetas);
+    const sources = researchForSport(sport, goalType, program);
+    const raceYmd = pgYmd(race);
+    const raceEndYmd = pgYmd(raceEnd);
+    const planStartYmd = pgYmd(start);
+    const otherEvents = (input.otherEvents || []).filter((e) => {
+      if (!e || !e.name || !e.date) return false;
+      const evStart = String(e.date).slice(0, 10);
+      const evEnd = window.eventEndYmd(e);
+      if (evStart === raceYmd) return false;
+      return evStart <= raceEndYmd && evEnd >= planStartYmd;
+    });
+    otherEvents
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+      .forEach((ev) => {
+        const multi = !!(ev.end_date && ev.end_date > ev.date) || (Array.isArray(ev.legs) && ev.legs.length > 1);
+        if (multi || window.eventIsSoftKind(ev.kind)) {
+          window.applyAgendaEventToWeeks(weeks, planStartYmd, ev, { goalDate: raceYmd });
+        } else {
+          weaveEventIntoWeek(weeks, start, ev);
+        }
+      });
+    const after = (input.otherEvents || []).filter((e) => {
+      if (!e?.date || !e?.name) return false;
+      return window.eventEndYmd(e) > raceEndYmd;
+    });
+    return {
+      sport,
+      distance_preset: "5k",
+      event_name: eventName,
+      event_date: raceYmd,
+      event_end_date: raceEndYmd,
+      event_kind: eventKind,
+      event_legs: goalLegs,
+      start_date: planStartYmd,
+      swim_m: null,
+      bike_km: null,
+      run_km: distances.run || 5,
+      run2_km: null,
+      weekly_km: weekly,
+      run_days: freq,
+      include_strength: strength,
+      run_weekdays: runWeekdays,
+      strength_weekdays: strengthWeekdays,
+      swim_weekdays: [],
+      bike_weekdays: [],
+      long_weekday: null,
+      notes: `Start to Run walk–jog plan (${freq}×/week). Sessions are timed prescriptions — estimated km are soft. See Research under the plan.`,
+      experience,
+      goal_type: goalType,
+      program: "start_to_run",
+      phases,
+      weeks,
+      paces: defaultPaces("run"),
+      sources,
+      roadmap: buildRoadmap(after, raceEnd, eventName),
+    };
+  }
+
+  const runGoalKm = (distances.run || 0) + (distances.run2 || 0);
   const goalLoad = Math.max(
-    distances.run || 0,
+    runGoalKm || distances.run || 0,
     distances.bike || 0,
     distances.swim ? distances.swim / 1000 : 0,
     legSummary?.hardest || 0,

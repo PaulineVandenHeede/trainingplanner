@@ -9,7 +9,7 @@ function KIND_LABEL(kind) {
   if (typeof window.kindLabel === "function") return window.kindLabel(kind);
   const fallback = {
     run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
-    walk: "Walk", ski: "Ski", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", ebike: "E-bike", brick: "Brick",
+    walk: "Walk", walkrun: "Walk–jog", ski: "Ski", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", ebike: "E-bike", brick: "Brick",
     rest: "Rest", travel: "Travel",
   };
   return fallback[kind] || kind || "";

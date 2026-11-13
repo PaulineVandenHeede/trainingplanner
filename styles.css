@@ -1967,6 +1967,16 @@ body.onboarding .nav-sep { display: none; }
 .day-toggle.overlap-ok { box-shadow: 0 0 0 2px color-mix(in srgb, var(--swim) 45%, transparent); }
 .day-toggle.overlap-warn { box-shadow: 0 0 0 2px var(--build); }
 .week-picker .busy-row th { color: var(--peak); }
+.start-to-run-box {
+  margin: 0.75rem 0 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent, #2a6) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #2a6) 8%, transparent);
+}
+.start-to-run-box .setup-hint { margin: 0 0 0.65rem; }
+.start-to-run-box .choice-row { margin: 0; }
+
 .reachability-box {
   margin-top: 12px;
   padding: 12px 14px;
