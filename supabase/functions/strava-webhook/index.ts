@@ -264,7 +264,7 @@ async function assignStravaGearIfNeeded(
   const type = gearId.startsWith("b") ? "bike" : "shoes";
   const cat = categorize(activityType);
   if (type === "shoes" && cat !== "run" && cat !== "walk") return;
-  if (type === "bike" && cat !== "bike") return;
+  if (type === "bike" && cat !== "bike" && cat !== "ebike") return;
 
   let name = gearId.startsWith("b") ? "Bike" : "Shoes";
   let retired = false;
@@ -337,7 +337,7 @@ function mapStravaToRow(
   if (Number.isFinite(avgSpeed) && avgSpeed > 0) {
     if (cat === "run" || cat === "walk") avgPace = formatPace(1000 / avgSpeed);
     else if (cat === "swim") avgPace = formatPace(100 / avgSpeed);
-    else if (cat === "bike") avgPace = (avgSpeed * 3.6).toFixed(1);
+    else if (cat === "bike" || cat === "ebike") avgPace = (avgSpeed * 3.6).toFixed(1);
   }
   const activityType = displayTypeName(typeKey);
   const title = String(src.name || activityType);
@@ -380,7 +380,9 @@ function categorize(type: string) {
   const t = String(type || "").toLowerCase();
   if (t.includes("run") || t.includes("track") || t.includes("trail") || t.includes("treadmill")) return "run";
   if (t.includes("swim")) return "swim";
-  if (t.includes("cycl") || t.includes("bik") || t.includes("ride") || t.includes("ebike") || t.includes("gravel")) {
+  // E-bike before bike: "ebike" / "e_bike" also match the generic "bik" check.
+  if (/e[\s_-]*bike|electric[\s_-]*bike|ebiking/.test(t)) return "ebike";
+  if (t.includes("cycl") || t.includes("bik") || t.includes("ride") || t.includes("gravel")) {
     return "bike";
   }
   if (t.includes("walk") || t.includes("hik")) return "walk";

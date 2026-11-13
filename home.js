@@ -12,8 +12,11 @@ function dayActivityMatchLine(a, dayMatch, planKind) {
         ${activityLine(a)}
       </div>`;
   }
-  // Walks on non-walk days stay quiet — recovery, not a failed match.
+  // Walks / e-bikes on non-matching days stay quiet — not a failed training match.
   if (a.cat === "walk" && !plannedSportCats(planKind).includes("walk")) {
+    return `<div class="actual k-${a.cat}">${activityLine(a)}</div>`;
+  }
+  if (a.cat === "ebike" && !plannedSportCats(planKind).includes("ebike")) {
     return `<div class="actual k-${a.cat}">${activityLine(a)}</div>`;
   }
   return `
@@ -87,8 +90,9 @@ function renderDayDetail(ds) {
   const plan = planFor(ds);
   const date = parseDate(ds);
   const allDayActs = ACTS.filter((a) => a.date === ds);
-  const dayActs = allDayActs.filter((a) => a.cat !== "walk");
+  const dayActs = allDayActs.filter((a) => a.cat !== "walk" && a.cat !== "ebike");
   const walks = allDayActs.filter((a) => a.cat === "walk");
+  const ebikes = allDayActs.filter((a) => a.cat === "ebike");
   const dayMatch = matchPlanDay(plan, allDayActs);
   const evs = eventsOn(ds);
   const title = plan ? plan.label : hasPlan() ? "Outside the plan" : (dayActs[0]?.title || "Logged day");
@@ -99,7 +103,10 @@ function renderDayDetail(ds) {
     if (dayMatch.trainable) {
       if (matchInfo) {
         matchChip = `<span class="match-tag matched conf-${matchInfo.confidence}" title="${esc(matchConfidenceLabel(matchInfo.confidence))}">${esc(tt("day.matched"))}</span>`;
-      } else if (a.cat !== "walk" || plannedSportCats(plan?.kind).includes("walk")) {
+      } else if (
+        (a.cat !== "walk" || plannedSportCats(plan?.kind).includes("walk"))
+        && (a.cat !== "ebike" || plannedSportCats(plan?.kind).includes("ebike"))
+      ) {
         matchChip = `<span class="match-tag unmatched" title="${esc(tt("day.unmatchedHint"))}">${esc(tt("day.unmatched"))}</span>`;
       }
     }
@@ -139,11 +146,22 @@ function renderDayDetail(ds) {
       </section>`;
   }).join("");
 
+  const ebikeBlocks = ebikes.map((a) => {
+    const matchInfo = dayMatch.byDatetime[a.datetime] || null;
+    return `
+      <section class="activity k-ebike ${matchInfo ? "is-matched" : ""}">
+        ${activityMeta(a, a.title || `E-bike · ${fmtDistWithUnit(a.dist)}`, matchInfo)}
+        ${gearPicker(a)}
+        ${statGrid(a)}
+      </section>`;
+  }).join("");
+
   const guides = plan ? guidesFor(plan.kind, plan.label) : [];
   const showGuidesOpen = !dayActs.length;
+  const quietExtra = (a) => a.cat === "walk" || a.cat === "ebike";
   const matchSummary = dayMatch.trainable && dayMatch.done
-    ? `<p class="match-summary conf-${dayMatch.match?.confidence || "low"}"><span class="match-tag matched">${esc(tt("day.matched"))}</span> ${esc(matchConfidenceLabel(dayMatch.match?.confidence))}${dayMatch.unmatched.some((a) => a.cat !== "walk") ? ` · ${esc(tt("day.extraLogged"))}` : ""}</p>`
-    : dayMatch.trainable && allDayActs.some((a) => a.cat !== "walk")
+    ? `<p class="match-summary conf-${dayMatch.match?.confidence || "low"}"><span class="match-tag matched">${esc(tt("day.matched"))}</span> ${esc(matchConfidenceLabel(dayMatch.match?.confidence))}${dayMatch.unmatched.some((a) => !quietExtra(a)) ? ` · ${esc(tt("day.extraLogged"))}` : ""}</p>`
+    : dayMatch.trainable && allDayActs.some((a) => !quietExtra(a))
       ? `<p class="match-summary is-unmatched"><span class="match-tag unmatched">${esc(tt("day.unmatched"))}</span> ${esc(tt("day.noPlanMatch"))}</p>`
       : "";
 
@@ -165,6 +183,7 @@ function renderDayDetail(ds) {
     ${plan ? paceGraph(plan) : ""}
     ${activities}
     ${walkBlocks}
+    ${ebikeBlocks}
     ${currentRoute() === "activities" ? "" : logSessionForm(ds, plan, allDayActs)}
     ${guides.length ? `
       <details class="guides" ${showGuidesOpen ? "open" : ""}>

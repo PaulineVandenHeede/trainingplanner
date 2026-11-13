@@ -16,6 +16,7 @@
   --event: #e4572e;
   --swim: #3a8fd6;
   --bike: #8e6bbf;
+  --ebike: #3d9a8b;
   --walk: #9a9a9f;
   --rest: #c8c6bf;
   --radius: 14px;
@@ -369,6 +370,7 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 .chip.k-swim { background: var(--swim); }
 .chip.k-walkswim { background: linear-gradient(90deg, var(--walk), var(--swim)); }
 .chip.k-bike { background: var(--bike); }
+.chip.k-ebike { background: var(--ebike); }
 .chip.k-brick { background: linear-gradient(90deg, var(--bike), var(--run)); }
 .chip.k-walk { background: var(--walk); }
 .chip.k-rest, .chip.k-travel { background: var(--rest); color: var(--text); }
@@ -383,6 +385,7 @@ button.countdown:focus-visible { outline: 2px solid var(--accent); outline-offse
 .actual.k-run { border-color: var(--run); }
 .actual.k-swim { border-color: var(--swim); }
 .actual.k-bike { border-color: var(--bike); }
+.actual.k-ebike { border-color: var(--ebike); }
 .actual.is-matched { color: var(--text); border-left-width: 3px; }
 .actual.is-unmatched { opacity: 0.78; }
 .match-tag {
@@ -556,6 +559,7 @@ button.button { border: none; cursor: pointer; font: inherit; font-weight: 600; 
 .activity { border: 1px solid var(--line); border-left: 4px solid var(--run); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
 .activity.k-swim { border-left-color: var(--swim); }
 .activity.k-bike { border-left-color: var(--bike); }
+.activity.k-ebike { border-left-color: var(--ebike); }
 .activity.k-walk { border-left-color: var(--walk); }
 .activity-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .activity-head h3, .guide h3 { margin: 0; font-size: 16px; }
@@ -1157,10 +1161,12 @@ a.year-stat:focus-visible { outline: 2px solid var(--text); outline-offset: 2px;
 .year-stat.k-run { border-left-color: var(--run); }
 .year-stat.k-swim { border-left-color: var(--swim); }
 .year-stat.k-bike { border-left-color: var(--bike); }
+.year-stat.k-ebike { border-left-color: var(--ebike); }
 .year-stat.k-walk { border-left-color: var(--walk); }
 .year-stat.active.k-run { box-shadow: 0 0 0 2px var(--run); }
 .year-stat.active.k-swim { box-shadow: 0 0 0 2px var(--swim); }
 .year-stat.active.k-bike { box-shadow: 0 0 0 2px var(--bike); }
+.year-stat.active.k-ebike { box-shadow: 0 0 0 2px var(--ebike); }
 .year-stat.active.k-walk { box-shadow: 0 0 0 2px var(--walk); }
 .year-stat span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .year-stat strong { display: block; font-size: 22px; letter-spacing: -0.03em; margin: 4px 0 2px; }
@@ -1176,6 +1182,7 @@ a.year-stat:focus-visible { outline: 2px solid var(--text); outline-offset: 2px;
 .week-vol-chart .b-run { fill: var(--run); }
 .week-vol-chart .b-swim { fill: var(--swim); }
 .week-vol-chart .b-bike { fill: var(--bike); }
+.week-vol-chart .b-ebike { fill: var(--ebike); }
 .week-vol-chart .b-walk { fill: var(--walk); }
 .week-vol-chart .wkbar.cur .b-run,
 .week-vol-chart .wkbar.cur .b-swim,
@@ -1187,6 +1194,7 @@ a.year-stat:focus-visible { outline: 2px solid var(--text); outline-offset: 2px;
 .lg-run { background: var(--run); }
 .lg-swim { background: var(--swim); }
 .lg-bike { background: var(--bike); }
+.lg-ebike { background: var(--ebike); }
 .lg-walk { background: var(--walk); }
 .act-month-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 4px; }
 .act-month-head h2 { font-size: 15px; }
@@ -1200,6 +1208,7 @@ a.year-stat:focus-visible { outline: 2px solid var(--text); outline-offset: 2px;
 .month-chart.k-run .mbar { fill: var(--run); }
 .month-chart.k-swim .mbar { fill: var(--swim); }
 .month-chart.k-bike .mbar { fill: var(--bike); }
+.month-chart.k-ebike .mbar { fill: var(--ebike); }
 .month-chart.k-walk .mbar { fill: var(--walk); }
 .month-chart .mbar-wrap.cur .mbar { filter: brightness(1.08); }
 .month-chart .mbar-wrap.cur text { fill: var(--text); font-weight: 700; }

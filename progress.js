@@ -11,10 +11,11 @@ function yearActs(acts, year) {
   return (acts || []).filter((a) => a.date && a.date.startsWith(String(year)));
 }
 
+const YEAR_SPORTS = ["run", "swim", "bike", "ebike", "walk"];
+
 function yearSportStats(acts, year) {
   const rows = yearActs(acts, year);
-  const cats = ["run", "swim", "bike", "walk"];
-  const totals = Object.fromEntries(cats.map((cat) => [cat, { dist: 0, count: 0 }]));
+  const totals = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, { dist: 0, count: 0 }]));
   rows.forEach((a) => {
     if (!totals[a.cat]) return;
     totals[a.cat].dist += a.dist || 0;
@@ -22,8 +23,6 @@ function yearSportStats(acts, year) {
   });
   return { year, rows, totals, count: rows.length };
 }
-
-const YEAR_SPORTS = ["run", "swim", "bike", "walk"];
 function YEAR_SPORT_LABEL(cat) {
   const key = `sport.${cat}`;
   const value = tt(key);
@@ -151,7 +150,7 @@ function weekSportStats(acts, start) {
   const from = ymd(start);
   const to = ymd(addDays(start, 6));
   const weekActs = (acts || []).filter((a) => a.date >= from && a.date <= to);
-  const byCat = { run: 0, swim: 0, bike: 0, walk: 0 };
+  const byCat = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, 0]));
   weekActs.forEach((a) => {
     if (byCat[a.cat] != null) byCat[a.cat] += 1;
   });
@@ -307,7 +306,7 @@ function renderStreak(acts, now) {
     const future = start > nowMon;
     const cur = ymd(start) === ymd(nowMon);
     const level = future || !info.count ? 0 : info.count >= 4 ? 3 : info.count >= 2 ? 2 : 1;
-    const sports = ["run", "swim", "bike", "walk"].filter((c) => info.byCat[c]).join(", ");
+    const sports = YEAR_SPORTS.filter((c) => info.byCat[c]).join(", ");
     const title = `${short(start)} – ${short(addDays(start, 6))}${info.count ? ` · ${info.count} activit${info.count === 1 ? "y" : "ies"}${sports ? ` (${sports})` : ""}` : " · rest week"}`;
     const labelDate = start.getFullYear() < year ? new Date(year, 0, 1) : start;
     const key = `${year}-${labelDate.getMonth()}`;
@@ -327,7 +326,7 @@ function renderStreak(acts, now) {
         <div>
           <div class="eyebrow">Weekly streak</div>
           <h2>${headline}</h2>
-          <p class="muted" style="margin:6px 0 0">Longest this year: ${longest} week${longest === 1 ? "" : "s"}. A week counts when you log any run, swim, bike or walk.</p>
+          <p class="muted" style="margin:6px 0 0">Longest this year: ${longest} week${longest === 1 ? "" : "s"}. A week counts when you log any run, swim, bike, e-bike or walk.</p>
         </div>
       </div>
       <div class="streak-year">

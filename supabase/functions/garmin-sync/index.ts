@@ -510,6 +510,8 @@ function categorize(type: string) {
   const t = String(type || "").toLowerCase();
   if (t.includes("run") || t.includes("track") || t.includes("trail") || t.includes("treadmill")) return "run";
   if (t.includes("swim") || t.includes("lap_swimming") || t.includes("open_water")) return "swim";
+  // E-bike before bike: "ebike" / "e_bike" also match the generic "bik" check.
+  if (/e[\s_-]*bike|electric[\s_-]*bike|ebiking/.test(t)) return "ebike";
   if (t.includes("cycl") || t.includes("bik") || t.includes("ride") || t.includes("virtual_ride")) return "bike";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
@@ -621,7 +623,7 @@ function mapGarminToRow(
   } else if (Number.isFinite(avgSpeed) && avgSpeed > 0) {
     if (cat === "run" || cat === "walk") avgPace = formatPace(1000 / avgSpeed);
     else if (cat === "swim") avgPace = formatPace(100 / avgSpeed);
-    else if (cat === "bike") {
+    else if (cat === "bike" || cat === "ebike") {
       const kmh = avgSpeed * 3.6;
       avgPace = Number.isFinite(kmh) ? kmh.toFixed(1) : null;
     }
@@ -850,7 +852,7 @@ function findLocalGear(
 function gearFitsActivity(type: string, activityType: string): boolean {
   const cat = categorize(activityType);
   if (type === "shoes") return cat === "run" || cat === "walk";
-  if (type === "bike") return cat === "bike";
+  if (type === "bike") return cat === "bike" || cat === "ebike";
   if (type === "swimsuit" || type === "wetsuit") return cat === "swim";
   return false;
 }

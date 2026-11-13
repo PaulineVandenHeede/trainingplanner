@@ -40,6 +40,7 @@
     "kind.swim": "Swim",
     "kind.walkswim": "Walk + swim",
     "kind.bike": "Bike",
+    "kind.ebike": "E-bike",
     "kind.brick": "Brick",
     "kind.rest": "Rest",
     "kind.travel": "Travel",
@@ -139,6 +140,7 @@
     "sport.run": "Run",
     "sport.swim": "Swim",
     "sport.bike": "Bike",
+    "sport.ebike": "E-bike",
     "sport.walk": "Walk",
     "sport.triathlon": "Triathlon",
     "common.busy": "Busy",
@@ -413,6 +415,7 @@
     "sport.runFull": "Running",
     "sport.swimFull": "Swimming",
     "sport.bikeFull": "Cycling",
+    "sport.ebikeFull": "E-biking",
     "sport.triathlonFull": "Triathlon",
   };
 
@@ -453,6 +456,7 @@
     "kind.swim": "Zwemmen",
     "kind.walkswim": "Wandelen + zwemmen",
     "kind.bike": "Fietsen",
+    "kind.ebike": "E-bike",
     "kind.brick": "Brick",
     "kind.rest": "Rust",
     "kind.travel": "Reizen",
@@ -552,6 +556,7 @@
     "sport.run": "Hardlopen",
     "sport.swim": "Zwemmen",
     "sport.bike": "Fietsen",
+    "sport.ebike": "E-bike",
     "sport.walk": "Wandelen",
     "sport.triathlon": "Triatlon",
     "common.busy": "Bezet",
@@ -826,6 +831,7 @@
     "sport.runFull": "Hardlopen",
     "sport.swimFull": "Zwemmen",
     "sport.bikeFull": "Fietsen",
+    "sport.ebikeFull": "E-fietsen",
     "sport.triathlonFull": "Triatlon",
   };
 

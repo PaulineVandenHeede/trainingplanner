@@ -9,7 +9,7 @@ function KIND_LABEL(kind) {
   if (typeof window.kindLabel === "function") return window.kindLabel(kind);
   const fallback = {
     run: "Easy run", quality: "Quality", long: "Long run", event: "Event", race: "Race",
-    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", brick: "Brick",
+    walk: "Walk", swim: "Swim", walkswim: "Walk + swim", bike: "Bike", ebike: "E-bike", brick: "Brick",
     rest: "Rest", travel: "Travel",
   };
   return fallback[kind] || kind || "";
@@ -319,7 +319,7 @@ function fmtBikeSpeed(paceStr) {
 
 function paceSuffix(sport) {
   if (sport === "swim") return " /100m";
-  if (sport === "bike") return isImperial() ? " mph" : " km/h";
+  if (sport === "bike" || sport === "ebike") return isImperial() ? " mph" : " km/h";
   return isImperial() ? " /mi" : " /km";
 }
 
@@ -390,13 +390,15 @@ function parseCSV(text) {
 }
 
 function categorize(type) {
-  const t = type.toLowerCase();
+  const t = String(type || "").toLowerCase();
   if (t.includes("run")) return "run";
   if (t.includes("swim")) return "swim";
+  // E-bike before bike: "ebike" / "e_bike" also match the generic "bik" check.
+  if (/e[\s_-]*bike|electric[\s_-]*bike|ebiking/.test(t)) return "ebike";
   // Strava uses "Ride" / "Gravel Ride" / "VirtualRide"; Garmin often "cycling".
   if (
     t.includes("cycl") || t.includes("bik") || t.includes("ride") ||
-    t.includes("ebike") || t.includes("gravel")
+    t.includes("gravel")
   ) return "bike";
   if (t.includes("walk") || t.includes("hik")) return "walk";
   return null;
@@ -570,7 +572,7 @@ function gearFor(a) {
 }
 
 function gearTypesFor(cat) {
-  if (cat === "bike") return ["bike"];
+  if (cat === "bike" || cat === "ebike") return ["bike"];
   if (cat === "run" || cat === "walk") return ["shoes"];
   if (cat === "swim") return ["swimsuit", "wetsuit"];
   return [];
@@ -581,13 +583,14 @@ function activityLine(a) {
   const gear = gearFor(a);
   const bits = [];
   if (a.cat === "swim") bits.push(`Swim ${Math.round(Number(a.dist) || 0)} m`);
+  else if (a.cat === "ebike") bits.push(`E-bike ${fmtDistWithUnit(a.dist)}`);
   else if (a.cat === "bike") bits.push(`Bike ${fmtDistWithUnit(a.dist)}`);
   else if (a.cat === "walk") bits.push(`Walk ${fmtDistWithUnit(a.dist)}`);
   else bits.push(`Run ${fmtDistWithUnit(a.dist)}`);
   if (dur && a.cat !== "walk") bits.push(dur);
   if (a.pace && a.cat === "run") bits.push(fmtRunPace(a.pace));
   else if (a.pace && a.cat === "swim") bits.push(`${a.pace}/100m`);
-  else if (a.pace && a.cat === "bike") bits.push(fmtBikeSpeed(a.pace));
+  else if (a.pace && (a.cat === "bike" || a.cat === "ebike")) bits.push(fmtBikeSpeed(a.pace));
   if (a.hr) bits.push(`HR ${a.hr}`);
   if (gear) bits.push(esc(gear.name));
   return bits.join(" · ");
@@ -596,6 +599,7 @@ function activityLine(a) {
 const LOG_TYPES = {
   run: { type: "Running", title: "Run", unitKey: "dist" },
   bike: { type: "Cycling", title: "Ride", unitKey: "dist" },
+  ebike: { type: "E-Bike", title: "E-bike ride", unitKey: "dist" },
   swim: { type: "Pool Swim", title: "Swim", unitKey: "m" },
   walk: { type: "Walking", title: "Walk", unitKey: "dist" },
 };
@@ -666,7 +670,7 @@ function computeAvgPace(cat, dist, sec) {
   if (!(dist > 0) || !(sec > 0) || typeof fmtPace !== "function") return null;
   if (cat === "run" || cat === "walk") return fmtPace(sec / dist);
   if (cat === "swim") return fmtPace(sec / (dist / 100));
-  if (cat === "bike") return (dist / (sec / 3600)).toFixed(1);
+  if (cat === "bike" || cat === "ebike") return (dist / (sec / 3600)).toFixed(1);
   return null;
 }
 
@@ -703,6 +707,7 @@ function logSessionFields(sport, { distance = "", duration = "", hr = "", date =
       <select name="type">
         ${option("run", "Run")}
         ${option("bike", "Bike")}
+        ${option("ebike", "E-bike")}
         ${option("swim", "Swim")}
         ${option("walk", "Walk")}
       </select>
@@ -1025,6 +1030,11 @@ const STAT_FIELDS = {
     ["Max speed", "Best Pace", paceSuffix("bike")], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"], ["Aerobic TE", "Aerobic TE"],
     ["Ascent", "Total Ascent", " m"], ["Calories", "Calories", " kcal"], ["Body Battery", "Body Battery Drain"],
   ],
+  ebike: [
+    ["Distance", "Distance", distSuffix("ebike")], ["Time", "Time"], ["Moving time", "Moving Time"], ["Avg speed", "Avg Pace", paceSuffix("ebike")],
+    ["Max speed", "Best Pace", paceSuffix("ebike")], ["Avg HR", "Avg HR", " bpm"], ["Max HR", "Max HR", " bpm"], ["Aerobic TE", "Aerobic TE"],
+    ["Ascent", "Total Ascent", " m"], ["Calories", "Calories", " kcal"], ["Body Battery", "Body Battery Drain"],
+  ],
   walk: [
     ["Distance", "Distance", distSuffix("walk")], ["Time", "Time"], ["Avg HR", "Avg HR", " bpm"], ["Steps", "Steps"], ["Calories", "Calories", " kcal"],
   ],
@@ -1042,7 +1052,7 @@ function formatStatValue(a, key, raw) {
     const sec = parsePaceToSec(v);
     if (sec != null) return fmtPaceSec(sec * KM_PER_MILE);
   }
-  if (a.cat === "bike" && (key === "Avg Pace" || key === "Best Pace")) {
+  if ((a.cat === "bike" || a.cat === "ebike") && (key === "Avg Pace" || key === "Best Pace")) {
     const n = Number(v);
     if (Number.isFinite(n)) return fmtNum(n / KM_PER_MILE, 1);
   }
@@ -3007,9 +3017,10 @@ function formatHours(sec) {
 function weekVolumeBySport(acts, start) {
   const from = ymd(start);
   const to = ymd(addDays(start, 6));
-  const byCat = { run: 0, swim: 0, bike: 0, walk: 0 };
-  const timeByCat = { run: 0, swim: 0, bike: 0, walk: 0 };
-  const countByCat = { run: 0, swim: 0, bike: 0, walk: 0 };
+  // Keep keys in lockstep with YEAR_SPORTS — missing keys turn session totals into NaN.
+  const byCat = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, 0]));
+  const timeByCat = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, 0]));
+  const countByCat = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, 0]));
   (acts || []).forEach((a) => {
     if (!a.date || a.date < from || a.date > to || byCat[a.cat] == null) return;
     byCat[a.cat] += chartDist(a.cat, a.dist || 0);
@@ -3022,9 +3033,9 @@ function weekVolumeBySport(acts, start) {
     byCat,
     timeByCat,
     countByCat,
-    total: YEAR_SPORTS.reduce((sum, cat) => sum + byCat[cat], 0),
-    count: YEAR_SPORTS.reduce((sum, cat) => sum + countByCat[cat], 0),
-    timeSec: YEAR_SPORTS.reduce((sum, cat) => sum + timeByCat[cat], 0),
+    total: YEAR_SPORTS.reduce((sum, cat) => sum + (byCat[cat] || 0), 0),
+    count: YEAR_SPORTS.reduce((sum, cat) => sum + (countByCat[cat] || 0), 0),
+    timeSec: YEAR_SPORTS.reduce((sum, cat) => sum + (timeByCat[cat] || 0), 0),
   };
 }
 
@@ -3100,8 +3111,8 @@ function renderActivityWeekChart(acts, year, filter, now) {
       </a>`);
   });
 
-  const totals = Object.fromEntries(cats.map((cat) => [cat, rows.reduce((s, r) => s + r.byCat[cat], 0)]));
-  const sessions = rows.reduce((s, r) => s + r.count, 0);
+  const totals = Object.fromEntries(cats.map((cat) => [cat, rows.reduce((s, r) => s + (r.byCat[cat] || 0), 0)]));
+  const sessions = rows.reduce((s, r) => s + (r.count || 0), 0);
   const legend = cats.map((cat) => `<span><i class="lg-${cat}"></i>${YEAR_SPORT_LABEL(cat)}${totals[cat] ? ` ${fmtDistWithUnit(totals[cat], 1)}` : ""}</span>`).join("");
   return `
     <div class="year-month">
@@ -3139,7 +3150,7 @@ function renderActivities(acts, now) {
   const pool = acts || [];
   const yearPool = yearActs(pool, year);
   const rows = yearPool.filter((a) => !filter || a.cat === filter);
-  const totals = { run: 0, swim: 0, bike: 0, walk: 0 };
+  const totals = Object.fromEntries(YEAR_SPORTS.map((cat) => [cat, 0]));
   yearPool.forEach((a) => { if (totals[a.cat] != null) totals[a.cat] += 1; });
   const years = activityYears(pool, now);
   const groups = [];
